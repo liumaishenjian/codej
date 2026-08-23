@@ -664,6 +664,40 @@ class RuntimeStdioCommandHandlerTest {
     }
 
     @Test
+    void projectsOnlyWhitelistedArgumentCorrectionActions() throws Exception {
+        StdioProtocolCodec codec = new StdioProtocolCodec();
+        CopyOnWriteArrayList<CapturedEvent> events = new CopyOnWriteArrayList<>();
+        StdioProtocol.EventEmitter emitter = (type, requestId, sessionId, runId, payload) ->
+                events.add(new CapturedEvent(type, sessionId, runId, payload.deepCopy()));
+        java.util.concurrent.atomic.AtomicInteger turns = new java.util.concurrent.atomic.AtomicInteger();
+
+        try (RuntimeStdioCommandHandler handler = new RuntimeStdioCommandHandler(request -> {
+            if (turns.incrementAndGet() == 1) {
+                return ModelTurn.tools(List.of(new ToolCall(
+                        "call-invalid", "search_text",
+                        new JsonObject(java.util.Map.of(
+                                "query", "PRIVATE_QUERY", "limit", 1, "maxResults", 1)))));
+            }
+            return ModelTurn.text("done");
+        }, testOptions())) {
+            handler.handle(codec.decodeCommand(
+                    "{\"version\":0,\"type\":\"initialize\",\"requestId\":\"init\",\"sequence\":1,\"payload\":{}}"), emitter);
+            String sessionId = events.getFirst().sessionId().orElseThrow();
+            handler.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"run.start\","
+                    + "\"requestId\":\"run\",\"sessionId\":\"%s\",\"sequence\":2,"
+                    + "\"payload\":{\"prompt\":\"PROMPT_SECRET\"}}").formatted(sessionId)), emitter);
+            awaitTerminal(events);
+        }
+
+        CapturedEvent failed = events.stream()
+                .filter(event -> event.type().equals("tool.failed"))
+                .findFirst().orElseThrow();
+        assertThat(failed.payload().toString())
+                .contains("\"argumentChangeRequired\":true", "invalid_arguments", "validation")
+                .doesNotContain("PRIVATE_QUERY", "PROMPT_SECRET", "violations", "preferredField", "removeFields");
+    }
+
+    @Test
     void commandExitCodeUsesOnlyStructuredRunCommandFacts() {
         var success = io.github.liumaishenjian.ccjava.domain.ToolResult.success(
                 "call-success", "run_command", "ok");

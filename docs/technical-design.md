@@ -519,19 +519,36 @@ Tool Call 可能跨多个流式 Chunk，必须聚合后才能进入 Pipeline。
 Sub-Agent requested budget 继续使用 `EXPLICIT_HARD`，因此显式上限不会被隐式放宽。取消、Run deadline、
 Context/Token/output ceiling 完全正交且保持既有优先级。
 
-每个 Run 在唯一 `ToolExecutionPipeline` 内拥有短生命周期 `ToolFailureFingerprintGovernance`。参数校验后，
-它以 Tool 名、递归键排序且类型保真的 JSON 参数摘要与 `ToolFailureCategory` 保存类型化失败记录；不使用
-错误 message、stdout/stderr、网页正文或 Secret。第一次执行失败按正常 Result 进入模型。由于执行前无法
-预知重试将产生的类别，第二个同 Tool+参数调用只要匹配任一既有失败记录，就在 Pre Hook、Permission、
-AutoReview 与 Adapter 前以 `REPEATED_FAILURE` 结算；Adapter 内对同一次 HTTP 调用执行的 429/5xx 有界
-重试不属于模型再次发起 Tool call，不经过该第二次调用 Gate。details 只包含 `requiredStrategyChange` 与允许
-的变化维度。变更 Tool/参数会形成新策略；同 Tool 的真实变参成功清除该 Tool 旧记录，Workspace/System
+每个 Run 在唯一 `ToolExecutionPipeline` 内拥有短生命周期 `ToolFailureFingerprintGovernance`。执行阶段的
+失败继续使用 Tool 名、递归键排序且类型保真的 arguments digest 与 `ToolFailureCategory`；相同执行调用在
+Pre Hook、Permission、AutoReview 与 Adapter 前以 `REPEATED_FAILURE` 结算。
+
+validation failure 使用独立契约：`ToolValidationResult(violations, details, correctionSignature)` 构造
+`INVALID_ARGUMENTS / VALIDATION / retryable=false`，Pipeline 固定补充
+`argumentChangeRequired=true` 与 `retrySameArguments=false`。`recordValidationFailureOrRepeated` 在同一
+同步临界区写入 Tool + canonical arguments digest + category 的 exact 层，以及可选 Tool + safe signature digest
+的 correction-shape 层。generic invalid 即使没有 signature，相同 arguments 也会被 exact 层拦截；非空
+correctionSignature 则让 query/path 每轮变化但仍维持同一 `limit/maxResults` conflict 的调用被 shape 层识别。
+details 是安全可投影动作，signature 只描述 violation/correction 形状；两层都只保存 SHA-256，不保存、不投影
+arguments、signature 正文、query/path、Secret 或底层异常。不同 invalid shape 得到首次反馈，真正通过
+validation 的参数仍可执行；并行 read batch 中同 shape 只有一个首次记录，其余返回完整、按 Call ID 配对的
+repeated result。
+
+Adapter 内对同一次 HTTP 调用执行的 429/5xx 有界重试不属于模型再次发起 Tool call。
+`REPEATED_FAILURE` details 只包含 `requiredStrategyChange`、禁止原样重试和允许的变化维度。同 Tool 的真实
+变参成功只清除执行失败记录；validation correction 形状已得到过首次反馈后继续保留。Workspace/System
 成功只可跨 Tool 清除 `PROCESS_EXIT`，无关读取、Plan 控制或 HTTP/Permission 成功不清除。Run finally
 清空全部内存状态，不形成 Session Grant 或跨 Session cache。
 
+`AgentRunState` 另行追踪连续 repeated-only batch。第一批仍完整回传策略提示；第二批的全部 Result 与原
+Call ID 配对并追加 Canonical History 后，以 `TOOL_ERROR` 终止。任一成功、不同失败、另一种 validation
+错误或混合 batch 重置计数。混合 batch 的真实 success 仍按 ADR-079 计为进展，但 adaptive budget 受
+128/256 absolute ceiling、墙钟及其他正交边界限制，不会无限续租；本修复不增加失败占优策略。
+
 `ToolErrorCode` 保留具体纠正语义，新增正交 taxonomy/retryable。Provider Mapper 将
 `code/category/retryable/message/details` 与可选有界失败证据投影给模型；Session JSONL 新记录持久化
-category/retryable，旧记录缺失字段时由 code 的保守映射兼容恢复。stdio/TUI 只投影枚举、boolean 和计数。
+category/retryable，旧记录缺失字段时由 code 的保守映射兼容恢复。stdio/TUI 不投影完整 details，只白名单
+`argumentChangeRequired` 与 `strategyChangeRequired` boolean，加上既有枚举和计数。
 
 Web Adapter 对 403 直接映射非重试 `HTTP_FORBIDDEN`，仅根据受信 `WWW-Authenticate` 或固定代理阻断头
 区分认证、UA/ACL 与普通 forbidden，不读取或记录正文/Header 值。429/5xx 最多三次，使用共享 deadline、
@@ -1465,8 +1482,9 @@ closed。取消、clear、成功 Resume、transport failure 与 shutdown/close �
 `search_text` 通过内部 `TextSearchBackend` 隔离 Tool 契约和搜索引擎。生产装配使用
 `RipgrepSearchClient`，把不可变 `TextSearchRequest` 转换为参数数组，在固定 Workspace
 执行 rg。参数支持字面/正则、Glob/type、大小写、多行、before/after/context、
-content/files/count、行号与 offset/limit；查询始终经 `-e` 传递，`--` 隔离搜索根，
-不经过 Shell。
+content/files/count、行号与 offset/limit；公开 Tool Schema 只宣传规范 `limit`。validator/executor 仍接受
+单独旧 `maxResults` 以恢复历史调用，但二者共存时返回结构化动作，要求删除 `maxResults`、保留 `limit`。
+查询始终经 `-e` 传递，`--` 隔离搜索根，不经过 Shell。
 
 rg 使用 `--no-config --json`、默认 ignore、敏感 Glob、无链接跟随、并发有界
 stdout/stderr 和 10 秒总墙钟。Run 的 CancellationToken 经 ToolInvocation 传播到
@@ -1489,8 +1507,10 @@ S03 退出后的体验维护仍保持 Java Runtime 为状态权威。TUI 把现�
 通用 `returnedItems`，以及由 Java 在参数校验后按固定 Tool/字段白名单生成的有界瞬时活动摘要。
 活动摘要可包含相对工作区目标、搜索词或待执行命令，但绝不携带参数对象、正文型字段、绝对路径、
 穿越目标或原始异常，也不写入 Canonical Session。`search_text` 额外投影固定的
-`content/files/count` 模式，分别显示匹配数、文件数和已统计文件数。模型默认应总结并引用相关证据，而不是
-把完整搜索结果重新抄入最终回答；用户明确要求穷举时不由 TUI 强行裁剪。
+`content/files/count` 模式，分别显示匹配数、文件数和已统计文件数。参数失败还可消费 Java 白名单
+`argumentChangeRequired` / `strategyChangeRequired`，固定显示“需要修改参数”或“已阻止相同失败重试”；
+TUI 不解析 violation prose，也不让连续失败只剩 `×N`。模型默认应总结并引用相关证据，而不是把完整搜索
+结果重新抄入最终回答；用户明确要求穷举时不由 TUI 强行裁剪。
 
 Markdown 使用 `marked` 解析为词法 Token，再映射为项目自有 Ink 组件；解析异常退回纯
 文本，因此流式未闭合片段不会破坏 Session。该切片不增加写入、Command、Approval、

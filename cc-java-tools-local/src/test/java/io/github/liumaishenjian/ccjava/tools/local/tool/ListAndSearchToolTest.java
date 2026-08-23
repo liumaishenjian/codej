@@ -166,13 +166,42 @@ class ListAndSearchToolTest {
     }
 
     @Test
-    void rejectsInvalidAdvancedParameterCombinations() throws Exception {
+    void advertisesOnlyCanonicalLimitAndKeepsLegacyMaxResultsExecutable() throws Exception {
+        AtomicReference<TextSearchRequest> captured = new AtomicReference<>();
+        SearchTextTool tool = new SearchTextTool(new WorkspaceGuard(workspace), structuredBackend(captured,
+                new RipgrepParsedResult(List.of(), List.of(), Map.of(),
+                        new RipgrepJsonEvent.Summary(0, 0), 0)));
+
+        assertThat(tool.definition().inputSchemaJson())
+                .contains("\"limit\"")
+                .doesNotContain("\"maxResults\"");
+        assertThat(tool.validate(new JsonObject(Map.of("query", "needle", "maxResults", 7))).valid())
+                .isTrue();
+
+        ToolExecutionOutcome outcome = execute(tool, Map.of("query", "needle", "maxResults", 7));
+
+        assertThat(outcome.successful()).isTrue();
+        assertThat(captured.get().limit()).isEqualTo(7);
+    }
+
+    @Test
+    void rejectsInvalidAdvancedParameterCombinationsWithActionableLegacyCorrection() throws Exception {
         SearchTextTool tool = fallbackSearchTool();
 
         assertThat(tool.validate(new JsonObject(Map.of(
                 "query", "needle", "mode", "files", "context", 1))).valid()).isFalse();
-        assertThat(tool.validate(new JsonObject(Map.of(
-                "query", "needle", "limit", 1, "maxResults", 1))).valid()).isFalse();
+        var conflict = tool.validate(new JsonObject(Map.of(
+                "query", "needle", "limit", 1, "maxResults", 1)));
+        assertThat(conflict.valid()).isFalse();
+        assertThat(conflict.violations()).singleElement().asString()
+                .contains("删除 maxResults", "仅使用 limit");
+        assertThat(conflict.details().values())
+                .containsEntry("preferredField", "limit")
+                .containsEntry("removeFields", List.of("maxResults"));
+        assertThat(conflict.correctionSignature().values())
+                .containsEntry("violation", "mutually_exclusive_fields")
+                .containsEntry("fields", List.of("limit", "maxResults"))
+                .doesNotContainKeys("query", "path", "secret");
         assertThat(tool.validate(new JsonObject(Map.of(
                 "query", "needle", "type", "java;exit"))).valid()).isFalse();
     }

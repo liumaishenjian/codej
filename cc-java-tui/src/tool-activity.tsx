@@ -23,6 +23,8 @@ interface ToolGroup {
   readonly errorCode: string | undefined;
   readonly failureCategory: string | undefined;
   readonly retryable: boolean | undefined;
+  readonly argumentChangeRequired: boolean;
+  readonly strategyChangeRequired: boolean;
 }
 
 /**
@@ -135,6 +137,8 @@ function fromTool(tool: ToolView): ToolGroup {
     errorCode: tool.errorCode,
     failureCategory: tool.failureCategory,
     retryable: tool.retryable,
+    argumentChangeRequired: tool.argumentChangeRequired,
+    strategyChangeRequired: tool.strategyChangeRequired,
   };
 }
 
@@ -155,6 +159,8 @@ function mergeTool(group: ToolGroup, tool: ToolView): ToolGroup {
     errorCode: tool.errorCode ?? group.errorCode,
     failureCategory: tool.failureCategory ?? group.failureCategory,
     retryable: tool.retryable ?? group.retryable,
+    argumentChangeRequired: group.argumentChangeRequired || tool.argumentChangeRequired,
+    strategyChangeRequired: group.strategyChangeRequired || tool.strategyChangeRequired,
   };
 }
 
@@ -190,6 +196,11 @@ function formatToolDetails(group: ToolGroup): string {
   }
   if (group.deniedCount > 1 || (group.deniedCount > 0 && group.successfulCount > 0)) {
     details.push(`${group.deniedCount} 次拒绝`);
+  }
+  if (group.strategyChangeRequired) {
+    details.push('已阻止相同失败重试');
+  } else if (group.argumentChangeRequired) {
+    details.push('需要修改参数');
   }
   if (group.errorCode !== undefined) details.push(group.errorCode);
   if (group.failureCategory !== undefined) {

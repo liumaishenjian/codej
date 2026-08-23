@@ -289,7 +289,8 @@ S04 完成后，项目得到第一个可运行的 Mini Coding Agent CLI；随后
 - FR-CLI-011：Tool stdout/stderr 默认折叠但不得丢失通道、失败或退出事实；运行中可选择并展开详情，
   Run 完成后必须仍能从独立 live viewer 查看最近历史 Run 的所选 Tool 快照，且不得重绘已进入 Ink
   `Static` 的 native scrollback。重复诊断只按相邻、同通道、完整且文本等价压缩；大量异构活动必须
-  有界折叠，并在汇总行保留失败、拒绝和截断计数。
+  有界折叠，并在汇总行保留失败、拒绝和截断计数。参数校验与重复失败只允许通过 Java 白名单 boolean
+  投影确定性动作，TUI 必须显示“需要修改参数”或“已阻止相同失败重试”，不得只用 `×N` 隐藏停滞。
 
 ### 11.2 Agent Runtime
 
@@ -303,7 +304,8 @@ S04 完成后，项目得到第一个可运行的 Mini Coding Agent CLI；随后
   但仍受更高绝对 ceiling、墙钟、Token/Context/输出和取消限制。续租、无进展和绝对终止必须发布
   类型化原因，不能静默移除全部安全界限。
 - FR-AGENT-007：S02 将取消传播到模型流；S04 将取消传播到正在运行的工具和子进程树。
-- FR-AGENT-008：运行以明确 Stop Reason 结束，不能无限循环。
+- FR-AGENT-008：运行以明确 Stop Reason 结束，不能无限循环。连续两批全部为 `REPEATED_FAILURE` 时，
+  必须先完整配对并追加当前批次的全部 Tool Result，再以 `TOOL_ERROR` 有界终止；任一不同结果重置熔断计数。
 
 ### 11.3 Model
 
@@ -338,7 +340,7 @@ S04 完成后，项目得到第一个可运行的 Mini Coding Agent CLI；随后
   不抓取 HTML 或 stderr prose 猜测 HTTP 失败。
 - FR-TOOL-008：模型不能通过工具参数修改 Permission Policy。
 - FR-TOOL-009：`web_search` 必须作为 `NETWORK_OR_REMOTE / BUILT_IN` Tool 进入唯一 Pipeline；模型只可提供 query 和有界结果数，不能提供 Provider、endpoint、Header、credential、remote Tool name 或 fetch URL。可信本地 Provider gate 固定 Exa/Parallel hosted MCP 目标；Exa 可选 key 只能由 Adapter 形成精确编码的 `exaApiKey` query，Parallel key 只能形成 Bearer。每次出站均须经过绑定固定 scheme/host/effective port 的 `NetworkAccessPort`，使用 JSON-RPC 2.0 `tools/call`，只接受有界 `application/json`/`text/event-stream`（兼容参数，未知或缺失 media type 拒绝），redirect 不跟随，结果页不抓取，外部 textual content 以有界 untrusted provenance 返回。生产默认关闭，显式启用即表示 query 会发送给所选第三方。
-- FR-TOOL-010（S15 Batch 4）：Tool 失败必须携带正交的稳定 category 与可证明 retryable metadata；至少覆盖 Authorization、Permission、HTTP 403/4xx/429/5xx、Transport、Process Exit、Validation、Execution、Cancel、Timeout、Output 与 Protocol。每 Run 对“同 Tool + canonical args + 同 typed category”记录 fingerprint；第二次相同失败调用在执行/Permission 前返回结构化策略反馈，要求改变 query/provider/source/arguments 或解释阻塞。改变参数、不同类别或成功进展不得被惩罚。
+- FR-TOOL-010（S15 Batch 4 / ADR-087 纠正）：Tool 失败必须携带正交的稳定 category 与可证明 retryable metadata；至少覆盖 Authorization、Permission、HTTP 403/4xx/429/5xx、Transport、Process Exit、Validation、Execution、Cancel、Timeout、Output 与 Protocol。执行失败每 Run 对“同 Tool + canonical args + 同 typed category”记录 fingerprint；第一次 `INVALID_ARGUMENTS` 必须返回有界 violations、`argumentChangeRequired=true`、`retrySameArguments=false` 及 Tool 生成的安全纠错字段。确定性 validator 可另行声明不含 query/path/Secret 的 correction signature；Pipeline 只能哈希 Tool 名与该安全摘要，并以原子 record-or-repeated 判定未改变的纠错形状。第二次同 Tool、同形状即使无关业务参数变化也返回 `REPEATED_FAILURE`；另一种 invalid shape 必须得到首次反馈，真正通过 validation 的参数必须允许。连续 repeated-only batch 受 FR-AGENT-008 熔断且多 Call ID 完整。公开 Tool Schema 只能宣传规范字段；旧字段可在 validator/executor 兼容，但不得继续诱导模型同时发送互斥参数。
 - FR-TOOL-011（S15 Batch 4）：Web 403 是非重试 `HTTP_FORBIDDEN`；只在受信状态/响应头可观察时细分 Authorization required、UA/ACL 或 ordinary forbidden，不记录 secret/header value/query/body。429 与 5xx 只在 Web Adapter 层共享 deadline/cancel 做固定次数、封顶退避；普通 4xx、403、redirect、协议/类型/大小失败不重试。
 
 ### 11.5 Permission

@@ -74,6 +74,33 @@ describe('ToolActivityGroup', () => {
     expect(frame).toContain('activity-30');
   });
 
+  it('连续参数失败显示纠错与重复阻断而不是只有调用次数', () => {
+    const tools: ToolView[] = [
+      {
+        ...tool(1, 'search_text', 'failed'),
+        mode: 'content',
+        errorCode: 'invalid_arguments',
+        failureCategory: 'validation',
+        retryable: false,
+        argumentChangeRequired: true,
+      },
+      {
+        ...tool(2, 'search_text', 'failed'),
+        mode: 'content',
+        errorCode: 'repeated_failure',
+        failureCategory: 'internal',
+        retryable: false,
+        strategyChangeRequired: true,
+      },
+    ];
+
+    const frame = render(<ToolActivityGroup tools={tools} />).lastFrame() ?? '';
+
+    expect(frame).toContain('搜索内容 ×2');
+    expect(frame).toContain('已阻止相同失败重试');
+    expect(frame).not.toMatch(/^✗ 搜索内容 ×2$/mu);
+  });
+
   it('同类 Tool 失败后恢复时显示混合结果而不是伪装成全失败', () => {
     const tools: ToolView[] = [
       {
@@ -115,8 +142,10 @@ function tool(
     truncated: false,
     truncationReason: undefined,
     errorCode: undefined,
-          failureCategory: undefined,
-          retryable: undefined,
+    failureCategory: undefined,
+    retryable: undefined,
+    argumentChangeRequired: false,
+    strategyChangeRequired: false,
     exitCode: undefined,
     output: {lines: [], characters: 0, truncated: false},
   };

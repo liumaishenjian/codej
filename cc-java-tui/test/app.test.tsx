@@ -299,6 +299,8 @@ describe('AgentView', () => {
           errorCode: undefined,
           failureCategory: undefined,
           retryable: undefined,
+          argumentChangeRequired: false,
+          strategyChangeRequired: false,
           exitCode: undefined,
           output: {lines: [], characters: 0, truncated: false},
         }],
@@ -320,7 +322,7 @@ describe('AgentView', () => {
       ordinal: 1, name: 'run_command', mode: undefined, activity: '运行测试', status: 'failed' as const,
       returnedCharacters: 20, returnedItems: 0, filteredItems: 0, truncated: false,
       truncationReason: undefined, errorCode: 'process_exit', failureCategory: 'process_exit',
-      retryable: false, exitCode: 9,
+      retryable: false, argumentChangeRequired: false, strategyChangeRequired: false, exitCode: 9,
       output: {characters: 30, truncated: false, lines: [
         {stream: 'stderr' as const, text: 'test failed', complete: true, repetitions: 12},
         {stream: 'stderr' as const, text: 'different error', complete: true, repetitions: 1},

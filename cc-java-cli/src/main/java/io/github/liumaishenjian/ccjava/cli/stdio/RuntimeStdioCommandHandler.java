@@ -2140,6 +2140,14 @@ public final class RuntimeStdioCommandHandler
                 payload.put("errorCode", error.code().name().toLowerCase());
                 payload.put("failureCategory", error.category().name().toLowerCase());
                 payload.put("retryable", error.retryable());
+                Object argumentChangeRequired = error.details().values().get("argumentChangeRequired");
+                if (argumentChangeRequired instanceof Boolean required) {
+                    payload.put("argumentChangeRequired", required);
+                }
+                Object strategyChangeRequired = error.details().values().get("requiredStrategyChange");
+                if (strategyChangeRequired instanceof Boolean required) {
+                    payload.put("strategyChangeRequired", required);
+                }
             });
             safeCommandExitCode(after.result()).ifPresent(exitCode -> payload.put("exitCode", exitCode));
             String type = after.result().status()

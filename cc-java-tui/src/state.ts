@@ -62,6 +62,8 @@ export interface ToolView {
   readonly errorCode: string | undefined;
   readonly failureCategory: string | undefined;
   readonly retryable: boolean | undefined;
+  readonly argumentChangeRequired: boolean;
+  readonly strategyChangeRequired: boolean;
   readonly exitCode: number | undefined;
   readonly output: ToolOutputBuffer;
 }
@@ -855,6 +857,8 @@ function upsertStartedTool(
     errorCode: undefined,
     failureCategory: undefined,
     retryable: undefined,
+    argumentChangeRequired: false,
+    strategyChangeRequired: false,
     exitCode: undefined,
     output: EMPTY_TOOL_OUTPUT,
   };
@@ -890,6 +894,8 @@ function upsertFinishedTool(
       ? event.payload.failureCategory : undefined,
     retryable: typeof event.payload.retryable === 'boolean'
       ? event.payload.retryable : undefined,
+    argumentChangeRequired: event.payload.argumentChangeRequired === true,
+    strategyChangeRequired: event.payload.strategyChangeRequired === true,
     exitCode: safeSignedCount(event.payload.exitCode),
     output: finalizeToolOutput(previous?.output ?? EMPTY_TOOL_OUTPUT),
   };

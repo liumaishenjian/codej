@@ -258,7 +258,7 @@ Stage 完成项。
 | CLI-01 | Interactive Session | React/Ink TUI + Java Application Session；已封存 Run 经 Ink Static 永久进入终端 scrollback，终态 Tool 诊断由独立 live viewer 读取快照而不重绘历史；ADR-085 以 correlated `accepted/queued/rejected` handshake 区分 submitting/accepted/running/retrying，`run.started` 前不冒充模型已运行，watchdog/reject/断连恢复尚未 accepted 的草稿且不自动重发；`run.launch.failed` 收敛接单后、Run ID 前的启动异常 | L2 | S02/S15 | REF-02/AUTH-01/CODEX-0.147 |
 | CLI-02 | Print / Headless | Picocli `--print` | L2 | S02 | REF-02 |
 | CLI-03 | 流式 Assistant Text | stdio Event → Markdown Ink 组件渲染 | L2 | S02/S03 | REF-02/AUTH-01 |
-| CLI-04 | Tool 进度与输出 | 有序 Agent Event → 连续同类聚合、异构活动 8 行有界摘要、默认折叠结构化 stdout/stderr、运行中及最近历史 Tool 详情选择 | L2 | S02/S03/S15 | REF-02/AUTH-01/CODEX-0.147 |
+| CLI-04 | Tool 进度与输出 | 有序 Agent Event → 连续同类聚合、异构活动 8 行有界摘要、默认折叠结构化 stdout/stderr、运行中及最近历史 Tool 详情选择；ADR-087 白名单投影参数修正/策略变化，连续失败不再只显示次数 | L2 | S02/S03/S15 | REF-02/AUTH-01/CODEX-0.147 |
 | CLI-05 | Permission Prompt | 终端 Approval UI | L2 | S04/S05 | REF-04/AUTH-01 |
 | CLI-06 | Ctrl+C Cancel | 当前 Run/Tool 取消 | L1 | S02/S04 | REF-02 |
 | CLI-07 | Steering | Java stdio 连接内存 FIFO 上限 100；Java 以统一 `run.command.result=queued` 而非 TUI 本地 busy 快照决定排队，只在当前 Run 终态后启动下一 Run；取消/clear/成功 resume/transport failure/shutdown 丢弃未发送项且不持久化 | L2 | S08/S15 | REF-02/AUTH-01 |
@@ -279,7 +279,7 @@ Stage 完成项。
 | LOOP-04 | 流式 Model Turn | Delta + 聚合结果 | L2 | S02 | REF-02/08 |
 | LOOP-05 | Tool Result 驱动下一回合 | Canonical Message History | L1 | S01 | REF-08 |
 | LOOP-06 | 多 Continue 原因 | 显式 Transition/Stop Reason | L1 | S01/S07 | REF-01 |
-| LOOP-07 | 最大回合和工具数 | 显式硬上限 + 普通交互 progress-aware soft checkpoint/absolute ceiling/typed event | L1 | S01/S15 | REF-01/AUTH-01 |
+| LOOP-07 | 最大回合和工具数 | 显式硬上限 + 普通交互 progress-aware soft checkpoint/absolute ceiling/typed event；连续两批 repeated-only Tool Result 完整配对后早停 | L1 | S01/S15 | REF-01/AUTH-01 |
 | LOOP-08 | Deadline 与取消 | Cancellation 传播；同 Provider retry 的 attempt 与可取消等待共享 Run remaining-time，等待耗尽预算前不启动下一请求 | L1 | S02/S04/S15 | REF-02/AUTH-01 |
 | LOOP-09 | 模型错误重试 | ADR-084：production 确定 route 内最多 10 retries/11 total attempts，capped exponential+0～25% jitter、typed Retry-After、deadline/cancel、visible delta/Provider frame/Tool intent fence；不切 profile/provider、不重试永久错误/context overflow/incomplete stream | L2 | S02/S14/S15 | REF-01/AUTH-01 |
 | LOOP-10 | Model Output Length Recovery | S02 识别截断/不完整输出并有界停止或续接 → S14 L3 恢复策略 | L2 | S02/S14 | REF-01/AUTH-01 |
@@ -310,11 +310,11 @@ Stage 完成项。
 
 | ID | 参考能力 | Java 重实现目标 | 当前 | Stage | 参考 |
 | --- | --- | --- | --- | --- | --- |
-| TOOL-01 | Tool Definition + Schema | Framework-free Contract | L1 | S01 | REF-08 |
+| TOOL-01 | Tool Definition + Schema | Framework-free Contract；ADR-087 分离 canonical advertised Schema 与 legacy parser，避免公开字段和 validator 自相矛盾 | L1 | S01/S15 | REF-08/AUTH-01 |
 | TOOL-02 | Tool Registry | Source-aware Registry | L1 | S01 | REF-01 |
-| TOOL-03 | 统一执行 Pipeline | Validate → Permit → Execute → Normalize | L2 | S01/S05 | REF-01/07 |
+| TOOL-03 | 统一执行 Pipeline | Validate → Permit → Execute → Normalize；validation failure 使用 Tool 声明安全的 correction signature 原子治理、统一结构化错误与批次熔断，不绕过 Pipeline | L2 | S01/S05/S15 | REF-01/07/AUTH-01 |
 | TOOL-04 | List / Glob | Workspace 文件枚举 | L2 | S03 | REF-02 |
-| TOOL-05 | Grep / Search | 受控 ripgrep：完整参数、三模式、JSON 结果、取消与一次资源恢复；Java 字面降级 | L2 | S03 | REF-02/AUTH-01 |
+| TOOL-05 | Grep / Search | 受控 ripgrep：完整参数、三模式、JSON 结果、取消与一次资源恢复；Java 字面降级；公开只含规范 `limit`，单独旧 `maxResults` 继续兼容 | L2 | S03/S15 | REF-02/AUTH-01 |
 | TOOL-06 | Read File | 固定窗口严格 UTF-8 范围读取、行号、扫描/单行/输出上限、权威 continuation 与同范围未变化结果 | L2 | S03 | REF-02/AUTH-01 |
 | TOOL-07 | Git Status / Diff | 脏工作区和证据 | L2 | S03/S04 | REF-02 |
 | TOOL-08 | Apply Patch / Edit | LF/CRLF 规范精确匹配、BOM/换行外观保留、先读覆盖证据、冲突重检、同目录原子替换与有界摘要 | L1 | S04 | REF-02/AUTH-01 |
@@ -322,7 +322,7 @@ Stage 完成项。
 | TOOL-10 | Run Command | 固定 Shell/Workspace/审批/timeout；成功/非零/timeout/cancel 的实际 exit fact 结构化投影，未执行失败不伪造 | L1 | S04/S15 | REF-02/AUTH-01 |
 | TOOL-11 | Tool Output Streaming | 有界结构化 stdout/stderr Lifecycle/stdio v0/TUI Event；通用相邻等价行压缩、默认折叠与终态历史 viewer | L1 | S04/S15 | REF-02/AUTH-01 |
 | TOOL-12 | Result Truncation | 显式截断、超长行计数、与已返回正文一致的结构化 continuation 和摘要 | L2 | S03/S07 | REF-01/AUTH-01 |
-| TOOL-13 | Structured Tool Error | code + typed category/retryable；Run 内 canonical failure fingerprint 要求策略变化 | L2 | S01/S03/S15 | REF-01/AUTH-01 |
+| TOOL-13 | Structured Tool Error | code + typed category/retryable；首次 invalid args 带安全 correction details，同 Tool/同安全 correction signature 即使业务参数变化也要求策略变化，另一 invalid shape 不误拦；repeated-only batch 有界熔断 | L2 | S01/S03/S15 | REF-01/AUTH-01 |
 | TOOL-14 | Tool Cancellation | 文件提交前取消 L1 → Process 取消与进程树 L2 | L1 | S04 | REF-02 |
 | TOOL-15 | 并行安全工具 | 白名单 READ_WORKSPACE 同批并发已接入完整 AgentRuntime batch 与唯一 Pipeline，稳定按原 Call ID/顺序归并并覆盖取消收敛和真实墙钟门槛 | L2 | S12 | REF-01 |
 | TOOL-16 | Tool Search / Lazy Schema | 大工具集按需加载 | L0 | S10/S11 | REF-02/03 |
@@ -499,7 +499,7 @@ Stage 完成项。
 | OBS-01 | Agent Event | 可重放控制流 | L1 | S01 | REF-01 |
 | OBS-02 | Turn/Tool Timing | S02 事件边界采集 L2 → S14 Metrics Backend L3 | L2 | S02/S14 | REF-01/AUTH-01 |
 | OBS-03 | Token / Cost | S02 可信 Provider Usage；TUI 区分累计 Provider 实测/部分实测与 Context estimate kind → S14 Cost 治理 L3 | L2 | S02/S14/S15 | REF-01/AUTH-01/CODEX-0.147 |
-| OBS-04 | Stop / Recovery Analytics | production 从 RunTelemetry 投影真实 run/turn/tool/stop latency 与 usage-known；ADR-084 新增 privacy-safe model attempt/retry-wait lifecycle 与 stdio/TUI 进度，但尚无稳定外部协议、完整 retry/recovery/cost-known Metrics backend，保持 L1 | L1 | S07/S08/S14/S15 | REF-01/AUTH-01 |
+| OBS-04 | Stop / Recovery Analytics | production 从 RunTelemetry 投影真实 run/turn/tool/stop latency 与 usage-known；ADR-084 新增 privacy-safe model retry lifecycle，ADR-087 新增参数修正/重复失败白名单投影与 `TOOL_ERROR` 早停；尚无稳定外部协议、完整 retry/recovery/cost-known Metrics backend，保持 L1 | L1 | S07/S08/S14/S15 | REF-01/AUTH-01 |
 | OBS-05 | Privacy Controls | S02 最小化 Telemetry L2 → S14 Export Policy L3 | L2 | S02/S14 | REF-01/AUTH-01 |
 | OBS-06 | OpenTelemetry | direct SDK adapter 与真实 Headless production lifecycle wiring、真实非零 duration/usage-known、隐私白名单、故障隔离、有界 drop、flush/close 已验证；retry/recovery/cost-known 归 OBS-04/L3 gap | L2 | S14 | REF-01/AUTH-01/CODEX-0.147 |
 | EVAL-01 | Seed Tasks | 12 个注册 seed×5 共 60 次真实 production-harness 路径，覆盖 direct final、built-in Tool loop、Call/Result ID、permission/tool failure 恢复、cancel、limit、context preparation、canonical Session create/continue/resume、SDK 与 stable initialize/run/event/唯一 terminal/idempotency；真实 Provider suite 分开计数，保持 L1 | L1 | S04/S14 | REF-01 |

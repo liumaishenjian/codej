@@ -460,6 +460,14 @@ public final class ToolExecutionPipeline {
                     cancellationToken);
         }
 
+        ToolFailureFingerprintGovernance governance = failureGovernance.computeIfAbsent(
+                runId, ignored -> new ToolFailureFingerprintGovernance());
+        if (governance.repeated(call)) {
+            return resolveWithoutExecution(session, runId, ordinal,
+                    ToolResult.failure(call.id(), call.name(), ToolFailureFingerprintGovernance.repeatedFailure()),
+                    ToolResolutionReason.REPEATED_FAILURE, cancellationToken);
+        }
+
         ToolValidationResult validation;
         try {
             validation = Objects.requireNonNull(
@@ -470,31 +478,31 @@ public final class ToolExecutionPipeline {
                     "参数校验器发生异常");
         }
         if (!validation.valid()) {
-            Map<String, Object> details = new LinkedHashMap<>();
+            Map<String, Object> details = new LinkedHashMap<>(validation.details().values());
             details.put("violations", validation.violations());
+            details.put("argumentChangeRequired", true);
+            details.put("retrySameArguments", false);
+            ToolError error = new ToolError(
+                    ToolErrorCode.INVALID_ARGUMENTS,
+                    "Tool 参数校验失败；请按 details 修改参数后再调用",
+                    new JsonObject(details));
+            if (governance.recordValidationFailureOrRepeated(
+                    call, error, validation.correctionSignature())) {
+                return resolveWithoutExecution(session, runId, ordinal,
+                        ToolResult.failure(call.id(), call.name(),
+                                ToolFailureFingerprintGovernance.repeatedFailure()),
+                        ToolResolutionReason.REPEATED_FAILURE, cancellationToken);
+            }
             return resolveWithoutExecution(
                     session,
                     runId,
                     ordinal,
-                    ToolResult.failure(
-                            call.id(),
-                            call.name(),
-                            new ToolError(
-                                    ToolErrorCode.INVALID_ARGUMENTS,
-                                    "Tool 参数校验失败",
-                            new JsonObject(details))),
+                    ToolResult.failure(call.id(), call.name(), error),
                     ToolResolutionReason.INVALID_ARGUMENTS,
                     cancellationToken);
         }
 
         ToolDefinition definition = tool.definition();
-        ToolFailureFingerprintGovernance governance = failureGovernance.computeIfAbsent(
-                runId, ignored -> new ToolFailureFingerprintGovernance());
-        if (governance.repeated(call)) {
-            return resolveWithoutExecution(session, runId, ordinal,
-                    ToolResult.failure(call.id(), call.name(), ToolFailureFingerprintGovernance.repeatedFailure()),
-                    ToolResolutionReason.REPEATED_FAILURE, cancellationToken);
-        }
         if (planEligibility != null && !planEligibility.executionAllowed(definition)) {
             return resolveWithoutExecution(session, runId, ordinal,
                     ToolResult.failure(call.id(), call.name(),

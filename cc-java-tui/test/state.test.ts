@@ -677,10 +677,12 @@ describe('reduceTuiState', () => {
       type: 'event.received', event: event('tool.failed', 3, {
         ordinal: 1, toolName: 'web_search', status: 'failed', errorCode: 'web_search_forbidden',
         failureCategory: 'http_forbidden', retryable: false,
+        argumentChangeRequired: true, strategyChangeRequired: true,
       }, 'req-failure', 'session-1', 'run-1'),
     });
     expect(state.runs[0]?.tools[0]).toEqual(expect.objectContaining({
       errorCode: 'web_search_forbidden', failureCategory: 'http_forbidden', retryable: false,
+      argumentChangeRequired: true, strategyChangeRequired: true,
     }));
   });
 

@@ -176,6 +176,87 @@ class ToolExecutionPipelineTest {
     }
 
     @Test
+    void validationCorrectionShapeBlocksChangedBusinessArgumentsButAllowsDifferentViolationAndSuccess() {
+        AtomicInteger validations = new AtomicInteger();
+        AtomicInteger executions = new AtomicInteger();
+        AgentTool tool = new RecordingAgentTool(
+                "validated",
+                arguments -> {
+                    validations.incrementAndGet();
+                    if (Boolean.TRUE.equals(arguments.values().get("bad"))) {
+                        return ToolValidationResult.invalid("删除 bad",
+                                new JsonObject(Map.of("removeFields", List.of("bad"))),
+                                new JsonObject(Map.of("violation", "remove_bad")));
+                    }
+                    if (Boolean.TRUE.equals(arguments.values().get("otherBad"))) {
+                        return ToolValidationResult.invalid("删除 otherBad",
+                                new JsonObject(Map.of("removeFields", List.of("otherBad"))),
+                                new JsonObject(Map.of("violation", "remove_other_bad")));
+                    }
+                    return ToolValidationResult.validResult();
+                },
+                ignored -> {
+                    executions.incrementAndGet();
+                    return ToolExecutionOutcome.success("ok");
+                });
+        PipelineFixture fixture = fixture(tool);
+        RunId runId = new RunId("run-validation-fingerprint");
+
+        ToolResult first = fixture.execute(runId, 1, "invalid-1", "validated",
+                new JsonObject(Map.of("bad", true, "query", "first")));
+        ToolResult repeated = fixture.execute(runId, 2, "invalid-2", "validated",
+                new JsonObject(Map.of("bad", true, "query", "changed")));
+        ToolResult different = fixture.execute(runId, 3, "invalid-b", "validated",
+                new JsonObject(Map.of("otherBad", true, "query", "changed-again")));
+        ToolResult corrected = fixture.execute(runId, 4, "corrected", "validated",
+                new JsonObject(Map.of("query", "safe")));
+
+        assertThat(first.error()).get().satisfies(error -> {
+            assertThat(error.code()).isEqualTo(ToolErrorCode.INVALID_ARGUMENTS);
+            assertThat(error.details().values())
+                    .containsEntry("argumentChangeRequired", true)
+                    .containsEntry("retrySameArguments", false)
+                    .containsEntry("removeFields", List.of("bad"))
+                    .doesNotContainKeys("violation", "query", "path", "secret");
+        });
+        assertThat(repeated.error()).get().satisfies(error -> {
+            assertThat(error.code()).isEqualTo(ToolErrorCode.REPEATED_FAILURE);
+            assertThat(error.details().values()).containsEntry("requiredStrategyChange", true);
+        });
+        assertThat(different.error()).get().satisfies(error -> {
+            assertThat(error.code()).isEqualTo(ToolErrorCode.INVALID_ARGUMENTS);
+            assertThat(error.details().values()).containsEntry("removeFields", List.of("otherBad"));
+        });
+        assertThat(corrected.status()).isEqualTo(ToolResultStatus.SUCCESS);
+        assertThat(validations).hasValue(4);
+        assertThat(executions).hasValue(1);
+    }
+
+    @Test
+    void genericValidationFailureRecordsExactArgumentsAndBlocksIdenticalRetry() {
+        AtomicInteger validations = new AtomicInteger();
+        AgentTool tool = new RecordingAgentTool(
+                "generic_invalid",
+                ignored -> {
+                    validations.incrementAndGet();
+                    return ToolValidationResult.invalid("change arguments");
+                },
+                ignored -> { throw new AssertionError("invalid Tool must not execute"); });
+        PipelineFixture fixture = fixture(tool);
+        RunId runId = new RunId("run-generic-validation-fingerprint");
+        JsonObject arguments = new JsonObject(Map.of("query", "same", "path", "same.txt"));
+
+        ToolResult first = fixture.execute(runId, 1, "generic-1", "generic_invalid", arguments);
+        ToolResult repeated = fixture.execute(runId, 2, "generic-2", "generic_invalid", arguments);
+
+        assertThat(first.error()).get().extracting(ToolError::code)
+                .isEqualTo(ToolErrorCode.INVALID_ARGUMENTS);
+        assertThat(repeated.error()).get().extracting(ToolError::code)
+                .isEqualTo(ToolErrorCode.REPEATED_FAILURE);
+        assertThat(validations).hasValue(1);
+    }
+
+    @Test
     void skillVisibilityGatePersistsExecuteZeroAndSkipsAdapterAndPermission() {
         AtomicBoolean executed = new AtomicBoolean();
         AtomicBoolean permissionChecked = new AtomicBoolean();

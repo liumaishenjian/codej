@@ -58,7 +58,7 @@ public final class SearchTextTool implements AgentTool {
             "search_text",
             "Search workspace text with bounded ripgrep content, files, and count modes.",
             """
-            {"type":"object","additionalProperties":false,"required":["query"],"properties":{"query":{"type":"string","minLength":1,"maxLength":1024},"path":{"type":"string","default":"."},"glob":{"type":"string"},"type":{"type":"string"},"caseSensitive":{"type":"boolean","default":true},"regex":{"type":"boolean","default":false},"multiline":{"type":"boolean","default":false},"mode":{"type":"string","enum":["content","files","count"],"default":"content"},"lineNumbers":{"type":"boolean","default":true},"context":{"type":"integer","minimum":0,"maximum":20},"beforeContext":{"type":"integer","minimum":0,"maximum":20,"default":0},"afterContext":{"type":"integer","minimum":0,"maximum":20,"default":0},"offset":{"type":"integer","minimum":0,"maximum":10000,"default":0},"limit":{"type":"integer","minimum":0,"maximum":500,"default":100},"maxResults":{"type":"integer","minimum":1,"maximum":500}}}
+            {"type":"object","additionalProperties":false,"required":["query"],"properties":{"query":{"type":"string","minLength":1,"maxLength":1024},"path":{"type":"string","default":"."},"glob":{"type":"string"},"type":{"type":"string"},"caseSensitive":{"type":"boolean","default":true},"regex":{"type":"boolean","default":false},"multiline":{"type":"boolean","default":false},"mode":{"type":"string","enum":["content","files","count"],"default":"content"},"lineNumbers":{"type":"boolean","default":true},"context":{"type":"integer","minimum":0,"maximum":20},"beforeContext":{"type":"integer","minimum":0,"maximum":20,"default":0},"afterContext":{"type":"integer","minimum":0,"maximum":20,"default":0},"offset":{"type":"integer","minimum":0,"maximum":10000,"default":0},"limit":{"type":"integer","minimum":0,"maximum":500,"default":100}}}
             """,
             ToolEffect.READ_WORKSPACE,
             ToolSource.BUILT_IN,
@@ -124,13 +124,22 @@ public final class SearchTextTool implements AgentTool {
             range(arguments, "afterContext", 0, 20, 0);
             range(arguments, "context", 0, 20, 0);
             range(arguments, "offset", 0, 10_000, 0);
+            if (arguments.values().containsKey("limit")
+                    && arguments.values().containsKey("maxResults")) {
+                return ToolValidationResult.invalid(
+                        "limit 与旧参数 maxResults 不能同时提供；请删除 maxResults，仅使用 limit",
+                        new JsonObject(Map.of(
+                                "conflictingFields", List.of("limit", "maxResults"),
+                                "preferredField", "limit",
+                                "removeFields", List.of("maxResults"))),
+                        new JsonObject(Map.of(
+                                "violation", "mutually_exclusive_fields",
+                                "fields", List.of("limit", "maxResults"),
+                                "correction", "remove_legacy_max_results")));
+            }
             range(arguments, "limit", 0, LocalToolLimits.MAX_SEARCH_RESULTS, 100);
             if (arguments.values().containsKey("maxResults")) {
                 range(arguments, "maxResults", 1, LocalToolLimits.MAX_SEARCH_RESULTS, 100);
-            }
-            if (arguments.values().containsKey("limit")
-                    && arguments.values().containsKey("maxResults")) {
-                throw new IllegalArgumentException("limit 与 maxResults 不能同时提供");
             }
             if (mode != TextSearchMode.CONTENT
                     && (arguments.values().containsKey("context")

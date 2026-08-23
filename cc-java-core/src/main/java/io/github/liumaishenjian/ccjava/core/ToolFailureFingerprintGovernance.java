@@ -21,15 +21,16 @@ import java.util.Set;
 /**
  * 在单个 Run 内阻止同一失败调用被模型原样重复。
  *
- * <p>失败记录只由 Tool 名、类型保真且键排序的参数摘要和失败类别组成；不读取错误文案、
- * stdout/stderr、网页正文或 Secret。由于执行前无法预知重试将产生的类别，Pre Gate 以
- * Tool 名和参数匹配任一既有类型化失败记录；类别用于限制后续成功调用可证明恢复的范围。
- * 实例不得跨 Run 复用或持久化。</p>
+ * <p>所有类型化失败都记录 Tool 名、类型保真且键排序的参数 SHA-256 和失败类别；不保存原始参数，
+ * 也不读取错误文案、stdout/stderr 或网页正文。参数校验失败还可增加独立 correction-shape 层：
+ * 只哈希 Tool 显式声明安全的 violation/correction 摘要，不读取或保存原始 query、path、Secret。
+ * 两层记录都只存在于当前 Run，不得跨 Run 复用或持久化。</p>
  *
  * @since 0.15.0
  */
 public final class ToolFailureFingerprintGovernance {
     private final Set<FailureFingerprint> failed = new HashSet<>();
+    private final Set<ValidationCorrectionFingerprint> validationCorrections = new HashSet<>();
 
     /** 返回该 Tool 与规范参数是否已有任一类型化失败记录；执行前不猜测下一次失败类别。 */
     public synchronized boolean repeated(ToolCall call) {
@@ -39,11 +40,45 @@ public final class ToolFailureFingerprintGovernance {
                 value.tool().equals(call.name()) && value.arguments().equals(arguments));
     }
 
-    /** 记录由 Tool、规范参数与类型化失败类别共同组成的 fingerprint。 */
+    /** 记录由 Tool、规范参数与类型化失败类别共同组成的执行失败 fingerprint。 */
     public synchronized void record(ToolCall call, ToolError error) {
         Objects.requireNonNull(call, "call 不能为空");
         Objects.requireNonNull(error, "error 不能为空");
         failed.add(new FailureFingerprint(call.name(), argumentsDigest(call), error.category()));
+    }
+
+    /**
+     * 原子记录 validation exact-arguments failure 与可选 correction signature。
+     *
+     * <p>每个无效调用都记录 Tool + canonical arguments SHA-256 + typed category，使未声明
+     * signature 的 generic invalid 也能阻止原样重试。非空 signature 额外按 Tool + 安全纠错
+     * 摘要 SHA-256 治理；本对象不保存或投影 arguments、signature 正文、query、path 或 Secret。
+     * 同步的双层 check-and-add 保证同批并发中只有一个调用获得首次 actionable 反馈。</p>
+     *
+     * @param call 当前无效调用
+     * @param error 首次可反馈的类型化 validation 错误
+     * @param correctionSignature Tool 自生成并声明安全的纠错形状；空对象表示只使用 exact 层
+     * @return {@code true} 表示 exact 或 shape 任一层已记录，应返回 {@code REPEATED_FAILURE}
+     */
+    public synchronized boolean recordValidationFailureOrRepeated(
+            ToolCall call,
+            ToolError error,
+            JsonObject correctionSignature) {
+        Objects.requireNonNull(call, "call 不能为空");
+        Objects.requireNonNull(error, "error 不能为空");
+        Objects.requireNonNull(correctionSignature, "correctionSignature 不能为空");
+        String arguments = argumentsDigest(call);
+        boolean exactRepeated = failed.stream().anyMatch(value ->
+                value.tool().equals(call.name()) && value.arguments().equals(arguments));
+        failed.add(new FailureFingerprint(call.name(), arguments, error.category()));
+
+        boolean shapeRepeated = false;
+        if (!correctionSignature.values().isEmpty()) {
+            ValidationCorrectionFingerprint fingerprint = new ValidationCorrectionFingerprint(
+                    call.name(), digest(canonical(correctionSignature.values())));
+            shapeRepeated = !validationCorrections.add(fingerprint);
+        }
+        return exactRepeated || shapeRepeated;
     }
 
     /**
@@ -72,9 +107,10 @@ public final class ToolFailureFingerprintGovernance {
     /** 构造不泄漏参数的策略反馈。 */
     public static ToolError repeatedFailure() {
         return ToolError.classified(ToolErrorCode.REPEATED_FAILURE, ToolFailureCategory.INTERNAL, false,
-                "相同 Tool 调用已以同类失败结束；请改变 query/provider/source/arguments，或向用户解释阻塞原因",
+                "相同 Tool 与参数已失败；禁止原样重试，请修改 arguments 或向用户解释阻塞原因",
                 new JsonObject(Map.of("requiredStrategyChange", true,
-                        "allowedChanges", List.of("query", "provider", "source", "arguments", "explanation"))));
+                        "retrySameArguments", false,
+                        "allowedChanges", List.of("arguments", "explanation"))));
     }
 
     private static String argumentsDigest(ToolCall call) {
@@ -95,6 +131,9 @@ public final class ToolFailureFingerprintGovernance {
             String tool,
             String arguments,
             ToolFailureCategory category) {
+    }
+
+    private record ValidationCorrectionFingerprint(String tool, String correctionDigest) {
     }
 
     private static String canonical(Object value) {

@@ -234,6 +234,119 @@ class AgentRuntimeTest {
     }
 
     @Test
+    void validationFeedbackAllowsModelToCorrectArgumentsOnNextTurn() {
+        AtomicInteger executions = new AtomicInteger();
+        AgentTool tool = new RecordingAgentTool(
+                "search_text",
+                arguments -> arguments.values().containsKey("maxResults")
+                        ? ToolValidationResult.invalid(
+                                "删除 maxResults，仅使用 limit",
+                                new JsonObject(Map.of(
+                                        "preferredField", "limit",
+                                        "removeFields", List.of("maxResults"))),
+                                new JsonObject(Map.of(
+                                        "violation", "limit_max_results_conflict")))
+                        : ToolValidationResult.validResult(),
+                ignored -> {
+                    executions.incrementAndGet();
+                    return ToolExecutionOutcome.success("corrected search");
+                });
+        ToolCall invalid = new ToolCall("search-invalid", "search_text",
+                new JsonObject(Map.of("query", "needle", "limit", 10, "maxResults", 10)));
+        ToolCall corrected = new ToolCall("search-corrected", "search_text",
+                new JsonObject(Map.of("query", "needle", "limit", 10)));
+        ScriptedModelGateway model = ScriptedModelGateway.of(
+                ModelTurn.tools(List.of(invalid)),
+                ModelTurn.tools(List.of(corrected)),
+                ModelTurn.text("done"));
+        Harness harness = newHarness(model, tool);
+
+        AgentRunResult result = harness.run("correct invalid search", AgentLimits.interactive(Duration.ofMinutes(1)));
+        List<ToolResult> results = toolResults(harness.session());
+
+        assertThat(result.status()).isEqualTo(RunStatus.COMPLETED);
+        assertThat(results).hasSize(2);
+        assertThat(results.getFirst().error()).get().satisfies(error -> {
+            assertThat(error.code()).isEqualTo(ToolErrorCode.INVALID_ARGUMENTS);
+            assertThat(error.details().values())
+                    .containsEntry("argumentChangeRequired", true)
+                    .containsEntry("preferredField", "limit")
+                    .containsEntry("removeFields", List.of("maxResults"));
+        });
+        assertThat(results.getLast().status()).isEqualTo(ToolResultStatus.SUCCESS);
+        assertThat(executions).hasValue(1);
+    }
+
+    @Test
+    void changedQueriesWithSameValidationCorrectionShapeOpenCircuitWithCompleteResults() {
+        AgentTool tool = new RecordingAgentTool(
+                "search_text",
+                ignored -> ToolValidationResult.invalid(
+                        "remove maxResults",
+                        new JsonObject(Map.of("removeFields", List.of("maxResults"))),
+                        new JsonObject(Map.of("violation", "limit_max_results_conflict"))),
+                ignored -> { throw new AssertionError("invalid Tool must not execute"); });
+        ScriptedModelGateway model = ScriptedModelGateway.of(
+                ModelTurn.tools(List.of(new ToolCall("invalid-1", "search_text",
+                        new JsonObject(Map.of("query", "first", "limit", 1, "maxResults", 1))))),
+                ModelTurn.tools(List.of(
+                        new ToolCall("repeated-1a", "search_text",
+                                new JsonObject(Map.of("query", "second-a", "limit", 1, "maxResults", 1))),
+                        new ToolCall("repeated-1b", "search_text",
+                                new JsonObject(Map.of("query", "second-b", "limit", 1, "maxResults", 1))))),
+                ModelTurn.tools(List.of(
+                        new ToolCall("repeated-2a", "search_text",
+                                new JsonObject(Map.of("query", "third-a", "limit", 1, "maxResults", 1))),
+                        new ToolCall("repeated-2b", "search_text",
+                                new JsonObject(Map.of("query", "third-b", "limit", 1, "maxResults", 1))))),
+                ModelTurn.text("must not be reached"));
+        Harness harness = newHarness(model, tool);
+
+        AgentRunResult result = harness.run("repeat invalid search", AgentLimits.interactive(Duration.ofMinutes(1)));
+        List<ToolResult> results = toolResults(harness.session());
+
+        assertThat(result.stopReason()).isEqualTo(StopReason.TOOL_ERROR);
+        assertThat(result.modelTurns()).isEqualTo(3);
+        assertThat(result.toolCalls()).isEqualTo(5);
+        assertThat(results).extracting(value -> value.error().map(ToolError::code).orElse(null))
+                .containsExactly(ToolErrorCode.INVALID_ARGUMENTS,
+                        ToolErrorCode.REPEATED_FAILURE, ToolErrorCode.REPEATED_FAILURE,
+                        ToolErrorCode.REPEATED_FAILURE, ToolErrorCode.REPEATED_FAILURE);
+        assertThat(results).extracting(ToolResult::callId)
+                .containsExactly("invalid-1", "repeated-1a", "repeated-1b",
+                        "repeated-2a", "repeated-2b");
+        assertThat(model.requests()).hasSize(3);
+    }
+
+    @Test
+    void genericInvalidWithoutSignatureStillOpensExactArgumentsCircuit() {
+        AgentTool tool = new RecordingAgentTool(
+                "generic_invalid",
+                ignored -> ToolValidationResult.invalid("change arguments"),
+                ignored -> { throw new AssertionError("invalid Tool must not execute"); });
+        JsonObject arguments = new JsonObject(Map.of("query", "same", "path", "same.txt"));
+        ScriptedModelGateway model = ScriptedModelGateway.of(
+                ModelTurn.tools(List.of(new ToolCall("generic-invalid", "generic_invalid", arguments))),
+                ModelTurn.tools(List.of(new ToolCall("generic-repeated-1", "generic_invalid", arguments))),
+                ModelTurn.tools(List.of(new ToolCall("generic-repeated-2", "generic_invalid", arguments))),
+                ModelTurn.text("must not be reached"));
+        Harness harness = newHarness(model, tool);
+
+        AgentRunResult result = harness.run(
+                "repeat generic invalid", AgentLimits.interactive(Duration.ofMinutes(1)));
+        List<ToolResult> results = toolResults(harness.session());
+
+        assertThat(result.stopReason()).isEqualTo(StopReason.TOOL_ERROR);
+        assertThat(result.modelTurns()).isEqualTo(3);
+        assertThat(result.toolCalls()).isEqualTo(3);
+        assertThat(results).extracting(value -> value.error().map(ToolError::code).orElse(null))
+                .containsExactly(ToolErrorCode.INVALID_ARGUMENTS,
+                        ToolErrorCode.REPEATED_FAILURE, ToolErrorCode.REPEATED_FAILURE);
+        assertThat(results).extracting(ToolResult::callId)
+                .containsExactly("generic-invalid", "generic-repeated-1", "generic-repeated-2");
+    }
+
+    @Test
     void completesDirectlyWhenModelReturnsFinalText() {
         ScriptedModelGateway model = ScriptedModelGateway.of(ModelTurn.text("任务完成"));
         Harness harness = newHarness(model);

@@ -853,6 +853,9 @@ public final class AgentRuntime {
                 if (batchExecution.stopAfterBatch()) {
                     return state.stop(StopReason.AUTO_REVIEW_CIRCUIT_OPEN);
                 }
+                if (state.repeatedFailureCircuitOpen()) {
+                    return state.stop(StopReason.TOOL_ERROR);
+                }
             } finally {
                 memoryPrefetch.close();
             }

@@ -8,6 +8,7 @@ import io.github.liumaishenjian.ccjava.domain.ModelFailureSummary;
 import io.github.liumaishenjian.ccjava.domain.RunId;
 import io.github.liumaishenjian.ccjava.domain.SessionId;
 import io.github.liumaishenjian.ccjava.domain.StopReason;
+import io.github.liumaishenjian.ccjava.domain.ToolErrorCode;
 import io.github.liumaishenjian.ccjava.domain.ToolResult;
 import io.github.liumaishenjian.ccjava.domain.ToolResultStatus;
 import java.util.List;
@@ -34,6 +35,7 @@ final class AgentRunState {
     private int effectiveToolLimit;
     private boolean modelProgressSinceGovernance;
     private boolean toolProgressSinceGovernance;
+    private int consecutiveRepeatedFailureBatches;
     private boolean finished;
 
     AgentRunState(SessionId sessionId, RunId runId, AgentLimits limits) {
@@ -102,6 +104,20 @@ final class AgentRunState {
             modelProgressSinceGovernance = true;
             toolProgressSinceGovernance = true;
         }
+        boolean repeatedOnly = !results.isEmpty() && results.stream().allMatch(result ->
+                result.error().map(error -> error.code() == ToolErrorCode.REPEATED_FAILURE).orElse(false));
+        consecutiveRepeatedFailureBatches = repeatedOnly
+                ? consecutiveRepeatedFailureBatches + 1 : 0;
+    }
+
+    /**
+     * 返回是否已连续两批只收到 repeated-failure 结果。
+     *
+     * <p>Runtime 只在整批结果均已与原 Call ID 配对并追加历史后检查该信号，
+     * 因而不会破坏多 Tool Call 协议。任一不同结果都会重置计数。</p>
+     */
+    boolean repeatedFailureCircuitOpen() {
+        return consecutiveRepeatedFailureBatches >= 2;
     }
 
     int modelTurns() { return modelTurns; }

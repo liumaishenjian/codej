@@ -6,7 +6,7 @@ on:
       version:
         description: SemVer without a leading v
         required: true
-        default: 0.1.0-rc.1
+        default: 0.1.1-rc.1
   push:
     tags:
       - 'v*.*.*'

@@ -6,7 +6,7 @@
     <parent>
         <groupId>io.github.liumaishenjian</groupId>
         <artifactId>cc-java</artifactId>
-        <version>0.1.0</version>
+        <version>0.1.1</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
     <artifactId>cc-java-tools-web</artifactId>

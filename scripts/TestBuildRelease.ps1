@@ -40,12 +40,12 @@ function Assert-Coordinate([string]$Group, [string]$Name, [string]$Version) {
 Assert-Coordinate 'info.picocli' 'picocli' '4.7.7'
 Assert-Coordinate 'org.springframework.ai' 'spring-ai-anthropic' '2.0.0'
 Assert-Coordinate 'com.anthropic' 'anthropic-java-core' '2.40.1'
-Assert-Coordinate 'io.github.liumaishenjian' 'cc-java-core' '0.1.0'
+Assert-Coordinate 'io.github.liumaishenjian' 'cc-java-core' '0.1.1'
 $nodeComponents = @($components | Where-Object { $_.purl -like 'pkg:npm/*' })
 if ($nodeComponents.Count -lt 3) { throw 'TUI npm components missing from SBOM' }
 if ($sbom.metadata.component.group -ne 'io.github.liumaishenjian' `
         -or $sbom.metadata.component.name -ne 'cc-java-cli' `
-        -or $sbom.metadata.component.version -ne '0.1.0') {
+        -or $sbom.metadata.component.version -ne '0.1.1') {
     throw 'Application Maven coordinate is incorrect'
 }
 

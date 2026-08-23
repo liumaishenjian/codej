@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$OutputDirectory = "target/release",
-    [string]$Version = "0.1.0",
+    [string]$Version = "0.1.1",
     [ValidateSet('windows-x64', 'linux-x64')]
     [string]$Platform = $(if ($IsWindows) { 'windows-x64' } else { 'linux-x64' }),
     [string]$JavaRuntimeDirectory,
@@ -70,8 +70,9 @@ $commit = (& git -C $root rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $commit -notmatch '^[0-9a-f]{40}$') { throw 'Current Git commit unavailable' }
 $tuiRoot = Join-Path $root 'cc-java-tui'
 $tuiDirectory = Join-Path $tuiRoot 'dist/src'
-$cli = Join-Path $root 'cc-java-cli/target/cc-java-cli-0.1.0.jar'
+$cli = Join-Path $root 'cc-java-cli/target/cc-java-cli-0.1.1.jar'
 $attestationPath = Join-Path $root 'target/codej-build-attestation.json'
+New-Item -ItemType Directory -Path (Split-Path -Parent $attestationPath) -Force | Out-Null
 
 $sourceDigest = Get-SourceDigest
 $priorAttestation = $null

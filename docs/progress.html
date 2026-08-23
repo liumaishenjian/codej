@@ -223,12 +223,12 @@
     }
   </style>
 </head>
-<body data-matrix-digest="faab518e4a06" data-state-digest="9926f49ffe5a" data-code-digest="1c2310320472">
+<body data-matrix-digest="faab518e4a06" data-state-digest="bb91b8948f22" data-code-digest="ca83cd6769c7">
   <main class="shell">
     <section class="hero">
       <p class="eyebrow">Reference-driven Java Agent Runtime</p>
       <h1>cc-java 项目进度看板</h1>
-      <p class="hero-copy">TOOL-18 L2、MODEL-13/PERM-05/PLAN-01 L1 继续有效；ADR-087 validation governance 已采用 exact arguments digest + 安全 correction signature 两层原子记录：generic 原样 invalid 和 changed-query 同形状均有界早停，另一 invalid shape 与真实修正不误拦。能力等级无变化，S15 仍 OPEN。</p>
+      <p class="hero-copy">TOOL-18 L2、MODEL-13/PERM-05/PLAN-01 L1 继续有效；当前代码已完成 0.1.1 发行版本对账与 README 产品化整理，不改变 Capability Level，S15 仍 OPEN。</p>
       <div class="hero-meta">
         <span class="chip"><span class="dot"></span>当前 S15 · Independent Innovation</span>
         <span class="chip">Stage Exit · OPEN</span>
@@ -273,7 +273,7 @@
           <p class="panel-desc">Capability 可以先达到阶段等级，但 Stage 只有 G0-G6 全部通过才退出。</p>
         </div>
       </div>
-      <ol class="gate-grid"><li class="gate passed"><div class="gate-id"><span>G0</span><span class="badge passed">已通过</span></div><p>TOOL-18 与 MODEL-13 已完成来源边界、授权参考及独立重实现约束核验；对应采纳、偏离与 Unknown 已记录，S15 Exit 保持 OPEN。</p></li><li class="gate passed"><div class="gate-id"><span>G1</span><span class="badge passed">已通过</span></div><p>TOOL-18 L2 与 MODEL-13 L1 的范围、行为契约、真实证据门槛及可证伪验收已冻结；MODEL-13 不因本地完整实现提升至在线双 Provider L2。</p></li><li class="gate passed"><div class="gate-id"><span>G2</span><span class="badge passed">已通过</span></div><p>TOOL-18 hosted MCP 网络边界及 MODEL-13 本地 Provider/Auth、BYOK、错误与隐私边界已完成设计对账；唯一 Pipeline 与安全不变量保持不变。</p></li><li class="gate passed"><div class="gate-id"><span>G3</span><span class="badge passed">已通过</span></div><p>工作树已完成 TOOL-18 生产实现，以及 MODEL-13 本地 Provider/Auth 完整实现和生产接入；MODEL-13 仍按在线证据事实保持 L1。</p></li><li class="gate passed"><div class="gate-id"><span>G4</span><span class="badge passed">已通过</span></div><p>既有 Batch 7/8 与 ADR-084 覆盖继续有效；ADR-087 新增 exact+shape 双层 validation governance、generic exact-invalid 3-turn 熔断、安全 correction signature、changed-query 熔断、invalid B 首次反馈、并行原子去重、Call ID 配对、stdio 隐私白名单与 TUI 说明测试。能力等级不变。</p></li><li class="gate passed"><div class="gate-id"><span>G5</span><span class="badge passed">已通过</span></div><p>ADR-087 最终 Review 修正聚焦 Java 119/119、当前工作树 Maven test、隔离跟踪文件副本 clean verify、TUI build + 269/269 与真实 Java→stdio→Ink E2E 3/3 已通过；Dashboard generate/check/self-test 随最新 code/matrix digest 复验。此前 ADR-086 Plan 证据继续有效；真实 Provider、跨平台安装与稳定协议 v1 仍是差距。</p></li><li class="gate open"><div class="gate-id"><span>G6</span><span class="badge open">待关闭</span></div><p>PERM-05/PLAN-01 保持 L1。ADR-087 已关闭公开 Schema/validator 冲突、generic exact invalid 未记录、changed-query 同 shape 重复失败刷回合和 TUI 无说明聚合的本地确定性缺口；真实 Provider Eval、双 Provider 在线证据、跨平台安装和 L4 A/B Eval 未完成，S15 保持 OPEN。</p></li></ol>
+      <ol class="gate-grid"><li class="gate passed"><div class="gate-id"><span>G0</span><span class="badge passed">已通过</span></div><p>TOOL-18 与 MODEL-13 已完成来源边界、授权参考及独立重实现约束核验；对应采纳、偏离与 Unknown 已记录，S15 Exit 保持 OPEN。</p></li><li class="gate passed"><div class="gate-id"><span>G1</span><span class="badge passed">已通过</span></div><p>TOOL-18 L2 与 MODEL-13 L1 的范围、行为契约、真实证据门槛及可证伪验收已冻结；MODEL-13 不因本地完整实现提升至在线双 Provider L2。</p></li><li class="gate passed"><div class="gate-id"><span>G2</span><span class="badge passed">已通过</span></div><p>TOOL-18 hosted MCP 网络边界及 MODEL-13 本地 Provider/Auth、BYOK、错误与隐私边界已完成设计对账；唯一 Pipeline 与安全不变量保持不变。</p></li><li class="gate passed"><div class="gate-id"><span>G3</span><span class="badge passed">已通过</span></div><p>工作树已完成 TOOL-18 生产实现，以及 MODEL-13 本地 Provider/Auth 完整实现和生产接入；MODEL-13 仍按在线证据事实保持 L1。</p></li><li class="gate passed"><div class="gate-id"><span>G4</span><span class="badge passed">已通过</span></div><p>既有 Batch 7/8 与 ADR-084 覆盖继续有效；ADR-087 新增 exact+shape 双层 validation governance、generic exact-invalid 3-turn 熔断、安全 correction signature、changed-query 熔断、invalid B 首次反馈、并行原子去重、Call ID 配对、stdio 隐私白名单与 TUI 说明测试。能力等级不变。</p></li><li class="gate passed"><div class="gate-id"><span>G5</span><span class="badge passed">已通过</span></div><p>ADR-087 与 ADR-086 既有证据继续有效；0.1.1 发行准备已通过 Maven clean verify、TUI 269/269、发行目录/SBOM/checksum/身份漂移/public-license gate 自测和 Dashboard 复验。GitHub-hosted 双平台正式 tag 产物、真实 Provider 与稳定协议 v1 仍是差距。</p></li><li class="gate open"><div class="gate-id"><span>G6</span><span class="badge open">待关闭</span></div><p>PERM-05/PLAN-01 保持 L1。ADR-087 已关闭公开 Schema/validator 冲突、generic exact invalid 未记录、changed-query 同 shape 重复失败刷回合和 TUI 无说明聚合的本地确定性缺口；真实 Provider Eval、双 Provider 在线证据、跨平台安装和 L4 A/B Eval 未完成，S15 保持 OPEN。</p></li></ol>
     </section>
 
     <section class="panel" id="roadmap">
@@ -330,13 +330,13 @@
         </div>
       </div>
       <dl class="evidence-grid">
-        <div class="evidence-item"><dt>Last change</dt><dd>ADR-087 最终 Review 修正：首次 INVALID_ARGUMENTS 原子记录 Tool+canonical arguments digest+category 的 exact 层，并在 Tool 声明安全时同时记录 correction signature shape 层；generic invalid 原样重试恢复熔断，changed-query 同形状、invalid B、真实修正和并行多 Call 语义保持。只保存 SHA-256，不保存或投影 query/path/Secret。Capability Level 无变化，S15 保持 OPEN。</dd></div>
+        <div class="evidence-item"><dt>Last change</dt><dd>为发布当前代码准备 0.1.1：同步 Maven reactor、TUI package、CLI 版本、发行脚本与 workflow 默认版本；README 改为正式 Coding Agent CLI 入口；BuildRelease 在干净工作区显式创建 attestation 父目录，避免依赖前序步骤偶然创建 target。未改变 Capability Level，S15 保持 OPEN。</dd></div>
         <div class="evidence-item"><dt>Evidence stage</dt><dd><code>S15</code></dd></div>
         <div class="evidence-item"><dt>Evidence class</dt><dd><code>WORKTREE_VERIFIED</code></dd></div>
         <div class="evidence-item"><dt>Code commit</dt><dd><code>3197ee22b6b8599ead2168cbe82a68901dc70e9a</code></dd></div>
-        <div class="evidence-item"><dt>Standard command</dt><dd><code>.\mvnw.cmd test；隔离 Git 跟踪文件副本 .\mvnw.cmd clean verify；npm --prefix cc-java-tui test/build/test:real-java；java scripts/ProgressDashboard.java generate/check/self-test；git diff --check</code></dd></div>
-        <div class="evidence-item"><dt>Result</dt><dd>ADR-087 最终 Review corrective 已由聚焦 Java 119/119、当前工作树 Maven test、隔离跟踪文件副本 clean verify、TUI build + 269/269 及真实 Java→stdio→Ink E2E 3/3 验证：generic invalid 无 signature 的相同 arguments 在首次 actionable INVALID_ARGUMENTS 后收到 REPEATED_FAILURE 并于 3 回合早停；changed-query 同 correction shape 的多 Call Result 完整配对；invalid B、真实修正与并行同 shape 原子唯一首次记录继续通过。两层仅保存 SHA-256，不投影 query/path/Secret；Dashboard generate/check/self-test 随本状态复验。真实 Provider 在线质量与跨平台安装证据仍缺，Capability Level 无变化，S15 保持 OPEN。</dd></div>
-        <div class="evidence-item"><dt>Source digests</dt><dd><code>matrix faab518e4a06</code><br><code>state 9926f49ffe5a</code><br><code>code/build 1c2310320472</code></dd></div>
+        <div class="evidence-item"><dt>Standard command</dt><dd><code>.\mvnw.cmd clean verify；npm --prefix cc-java-tui ci &amp;&amp; npm --prefix cc-java-tui run check；pwsh -NoProfile -File .\scripts\TestBuildRelease.ps1；java scripts/ProgressDashboard.java generate/check/self-test；git diff --check</code></dd></div>
+        <div class="evidence-item"><dt>Result</dt><dd>ADR-087 既有 corrective 证据继续有效；0.1.1 发行准备工作树已通过 Maven clean verify、TUI build + 269/269、BuildRelease/SBOM/checksum/身份漂移/public-license gate 自测与 Dashboard generate/check/self-test。干净工作区 attestation 父目录缺失已被测试证伪并修正。真实 Provider 在线质量与 GitHub-hosted 双平台正式 tag 产物仍待发布后对账，Capability Level 无变化，S15 保持 OPEN。</dd></div>
+        <div class="evidence-item"><dt>Source digests</dt><dd><code>matrix faab518e4a06</code><br><code>state bb91b8948f22</code><br><code>code/build ca83cd6769c7</code></dd></div>
       </dl>
     </section>
 

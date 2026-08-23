@@ -13,13 +13,13 @@
 Windows PowerShell：
 
 ```powershell
-irm https://github.com/liumaishenjian/codej/releases/latest/download/install.ps1 | iex
+irm https://codej.sixmai.top/install.ps1 | iex
 ```
 
 Linux：
 
 ```bash
-curl -fsSL https://github.com/liumaishenjian/codej/releases/latest/download/install.sh | sh
+curl -fsSL https://codej.sixmai.top/install.sh | sh
 ```
 
 安装完成后，在任意代码仓库中启动：

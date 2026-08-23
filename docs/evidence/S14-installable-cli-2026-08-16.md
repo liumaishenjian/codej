@@ -50,9 +50,20 @@ upload-artifact v7 / download-artifact v8，仍需随 tag 进行最终发布对�
 - 品牌只存在于交互式空会话投影，不进入 `--print`、stdio 协议、Session 或模型 Prompt；
 - `npm --prefix cc-java-tui run check`：11 files / 194 tests PASS。
 
-## 未计为通过
+## 公开发布对账（2026-08-23）
 
-- GitHub Actions Windows/Linux 自包含运行时矩阵已成功，但正式 tag 发布尚未完成；
-- 维护者已选择 Apache-2.0；显式 public release gate 本地验证通过，corrective tag CI 结果待对账；
-- tag 已创建，但没有 GitHub Release、网站下载端点或 N-1 artifact；
-- 没有 macOS、签名、撤销、透明日志或自动后台更新。
+- 首次 `v0.1.1` tag run `32633807689` 因 workflow 在没有 build attestation 时传入
+  `SkipBuild/SkipTuiBuild`，于 Linux `Package installable archive` 失败且没有创建 Release；
+- 维护者明确授权重建尚无公开资产的 `v0.1.1` tag；corrective commit
+  `aff16a0a33fceee02a3885a79a91c011ce8ebb6a` 移除无证明的 skip，并加入 workflow 回归断言；
+- 重建后的 tag run `32634663859` 生成 Windows x64 185 MB 与 Linux x64 195 MB workflow
+  artifacts，随后公开 ZIP、tar.gz、两个 checksum sidecar 和两个安装脚本；
+- 从公开 Release 执行 Windows 隔离安装后，`codej --version` 报告 `0.1.1` 与 commit
+  `aff16a0`，bundled Node 22、Java 21、files doctor 均为 PASS；隔离卸载后安装根与 shim 均不存在；
+- `https://codej.sixmai.top/install.ps1` 与 `install.sh` 已返回真实脚本，公网长度与 SHA-256
+  分别为 `6668 / 37a82a57...4888`、`3222 / b6c7e5c1...7938`，与仓库文件一致。
+
+## 仍未计为通过
+
+- 没有 Linux 公网安装生命周期、macOS、签名、撤销、透明日志或自动后台更新；
+- 没有已发布 N-1 artifact 的真实升级/回滚证据。

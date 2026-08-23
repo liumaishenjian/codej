@@ -223,12 +223,12 @@
     }
   </style>
 </head>
-<body data-matrix-digest="faab518e4a06" data-state-digest="7d41f5aec56d" data-code-digest="ec910c6f50ba">
+<body data-matrix-digest="faab518e4a06" data-state-digest="0abf1cde2d84" data-code-digest="ec910c6f50ba">
   <main class="shell">
     <section class="hero">
       <p class="eyebrow">Reference-driven Java Agent Runtime</p>
       <h1>cc-java 项目进度看板</h1>
-      <p class="hero-copy">TOOL-18 L2、MODEL-13/PERM-05/PLAN-01 L1 继续有效；0.1.1 首次 tag 揭示 CI 跳过构建却要求既有 attestation 的失败，corrective 改为在每个平台完成受控构建后打包，不改变 Capability Level，S15 仍 OPEN。</p>
+      <p class="hero-copy">TOOL-18 L2、MODEL-13/PERM-05/PLAN-01 L1 继续有效；重建的 v0.1.1 已完成 Windows/Linux 自包含资产与公开 Release，Windows 隔离安装、version、doctor、卸载及官网脚本 SHA-256 均通过，不改变 Capability Level，S15 仍 OPEN。</p>
       <div class="hero-meta">
         <span class="chip"><span class="dot"></span>当前 S15 · Independent Innovation</span>
         <span class="chip">Stage Exit · OPEN</span>
@@ -273,7 +273,7 @@
           <p class="panel-desc">Capability 可以先达到阶段等级，但 Stage 只有 G0-G6 全部通过才退出。</p>
         </div>
       </div>
-      <ol class="gate-grid"><li class="gate passed"><div class="gate-id"><span>G0</span><span class="badge passed">已通过</span></div><p>TOOL-18 与 MODEL-13 已完成来源边界、授权参考及独立重实现约束核验；对应采纳、偏离与 Unknown 已记录，S15 Exit 保持 OPEN。</p></li><li class="gate passed"><div class="gate-id"><span>G1</span><span class="badge passed">已通过</span></div><p>TOOL-18 L2 与 MODEL-13 L1 的范围、行为契约、真实证据门槛及可证伪验收已冻结；MODEL-13 不因本地完整实现提升至在线双 Provider L2。</p></li><li class="gate passed"><div class="gate-id"><span>G2</span><span class="badge passed">已通过</span></div><p>TOOL-18 hosted MCP 网络边界及 MODEL-13 本地 Provider/Auth、BYOK、错误与隐私边界已完成设计对账；唯一 Pipeline 与安全不变量保持不变。</p></li><li class="gate passed"><div class="gate-id"><span>G3</span><span class="badge passed">已通过</span></div><p>工作树已完成 TOOL-18 生产实现，以及 MODEL-13 本地 Provider/Auth 完整实现和生产接入；MODEL-13 仍按在线证据事实保持 L1。</p></li><li class="gate passed"><div class="gate-id"><span>G4</span><span class="badge passed">已通过</span></div><p>既有 Batch 7/8 与 ADR-084 覆盖继续有效；ADR-087 新增 exact+shape 双层 validation governance、generic exact-invalid 3-turn 熔断、安全 correction signature、changed-query 熔断、invalid B 首次反馈、并行原子去重、Call ID 配对、stdio 隐私白名单与 TUI 说明测试。能力等级不变。</p></li><li class="gate passed"><div class="gate-id"><span>G5</span><span class="badge passed">已通过</span></div><p>ADR-087 与 ADR-086 既有证据继续有效；0.1.1 首次 tag run 32633807689 的 Linux 打包失败，故不计正式发行通过。corrective 已通过本地完整发行自测，尚待重建 v0.1.1 的 GitHub-hosted 双平台 tag 对账；真实 Provider 与稳定协议 v1 仍是差距。</p></li><li class="gate open"><div class="gate-id"><span>G6</span><span class="badge open">待关闭</span></div><p>PERM-05/PLAN-01 保持 L1。ADR-087 已关闭公开 Schema/validator 冲突、generic exact invalid 未记录、changed-query 同 shape 重复失败刷回合和 TUI 无说明聚合的本地确定性缺口；真实 Provider Eval、双 Provider 在线证据、跨平台安装和 L4 A/B Eval 未完成，S15 保持 OPEN。</p></li></ol>
+      <ol class="gate-grid"><li class="gate passed"><div class="gate-id"><span>G0</span><span class="badge passed">已通过</span></div><p>TOOL-18 与 MODEL-13 已完成来源边界、授权参考及独立重实现约束核验；对应采纳、偏离与 Unknown 已记录，S15 Exit 保持 OPEN。</p></li><li class="gate passed"><div class="gate-id"><span>G1</span><span class="badge passed">已通过</span></div><p>TOOL-18 L2 与 MODEL-13 L1 的范围、行为契约、真实证据门槛及可证伪验收已冻结；MODEL-13 不因本地完整实现提升至在线双 Provider L2。</p></li><li class="gate passed"><div class="gate-id"><span>G2</span><span class="badge passed">已通过</span></div><p>TOOL-18 hosted MCP 网络边界及 MODEL-13 本地 Provider/Auth、BYOK、错误与隐私边界已完成设计对账；唯一 Pipeline 与安全不变量保持不变。</p></li><li class="gate passed"><div class="gate-id"><span>G3</span><span class="badge passed">已通过</span></div><p>工作树已完成 TOOL-18 生产实现，以及 MODEL-13 本地 Provider/Auth 完整实现和生产接入；MODEL-13 仍按在线证据事实保持 L1。</p></li><li class="gate passed"><div class="gate-id"><span>G4</span><span class="badge passed">已通过</span></div><p>既有 Batch 7/8 与 ADR-084 覆盖继续有效；ADR-087 新增 exact+shape 双层 validation governance、generic exact-invalid 3-turn 熔断、安全 correction signature、changed-query 熔断、invalid B 首次反馈、并行原子去重、Call ID 配对、stdio 隐私白名单与 TUI 说明测试。能力等级不变。</p></li><li class="gate passed"><div class="gate-id"><span>G5</span><span class="badge passed">已通过</span></div><p>ADR-087 与 ADR-086 既有证据继续有效；重建的 v0.1.1 已完成 GitHub-hosted Windows/Linux 打包、公开 Release、Windows 公网安装/doctor/卸载及官网脚本 hash 对账。Linux/macOS 真实安装、真实 Provider 与稳定协议 v1 仍是差距。</p></li><li class="gate open"><div class="gate-id"><span>G6</span><span class="badge open">待关闭</span></div><p>PERM-05/PLAN-01 保持 L1。ADR-087 已关闭公开 Schema/validator 冲突、generic exact invalid 未记录、changed-query 同 shape 重复失败刷回合和 TUI 无说明聚合的本地确定性缺口；真实 Provider Eval、双 Provider 在线证据、跨平台安装和 L4 A/B Eval 未完成，S15 保持 OPEN。</p></li></ol>
     </section>
 
     <section class="panel" id="roadmap">
@@ -330,13 +330,13 @@
         </div>
       </div>
       <dl class="evidence-grid">
-        <div class="evidence-item"><dt>Last change</dt><dd>v0.1.1 首次 tag run 32633807689 在 Linux Package installable archive 失败；workflow 此前传入 SkipBuild/SkipTuiBuild，却未先生成 BuildRelease 所要求的 attestation。维护者授权在 corrective commit 上重建 v0.1.1；修复移除无证明的 skip，要求各平台重新构建并生成 attestation 后打包，并新增 workflow 回归断言。Capability Level 无变化，S15 保持 OPEN。</dd></div>
+        <div class="evidence-item"><dt>Last change</dt><dd>维护者授权重建 v0.1.1 后，tag run 32634663859 已产出 Windows/Linux 自包含包、checksum 与安装脚本并创建公开 Release；Windows 公网安装报告 commit aff16a0，bundled Node/Java doctor 通过且隔离卸载成功；官网两个安装端点与发布脚本 SHA-256 完全一致。Capability Level 无变化，S15 保持 OPEN。</dd></div>
         <div class="evidence-item"><dt>Evidence stage</dt><dd><code>S15</code></dd></div>
-        <div class="evidence-item"><dt>Evidence class</dt><dd><code>WORKTREE_VERIFIED</code></dd></div>
-        <div class="evidence-item"><dt>Code commit</dt><dd><code>3197ee22b6b8599ead2168cbe82a68901dc70e9a</code></dd></div>
+        <div class="evidence-item"><dt>Evidence class</dt><dd><code>RELEASE_VERIFIED</code></dd></div>
+        <div class="evidence-item"><dt>Code commit</dt><dd><code>aff16a0a33fceee02a3885a79a91c011ce8ebb6a</code></dd></div>
         <div class="evidence-item"><dt>Standard command</dt><dd><code>.\mvnw.cmd clean verify；npm --prefix cc-java-tui ci &amp;&amp; npm --prefix cc-java-tui run check；pwsh -NoProfile -File .\scripts\TestBuildRelease.ps1；java scripts/ProgressDashboard.java generate/check/self-test；git diff --check</code></dd></div>
-        <div class="evidence-item"><dt>Result</dt><dd>ADR-087 既有 corrective 证据继续有效；0.1.1 首次 tag run 32633807689 在 Linux Package installable archive 失败且未创建 Release。corrective 已移除 workflow 中没有 attestation 前提的 SkipBuild/SkipTuiBuild，新增 workflow 回归断言，并通过发行目录、SBOM、checksum、身份漂移、public-license gate 完整自测；重建 tag 的双平台结果仍待对账。Capability Level 无变化，S15 保持 OPEN。</dd></div>
-        <div class="evidence-item"><dt>Source digests</dt><dd><code>matrix faab518e4a06</code><br><code>state 7d41f5aec56d</code><br><code>code/build ec910c6f50ba</code></dd></div>
+        <div class="evidence-item"><dt>Result</dt><dd>ADR-087 既有 corrective 证据继续有效；重建的 v0.1.1 tag run 32634663859 已生成 Windows x64 185 MB 与 Linux x64 195 MB workflow artifacts，并公开六个 Release 资产。Windows 公网安装、build identity、bundled Node/Java doctor 与隔离卸载通过；codej.sixmai.top 安装脚本状态码、长度和 SHA-256 与仓库一致。Capability Level 无变化，S15 保持 OPEN。</dd></div>
+        <div class="evidence-item"><dt>Source digests</dt><dd><code>matrix faab518e4a06</code><br><code>state 0abf1cde2d84</code><br><code>code/build ec910c6f50ba</code></dd></div>
       </dl>
     </section>
 

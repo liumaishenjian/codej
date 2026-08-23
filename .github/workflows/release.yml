@@ -70,7 +70,7 @@ jobs:
         shell: pwsh
         run: |
           $public = '${{ github.event_name }}' -eq 'push'
-          ./scripts/PackageDistribution.ps1 -Version $env:CODEJ_VERSION -Platform '${{ matrix.platform }}' -JavaRuntimeDirectory target/runtime-java -NodeRuntimeDirectory $env:CODEJ_NODE_ROOT -SkipBuild -SkipTuiBuild -PublicRelease:$public
+          ./scripts/PackageDistribution.ps1 -Version $env:CODEJ_VERSION -Platform '${{ matrix.platform }}' -JavaRuntimeDirectory target/runtime-java -NodeRuntimeDirectory $env:CODEJ_NODE_ROOT -PublicRelease:$public
       - uses: actions/upload-artifact@v7
         with:
           name: codej-${{ matrix.platform }}

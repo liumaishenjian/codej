@@ -4,6 +4,10 @@ param()
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $builder = Join-Path $PSScriptRoot 'BuildRelease.ps1'
+$releaseWorkflow = Get-Content -LiteralPath (Join-Path $root '.github/workflows/release.yml') -Raw
+if ($releaseWorkflow -match 'PackageDistribution\.ps1[^\r\n]*(?:-SkipBuild|-SkipTuiBuild)') {
+    throw 'Tag workflow must generate a current build attestation before packaging'
+}
 
 & $builder
 if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }

@@ -75,6 +75,7 @@ import {
   beginPendingComposer,
   completionCandidates,
   createComposerState,
+  pastePreviewAtCursor,
   projectComposer,
   reduceComposer,
   removeLastCodePoint,
@@ -85,6 +86,19 @@ import {
   type ComposerLayout,
   type ComposerState,
 } from './input-editor.js';
+import {
+  activitySpinnerFrame,
+  classifyNotice,
+  completionRegionRows,
+  createPlanFeedbackDraft,
+  editPlanFeedback,
+  hasTrailingNewlineEscape,
+  isInsertNewlineKey,
+  noticeAppearance,
+  planFeedbackCursorParts,
+  shouldAcceptCompletionOnEnter,
+  type PlanFeedbackDraft,
+} from './interaction.js';
 
 const PRODUCT_VERSION = '0.1.0';
 
@@ -92,7 +106,7 @@ type PublicPermissionSelection = 'PLAN' | 'ASK' | 'AUTO' | 'ADVANCED';
 
 interface PlanFeedbackInputState {
   readonly review: PlanReviewPickerState;
-  readonly text: string;
+  readonly draft: PlanFeedbackDraft;
 }
 type PlanEntryState = {
   readonly phase: 'query' | 'enter' | 'restore-after-start-failure';
@@ -236,6 +250,13 @@ function providerControlError(code: string): string {
   return labels[code] ?? '请求被安全拒绝';
 }
 export {
+  shouldAcceptCompletionOnEnter,
+  classifyNotice,
+  activitySpinnerFrame,
+  stabilizeStreamingMarkdown,
+  visibleToolOutputWindow,
+} from './interaction.js';
+export {
   appendInput,
   MAX_INPUT_CODE_POINTS as MAX_INPUT_CHARS,
 } from './input-editor.js';
@@ -256,6 +277,7 @@ export function AgentTui({client}: AgentTuiProps) {
   const [planReviewPicker, setPlanReviewPicker] = useState<PlanReviewPickerState | undefined>(undefined);
   const [planFeedbackInput, setPlanFeedbackInput] = useState<PlanFeedbackInputState | undefined>(undefined);
   const [questionPicker, setQuestionPicker] = useState<QuestionPickerState | undefined>(undefined);
+  const [activityTick, setActivityTick] = useState(0);
   const planReviewPickerRef = useRef<PlanReviewPickerState | undefined>(undefined);
   const planFeedbackInputRef = useRef<PlanFeedbackInputState | undefined>(undefined);
   const composerRef = useRef(composer);
@@ -741,7 +763,7 @@ export function AgentTui({client}: AgentTuiProps) {
             pendingDurablePlanDecisionRef.current = undefined;
             replacePlanReviewPicker({...pendingPlan.review, submitted: false});
             if (pendingPlan.feedback !== undefined) {
-              replacePlanFeedbackInput({review: pendingPlan.review, text: pendingPlan.feedback});
+              replacePlanFeedbackInput({review: pendingPlan.review, draft: createPlanFeedbackDraft(pendingPlan.feedback)});
             }
           }
         }
@@ -756,7 +778,7 @@ export function AgentTui({client}: AgentTuiProps) {
           pendingDurablePlanDecisionRef.current = undefined;
           replacePlanReviewPicker({...pendingPlan.review, submitted: false});
           if (pendingPlan.feedback !== undefined) {
-            replacePlanFeedbackInput({review: pendingPlan.review, text: pendingPlan.feedback});
+            replacePlanFeedbackInput({review: pendingPlan.review, draft: createPlanFeedbackDraft(pendingPlan.feedback)});
           }
         }
       }
@@ -819,7 +841,7 @@ export function AgentTui({client}: AgentTuiProps) {
         pendingDurablePlanDecisionRef.current = undefined;
         replacePlanReviewPicker({...pendingPlan.review, submitted: false});
         if (pendingPlan.feedback !== undefined) {
-          replacePlanFeedbackInput({review: pendingPlan.review, text: pendingPlan.feedback});
+          replacePlanFeedbackInput({review: pendingPlan.review, draft: createPlanFeedbackDraft(pendingPlan.feedback)});
         }
       }
       dispatch({type: 'run.submission.timed_out', requestId: notice.requestId});
@@ -847,6 +869,8 @@ export function AgentTui({client}: AgentTuiProps) {
         transportFailureRef.current = true;
         dispatch({type: 'transport.failed', message});
       }
+      // Transport 已关闭；回收 Java 子进程，但 TUI 本身仍等 Ctrl+C 才退出。
+      client.terminate();
     });
     const offExit = client.onExit(() => {
       cancelPending.current = false;
@@ -889,6 +913,15 @@ export function AgentTui({client}: AgentTuiProps) {
     applyComposer({type: 'Resize', width: composerLayout.width, height: composerLayout.height});
   }, [columns, rows]);
 
+  const activityActive = state.phase === 'submitting'
+    || state.phase === 'accepted' || state.phase === 'running';
+  // 真实终端才驱动等待指示。Vitest 跳过 interval，避免 Ink 并行用例被 120ms 定时器拖慢。
+  useEffect(() => {
+    if (!activityActive || process.env.VITEST !== undefined) return;
+    const timer = setInterval(() => setActivityTick(tick => tick + 1), 120);
+    return () => clearInterval(timer);
+  }, [activityActive]);
+
   useEffect(() => {
     if (fileSuggestionTimerRef.current !== undefined) {
       clearTimeout(fileSuggestionTimerRef.current);
@@ -922,7 +955,10 @@ export function AgentTui({client}: AgentTuiProps) {
   usePaste(pasted => {
     const setup = connectWizardRef.current;
     if (planFeedbackInput !== undefined) {
-      replacePlanFeedbackInput({...planFeedbackInput, text: boundedPlanFeedback(planFeedbackInput.text + pasted)});
+      replacePlanFeedbackInput({
+        ...planFeedbackInput,
+        draft: editPlanFeedback(planFeedbackInput.draft, {type: 'paste', text: pasted}),
+      });
     } else if (setup?.phase === 'form') {
       replaceConnectWizard(editModelSetup(setup, {kind: 'append', text: pasted}));
     } else if (setup?.phase === 'credential') {
@@ -962,7 +998,7 @@ export function AgentTui({client}: AgentTuiProps) {
       if (key.escape) {
         replacePlanFeedbackInput(undefined);
       } else if (key.return) {
-        const feedback = currentPlanFeedback.text.trim();
+        const feedback = currentPlanFeedback.draft.text.trim();
         if (feedback.length === 0) {
           dispatch({type: 'slash.notice', message: '继续规划需要非空反馈；Esc 可返回计划选项'});
           return;
@@ -988,10 +1024,41 @@ export function AgentTui({client}: AgentTuiProps) {
           replacePlanReviewPicker({...review, submitted: false});
           dispatch({type: 'slash.notice', message: 'Plan 反馈未被连接接受；可修改后重新提交'});
         }
-      } else if (key.backspace || key.delete) {
-        replacePlanFeedbackInput({...currentPlanFeedback, text: removeLastCodePoint(currentPlanFeedback.text)});
+      } else if (key.leftArrow) {
+        replacePlanFeedbackInput({
+          ...currentPlanFeedback,
+          draft: editPlanFeedback(currentPlanFeedback.draft, {type: 'left'}),
+        });
+      } else if (key.rightArrow) {
+        replacePlanFeedbackInput({
+          ...currentPlanFeedback,
+          draft: editPlanFeedback(currentPlanFeedback.draft, {type: 'right'}),
+        });
+      } else if (key.home) {
+        replacePlanFeedbackInput({
+          ...currentPlanFeedback,
+          draft: editPlanFeedback(currentPlanFeedback.draft, {type: 'home'}),
+        });
+      } else if (key.end) {
+        replacePlanFeedbackInput({
+          ...currentPlanFeedback,
+          draft: editPlanFeedback(currentPlanFeedback.draft, {type: 'end'}),
+        });
+      } else if (key.backspace) {
+        replacePlanFeedbackInput({
+          ...currentPlanFeedback,
+          draft: editPlanFeedback(currentPlanFeedback.draft, {type: 'backspace'}),
+        });
+      } else if (key.delete) {
+        replacePlanFeedbackInput({
+          ...currentPlanFeedback,
+          draft: editPlanFeedback(currentPlanFeedback.draft, {type: 'delete'}),
+        });
       } else if (!key.ctrl && !key.meta && text.length > 0) {
-        replacePlanFeedbackInput({...currentPlanFeedback, text: boundedPlanFeedback(currentPlanFeedback.text + text)});
+        replacePlanFeedbackInput({
+          ...currentPlanFeedback,
+          draft: editPlanFeedback(currentPlanFeedback.draft, {type: 'insert', text}),
+        });
       }
       return;
     }
@@ -1052,7 +1119,7 @@ export function AgentTui({client}: AgentTuiProps) {
         }
         const decision = selectedPlanReviewDecision(planReviewPicker);
         if (decision === 'continue_planning') {
-          replacePlanFeedbackInput({review: planReviewPicker, text: ''});
+          replacePlanFeedbackInput({review: planReviewPicker, draft: createPlanFeedbackDraft()});
           return;
         }
         const protocolDecision = decision === 'approve_auto' ? 'APPROVE_AUTO'
@@ -1182,15 +1249,23 @@ export function AgentTui({client}: AgentTuiProps) {
     }
     if (pendingApproval !== undefined) {
       const picker = effectiveApprovalPicker;
-      if (key.upArrow || key.downArrow) {
-        setApprovalPicker(moveApprovalPicker(picker, key.upArrow ? -1 : 1));
-      } else if (key.return && !pendingApproval.submitted) {
-        const decision = selectedApprovalDecision(picker);
+      const submitDecision = (decision: 'allow_once' | 'allow_session' | 'deny') => {
+        if (pendingApproval.submitted) return;
         client.resolveApproval(pendingApproval.approvalId, decision);
         setApprovalPicker({...picker, approvalId: pendingApproval.approvalId});
         dispatch({type: 'approval.submitted', approvalId: pendingApproval.approvalId});
+      };
+      if (key.upArrow || key.downArrow) {
+        setApprovalPicker(moveApprovalPicker(picker, key.upArrow ? -1 : 1));
+      } else if (key.return && !pendingApproval.submitted) {
+        submitDecision(selectedApprovalDecision(picker));
       } else if (key.escape && !pendingApproval.submitted) {
-        client.cancelRun();
+        submitDecision('deny');
+      } else {
+        const shortcut = approvalDecision(text);
+        if (shortcut !== undefined && !pendingApproval.submitted && !key.ctrl && !key.meta) {
+          submitDecision(shortcut);
+        }
       }
       return;
     }
@@ -1248,8 +1323,7 @@ export function AgentTui({client}: AgentTuiProps) {
       return;
     }
     const current = composerRef.current;
-    const candidates = completionCandidates(current.text);
-    if (key.shift && key.return) {
+    if (isInsertNewlineKey(key, text)) {
       applyComposer({type: 'InsertText', text: '\n'});
       return;
     }
@@ -1257,9 +1331,14 @@ export function AgentTui({client}: AgentTuiProps) {
       applyComposer({type: 'CloseCompletion'});
       return;
     }
+    if (key.return && hasTrailingNewlineEscape(current.text)
+      && current.completionCandidates.length === 0) {
+      applyComposer({type: 'Backspace'});
+      applyComposer({type: 'InsertText', text: '\n'});
+      return;
+    }
     if (key.return) {
-      if (current.completionCandidates.length > 0
-        && current.text.trim() !== '/permissions' && current.text.trim() !== '/plan') {
+      if (shouldAcceptCompletionOnEnter(current)) {
         acceptCurrentCompletion();
         return;
       }
@@ -1475,6 +1554,7 @@ export function AgentTui({client}: AgentTuiProps) {
     {...(planReviewPicker === undefined ? {} : {planReviewPicker})}
     {...(planFeedbackInput === undefined ? {} : {planFeedbackInput})}
     {...(questionPicker === undefined ? {} : {questionPicker})}
+    activityTick={activityTick}
   />;
 }
 
@@ -1493,6 +1573,7 @@ export interface AgentViewProps {
   readonly planReviewPicker?: PlanReviewPickerState;
   readonly planFeedbackInput?: PlanFeedbackInputState;
   readonly questionPicker?: QuestionPickerState;
+  readonly activityTick?: number;
 }
 
 const MAX_SETUP_CREDENTIAL_BYTES = 16_384;
@@ -1519,12 +1600,13 @@ export function maskedCredentialPreview(value: readonly number[]): string {
 /**
  * 纯展示组件，使宽字符、窄窗口和各 Run 终态无需真实终端即可验证。
  */
-export function AgentView({state, composer, input = '', columns, rows, composerLayout, connectWizard, permissionPicker, approvalPicker, planReviewPicker, planFeedbackInput, questionPicker}: AgentViewProps) {
+export function AgentView({state, composer, input = '', columns, rows, composerLayout, connectWizard, permissionPicker, approvalPicker, planReviewPicker, planFeedbackInput, questionPicker, activityTick}: AgentViewProps) {
   const width = Math.max(20, columns);
   const viewportRows = rows === undefined
     ? undefined
     : Math.max(5, Math.floor(rows));
-  if (connectWizard !== undefined) {
+  const overlayBlocksComposer = connectWizard !== undefined || permissionPicker !== undefined;
+  if (connectWizard !== undefined && connectWizard.required) {
     return <Box flexDirection="column">
       <Text>
         <Text bold color="cyan">codej</Text>
@@ -1534,30 +1616,21 @@ export function AgentView({state, composer, input = '', columns, rows, composerL
       <ConnectWizardPanel state={connectWizard} />
     </Box>;
   }
-  if (permissionPicker !== undefined) {
-    return <Box flexDirection="column">
-      <Text>
-        <Text bold color="cyan">codej</Text>
-        <Text dimColor>  v{PRODUCT_VERSION}</Text>
-        <Text dimColor>  · 权限选择</Text>
-      </Text>
-      <PermissionPickerPanel state={permissionPicker} />
-    </Box>;
-  }
   const effectiveComposer = composer ?? reduceComposer(
     createComposerState(4), {type: 'InsertText', text: input}, {width: Math.max(1, width - 6), height: 4},
   ).state;
   const layout = composerLayout ?? {width: Math.max(1, width - 6), height: 4};
   const projection = projectComposer(effectiveComposer, layout);
   const renderedLines = renderComposerViewport(effectiveComposer, layout);
-  const candidates = canEditInput(state.phase) ? effectiveComposer.completionCandidates : [];
+  const candidates = canEditInput(state.phase) && !overlayBlocksComposer
+    ? effectiveComposer.completionCandidates : [];
   const selectedCompletion = effectiveComposer.completionIndex ?? 0;
   const composerFixedRows = renderedLines.length
     + 3
     + (effectiveComposer.validationCode === undefined ? 0 : 1);
-  const candidateRegionRows = viewportRows === undefined
-    ? undefined
-    : Math.max(0, viewportRows - 1 - composerFixedRows);
+  const candidateRegionRows = completionRegionRows(
+    candidates.length, viewportRows, composerFixedRows,
+  );
   const visibleCandidates = completionWindow(
     candidates,
     selectedCompletion,
@@ -1565,9 +1638,13 @@ export function AgentView({state, composer, input = '', columns, rows, composerL
   );
   const showStartupBrand = state.phase === 'ready'
     && state.runs.length === 0
-    && connectWizard === undefined
+    && !overlayBlocksComposer
     && width >= 52
     && (viewportRows === undefined || viewportRows >= 16);
+  const pastePreview = overlayBlocksComposer ? undefined : pastePreviewAtCursor(effectiveComposer);
+  const noticeTone = state.notice === undefined ? undefined : classifyNotice(state.notice);
+  const noticeLook = noticeTone === undefined ? undefined : noticeAppearance(noticeTone);
+  const spinnerGlyph = activityTick === undefined ? '◌' : activitySpinnerFrame(activityTick);
   const archivedRuns = state.runs.filter(isArchivedRun);
   const liveRuns = state.runs.filter(run => !isArchivedRun(run));
   const historicalToolDetailRun = state.historicalToolDetailOpen === true
@@ -1596,9 +1673,9 @@ export function AgentView({state, composer, input = '', columns, rows, composerL
         flexShrink={0}
       >
         <Box flexDirection="column" flexShrink={0}>
-      {state.notice === undefined ? null : (
+      {state.notice === undefined || noticeLook === undefined ? null : (
         <Box marginTop={1}>
-          <Text color="yellow">• {state.notice}</Text>
+          <Text color={noticeLook.color}>{noticeLook.icon} {state.notice}</Text>
         </Box>
       )}
       {state.phase === 'failed' ? (
@@ -1607,6 +1684,7 @@ export function AgentView({state, composer, input = '', columns, rows, composerL
         </Box>
       ) : null}
       {connectWizard === undefined ? null : <ConnectWizardPanel state={connectWizard} />}
+      {permissionPicker === undefined ? null : <PermissionPickerPanel state={permissionPicker} />}
       {liveRuns.map(run => <RunPresentation
         key={run.requestId}
         run={run}
@@ -1614,6 +1692,7 @@ export function AgentView({state, composer, input = '', columns, rows, composerL
         planReviewPicker={planReviewPicker}
         planFeedbackInput={planFeedbackInput}
         questionPicker={questionPicker}
+        spinnerGlyph={spinnerGlyph}
       />)}
       <ChildTaskPanel state={state} />
       <CheckpointPanel state={state} />
@@ -1655,7 +1734,7 @@ export function AgentView({state, composer, input = '', columns, rows, composerL
           ) : null}
           {state.checkpoints.length === 0 ? null : (
             <>
-              <Text dimColor>C 列表　↑/↓ 选择　D Diff　U 请求 Undo</Text>
+              <Text dimColor>C 列表　面板打开后 c/d/u　↑/↓ 选择</Text>
               <Text dimColor>Undo 必须针对当前 Checkpoint 二次确认，绝不自动重放。</Text>
             </>
           )}
@@ -1674,7 +1753,7 @@ export function AgentView({state, composer, input = '', columns, rows, composerL
       >
         <Text color="cyan">❯ </Text>
         {(canEditInput(state.phase) || effectiveComposer.text.length > 0)
-          && connectWizard === undefined ? (
+          && !overlayBlocksComposer ? (
           <Box flexDirection="column">
             {renderedLines.map((line, index) => (
               <Text key={`${projection.viewportTop + index}-${line.beforeCursor.length}`}>
@@ -1685,7 +1764,9 @@ export function AgentView({state, composer, input = '', columns, rows, composerL
             ))}
           </Box>
         ) : null}
-        {connectWizard !== undefined
+        {permissionPicker !== undefined
+          ? <Text dimColor>正在选择权限模式，上方列表用 ↑/↓ 选择</Text>
+          : connectWizard !== undefined
           ? <Text dimColor>正在配置连接，请按上方提示操作</Text>
           : state.phase === 'submitting'
           ? <Text dimColor>正在等待 Java 接受请求；拒绝或超时会恢复草稿</Text>
@@ -1700,10 +1781,15 @@ export function AgentView({state, composer, input = '', columns, rows, composerL
             ? <Text dimColor>{inputHint(state.phase)}</Text>
             : null}
       </Box>
-      {connectWizard !== undefined || effectiveComposer.validationCode === undefined ? null : (
+      {overlayBlocksComposer || pastePreview === undefined ? null : (
+        <Text dimColor>
+          粘贴 #{pastePreview.id} · {formatPasteBytes(pastePreview.utf8Bytes)} · {pastePreview.preview}
+        </Text>
+      )}
+      {overlayBlocksComposer || effectiveComposer.validationCode === undefined ? null : (
         <Text color="red">输入未接受：{validationMessage(effectiveComposer.validationCode)}</Text>
       )}
-      {connectWizard !== undefined || candidates.length === 0 || candidateRegionRows === 0 ? null : (
+      {overlayBlocksComposer || candidates.length === 0 || candidateRegionRows === 0 ? null : (
         <Box
           flexDirection="column"
           marginLeft={2}
@@ -1744,7 +1830,7 @@ export function completionWindow(
 
 function PermissionPickerPanel({state}: {readonly state: PermissionPickerState}) {
   return <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="cyan" paddingX={1}>
-    <Text bold color="cyan">Permissions</Text>
+    <Text bold color="cyan">权限选择</Text>
     {PERMISSION_PICKER_ITEMS.map((item, index) => (
       <Text key={item.selection} color={index === state.selectedIndex ? 'cyan' : 'white'}>
         {index === state.selectedIndex ? '❯ ' : '  '}{item.label}
@@ -1891,6 +1977,20 @@ function CheckpointRow({
   );
 }
 
+function PlanFeedbackLine({draft}: {readonly draft: PlanFeedbackDraft}) {
+  const {before, at, after} = planFeedbackCursorParts(draft);
+  return <>
+    {before}
+    <Text inverse>{at ?? ' '}</Text>
+    {after}
+  </>;
+}
+
+function formatPasteBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  return `${(bytes / 1024).toFixed(bytes < 10_240 ? 1 : 0)} KiB`;
+}
+
 function DurablePlanReviewPanel({review, picker, feedbackInput}: {
   readonly review: NonNullable<RunView['planReview']>;
   readonly picker: PlanReviewPickerState | undefined;
@@ -1904,8 +2004,12 @@ function DurablePlanReviewPanel({review, picker, feedbackInput}: {
     {!active ? <Text dimColor>该计划已不再等待当前窗口决定</Text>
       : feedbackInput?.review.planId === review.planId ? <Box marginTop={1} flexDirection="column">
           <Text bold color="yellow">请输入计划反馈</Text>
-          <Text>{feedbackInput.text.length === 0 ? '› ' : `› ${feedbackInput.text}`}</Text>
-          <Text dimColor>输入非空反馈后 Enter 提交　Esc 取消并返回四项审批</Text>
+          <Text>
+            {feedbackInput.draft.text.length === 0 && feedbackInput.draft.cursor === 0
+              ? <Text inverse> </Text>
+              : <PlanFeedbackLine draft={feedbackInput.draft} />}
+          </Text>
+          <Text dimColor>←/→ 移动　Enter 提交非空反馈　Esc 返回四项审批</Text>
         </Box>
       : picker.submitted ? <Text dimColor>决定已发送，等待 Java 核对 durable revision</Text>
         : <><Box marginTop={1} flexDirection="column">
@@ -2028,7 +2132,7 @@ function ApprovalPrompt({approval, picker}: {
               {index === (picker?.selectedIndex ?? 0) ? '❯ ' : '  '}{item.label}
             </Text>
           ))}
-          <Text dimColor>↑/↓ 选择　Enter 确认　Esc 取消当前 Run</Text>
+          <Text dimColor>↑/↓ 选择　Y 允许一次　A 本会话　N/Esc 拒绝　Enter 确认</Text>
         </>}
     </Box>
   );
@@ -2085,7 +2189,7 @@ export function formatModelFailure(summary: ModelFailureView): string {
 }
 
 /** 展示确定性模型阶段与数值 Usage；不展示或伪造隐藏思维链。 */
-function ModelProgressLine({run}: {readonly run: RunView}) {
+function ModelProgressLine({run, spinnerGlyph}: {readonly run: RunView; readonly spinnerGlyph: string}) {
   const progress = run.modelProgress;
   const activeTool = run.tools.some(tool => tool.status === 'started');
   let status: string | undefined;
@@ -2119,7 +2223,7 @@ function ModelProgressLine({run}: {readonly run: RunView}) {
   }
   if (status === undefined && usage.length === 0) return null;
   return <Box marginLeft={2} flexDirection="column">
-    {status === undefined ? null : <Text color="yellow">◌ {status}…</Text>}
+    {status === undefined ? null : <Text color="yellow">{spinnerGlyph} {status}…</Text>}
     {usage.length === 0 ? null : <Text dimColor>Token · {usage.join(' · ')}</Text>}
   </Box>;
 }
@@ -2142,19 +2246,20 @@ function isArchivedRun(run: RunView): boolean {
     && run.awaitingPlanVerification !== true;
 }
 
-function RunPresentation({run, approvalPicker, planReviewPicker, planFeedbackInput, questionPicker}: {
+function RunPresentation({run, approvalPicker, planReviewPicker, planFeedbackInput, questionPicker, spinnerGlyph = '◌'}: {
   readonly run: RunView;
   readonly approvalPicker?: ApprovalPickerState | undefined;
   readonly planReviewPicker?: PlanReviewPickerState | undefined;
   readonly planFeedbackInput?: PlanFeedbackInputState | undefined;
   readonly questionPicker?: QuestionPickerState | undefined;
+  readonly spinnerGlyph?: string;
 }) {
   return <Box flexDirection="column" marginTop={1}>
     <Box>
       <Text color="green" bold>❯ </Text>
       <Text bold>{run.prompt}</Text>
     </Box>
-    <ModelProgressLine run={run} />
+    <ModelProgressLine run={run} spinnerGlyph={spinnerGlyph} />
     <ToolActivityGroup tools={run.tools} />
     <ToolDetail run={run} />
     {run.pendingApproval === undefined
@@ -2227,7 +2332,7 @@ function runStatusLabel(status: 'cancelled' | 'failed'): string {
 function inputHint(phase: ReturnType<typeof reduceTuiState>['phase']): string {
   return phase === 'connecting'
     ? '连接中，可以先输入任务'
-    : 'Enter 发送，Shift+Enter 换行';
+    : 'Enter 发送，Shift+Enter / Ctrl+J 换行';
 }
 
 function validationMessage(code: ComposerState['validationCode']): string {
@@ -2247,6 +2352,12 @@ function validationMessage(code: ComposerState['validationCode']): string {
   }
 }
 
+/**
+ * 空 Composer 上的 Checkpoint 快捷键。
+ *
+ * <p>大写 {@code C} 才能在面板关闭时拉列表；小写 {@code c/d/u} 只在面板已打开时生效，
+ * 避免 {@code can you…} 这类首字母被吞掉。Undo 二次确认仍只接受 Shift+Y。</p>
+ */
 export function checkpointAction(
   text: string,
   key: {readonly upArrow?: boolean; readonly downArrow?: boolean},
@@ -2260,8 +2371,11 @@ export function checkpointAction(
   }
   switch (text) {
     case 'C': return 'list';
-    case 'D': return panelOpen ? 'diff' : undefined;
-    case 'U': return panelOpen ? 'undo' : undefined;
+    case 'c': return panelOpen ? 'list' : undefined;
+    case 'D':
+    case 'd': return panelOpen ? 'diff' : undefined;
+    case 'U':
+    case 'u': return panelOpen ? 'undo' : undefined;
     default: return undefined;
   }
 }
@@ -2308,10 +2422,6 @@ function checkpointPhaseLabel(phase: CheckpointPhase): string {
     case 'undo_journal_uncertain': return 'Undo 记录不确定';
     case 'undone': return '已 Undo';
   }
-}
-
-export function boundedPlanFeedback(text: string): string {
-  return Array.from(text).slice(0, 4_000).join('');
 }
 
 export function approvalDecision(

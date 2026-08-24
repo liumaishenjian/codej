@@ -146,6 +146,7 @@ describe('StdioClient', () => {
     expect(failures[0]).toContain('未在期限内确认');
     expect(events.some(event => event.type === 'run.started')).toBe(false);
     expect(client.isClosed()).toBe(true);
+    await client.closePrintTransport();
   });
 
   it('已接受但 Runtime 启动失败时终结 pending，且不伪造成 transport failure', async () => {
@@ -184,6 +185,7 @@ describe('StdioClient', () => {
     expect(events.some(event => event.type === 'run.started')).toBe(false);
     expect(failures[0]).toContain('避免结果未知时重复执行');
     expect(client.isClosed()).toBe(true);
+    await client.closePrintTransport();
   });
 
   it('acceptance 前断开连接收敛为 transport terminal', async () => {
@@ -285,6 +287,7 @@ describe('StdioClient', () => {
 
     expect(failures[0]).toContain('file.suggestions');
     expect(client.isClosed()).toBe(true);
+    await client.closePrintTransport();
   });
 
   it('通过真实 stdio 编码 wait/cancel/keep/remove 并只消费 Java 权威事件', async () => {
@@ -441,6 +444,7 @@ describe('StdioClient', () => {
       await waitFor(() => failures.length === 1);
       expect(failures[0]).toContain('session.command.result');
       expect(client.isClosed()).toBe(true);
+      await client.closePrintTransport();
     }
   });
 
@@ -475,6 +479,7 @@ describe('StdioClient', () => {
       await waitFor(() => failures.length === 1);
       expect(client.isClosed()).toBe(true);
       expect(failures[0]).toMatch(/steering/);
+      await client.closePrintTransport();
     }
   });
 
@@ -520,6 +525,7 @@ describe('StdioClient', () => {
     expect(events.filter(event => event.type === 'run.started')).toHaveLength(1);
     expect(failures[0]).toContain('迟到的 run.started');
     expect(client.isClosed()).toBe(true);
+    await client.closePrintTransport();
   });
 
   it('迟到且错配的 terminal 不会清除当前 authority Run', async () => {
@@ -582,6 +588,7 @@ describe('StdioClient', () => {
 
       expect(client.isClosed()).toBe(true);
       expect(failures[0]).toMatch(/steering|run\.started/);
+      await client.closePrintTransport();
     }
   });
 
@@ -599,6 +606,7 @@ describe('StdioClient', () => {
 
     expect(failures[0]).toContain('resume');
     expect(client.isClosed()).toBe(true);
+    await client.closePrintTransport();
   });
 
   it('乱序 stdout 触发失败并终止子进程', async () => {
@@ -614,6 +622,7 @@ describe('StdioClient', () => {
     await waitFor(() => failures.length > 0);
 
     expect(failures[0]).toContain('sequence');
+    await client.closePrintTransport();
   });
 
   it('协议失败关闭 transport 不能伪装进程退出，Print 清理最终等待真实 exit', async () => {
@@ -667,6 +676,7 @@ describe('StdioClient', () => {
       'Java 子进程意外退出（exit=17，stderr=0 bytes）',
     ]);
     expect(client.isClosed()).toBe(true);
+    await client.closePrintTransport();
   });
 
   it('Print terminal 后关闭 stdin，Java 通过 EOF 自然退出', async () => {
@@ -753,6 +763,7 @@ describe('StdioClient', () => {
 
     client.cancelRun();
     await waitFor(() => client.isClosed());
+    await client.closePrintTransport();
 
     expect(failures).toEqual(['Java 子进程未在取消期限内结束当前 Run']);
     expect(pid).toBeDefined();

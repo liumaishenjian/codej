@@ -643,10 +643,11 @@ export class StdioClient {
     if (this.#processExited) return;
     this.#clearCancelTimer();
     this.#shutdownRequested = true;
-    if (!this.#transportClosed && !this.#child.stdin.destroyed) {
+    // 协议失败会先关掉 Transport；仍必须等 shutdownTimeout，不能把“已诊断”当成进程已退出。
+    if (!this.#child.stdin.destroyed) {
       this.#child.stdin.end();
-      if (await this.#waitForExit(this.#shutdownTimeoutMs)) return;
     }
+    if (await this.#waitForExit(this.#shutdownTimeoutMs)) return;
     await this.#terminateAndAwaitExit();
   }
 
@@ -983,6 +984,13 @@ export class StdioClient {
     }
   }
 
+  /**
+   * 关闭协议 Transport 并通知失败，但不假装子进程已退出。
+   *
+   * <p>Print 必须继续走 {@link closePrintTransport} 等待真实 exit；交互 TUI
+   * 在 failure 回调里再 terminate。若此处同步 SIGKILL，诊断写出后 promise
+   * 会在同一轮完成，Print 无法区分“已诊断、仍在回收进程”。</p>
+   */
   #fail(message: string): void {
     if (this.#failureEmitted) return;
     this.#transportClosed = true;
@@ -996,7 +1004,6 @@ export class StdioClient {
     this.#completedFileSuggestionIds.clear();
     this.#issuedSessionCommandIds.clear();
     this.#emitFailure(message);
-    this.terminate();
   }
 
   #emitFailure(message: string): void {

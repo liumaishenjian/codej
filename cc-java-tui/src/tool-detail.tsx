@@ -1,6 +1,7 @@
 import React from 'react';
 import {Box, Text} from 'ink';
 import type {RunView, ToolView} from './state.js';
+import {visibleToolOutputWindow} from './interaction.js';
 import {toolOutputStats} from './tool-output.js';
 
 export function ToolDetail({run}: {readonly run: RunView}) {
@@ -62,15 +63,19 @@ function ToolDetailContent({run, selectedOrdinal, expanded, controls}: {
 }
 
 function ExpandedToolOutput({tool}: {readonly tool: ToolView}) {
+  const window = visibleToolOutputWindow(tool.output.lines);
   return <Box flexDirection="column">
-    {tool.output.lines.map((line, index) => (
+    {window.omitted === 0 ? null : (
+      <Text dimColor>显示末尾 {window.lines.length}/{window.total} 行</Text>
+    )}
+    {window.lines.map((line, index) => (
       line.stream === 'stderr' ? (
-        <Text key={`${index}-${line.stream}`} color="yellow">
+        <Text key={`${window.omitted + index}-${line.stream}`} color="yellow">
           stderr │ {line.text.length === 0 ? ' ' : line.text}
           {line.repetitions > 1 ? `  ×${line.repetitions}` : ''}
         </Text>
       ) : (
-        <Text key={`${index}-${line.stream}`}>
+        <Text key={`${window.omitted + index}-${line.stream}`}>
           stdout │ {line.text.length === 0 ? ' ' : line.text}
           {line.repetitions > 1 ? `  ×${line.repetitions}` : ''}
         </Text>

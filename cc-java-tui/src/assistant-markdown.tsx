@@ -3,6 +3,7 @@ import type {ReactNode} from 'react';
 import {Box, Text} from 'ink';
 import {marked} from 'marked';
 import type {Token, Tokens} from 'marked';
+import {stabilizeStreamingMarkdown} from './interaction.js';
 
 export interface AssistantMarkdownProps {
   readonly text: string;
@@ -17,7 +18,7 @@ export interface AssistantMarkdownProps {
 export function AssistantMarkdown({text}: AssistantMarkdownProps) {
   const tokens = useMemo(() => {
     try {
-      return marked.lexer(text, {gfm: true, breaks: true});
+      return marked.lexer(stabilizeStreamingMarkdown(text), {gfm: true, breaks: true});
     } catch {
       return undefined;
     }

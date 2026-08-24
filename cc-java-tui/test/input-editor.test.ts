@@ -19,6 +19,7 @@ import {
   expandSubmission,
   initialInputHistoryState,
   navigateInputHistory,
+  pastePreviewAtCursor,
   projectComposer,
   recordInputHistory,
   reduceComposer,
@@ -211,6 +212,16 @@ describe('Completion and history ownership', () => {
     expect(state.text).toBe(`${token(1)}/help`);
     expect(state.pastePayloads.get(1)).toEqual(payload);
     expect(expandSubmission(state)).toEqual({text: `${payload!.text}/help`});
+  });
+
+  it('光标在折叠粘贴块上时给出前两行预览', () => {
+    let state = createComposerState();
+    state = update(state, {type: 'Paste', text: 'alpha line\nbeta line\ngamma\n'.repeat(40)});
+    const preview = pastePreviewAtCursor(state);
+    expect(preview?.id).toBe(1);
+    expect(preview?.preview).toContain('alpha line');
+    expect(preview?.preview).toContain('beta line');
+    expect(preview?.preview).not.toContain('gamma');
   });
 
   it('enters history only at visual boundaries and restores a draft with its payload map', () => {

@@ -22,6 +22,7 @@ import type {ProtocolEvent} from '../src/protocol.js';
 import type {ProviderLoginRequest, ProviderLoginResult} from '../src/stdio-client.js';
 import type {TuiState} from '../src/state.js';
 import {createComposerState, reduceComposer} from '../src/input-editor.js';
+import {initialPermissionPickerState} from '../src/permission-picker.js';
 import {
   independentProviderControlId,
   isIndependentProviderControlResult,
@@ -97,7 +98,7 @@ describe('AgentView', () => {
     expect(frame).not.toContain('██████  ██████  ██████');
     expect(frame).toContain('╭');
     expect(frame).toContain('❯');
-    expect(frame).toContain('Enter 发送，Shift+Enter 换行');
+    expect(frame).toContain('Enter 发送，Shift+Enter / Ctrl+J 换行');
   });
 
   it('极短窗口中大量 Slash 候选窗口化且不能挤掉已输入 Composer', () => {
@@ -348,6 +349,20 @@ describe('AgentView', () => {
     expect(expanded).toContain('×12');
     expect(expanded).toContain('different error');
     expect(expanded).toContain('failed · process_exit · process_exit · exit 9');
+
+    const longLines = Array.from({length: 16}, (_, index) => ({
+      stream: 'stdout' as const, text: `log-line-${index}`, complete: true, repetitions: 1,
+    }));
+    const longRun = {
+      ...base.runs[0]!,
+      toolDetailExpanded: true,
+      tools: [{...tool, output: {...tool.output, lines: longLines}}],
+    };
+    const longExpanded = render(<AgentView state={{...base, runs: [longRun]}}
+      input="" columns={100} />).lastFrame() ?? '';
+    expect(longExpanded).toContain('显示末尾 12/16 行');
+    expect(longExpanded).toContain('log-line-15');
+    expect(longExpanded).not.toContain('log-line-0');
 
     const archivedRun = {...base.runs[0]!, status: 'failed' as const,
       toolDetailExpanded: false, stopReason: 'tool_failure'};
@@ -632,11 +647,14 @@ describe('AgentView', () => {
 
     expect(checkpointAction('c', {}, false)).toBeUndefined();
     expect(checkpointAction('C', {}, false)).toBe('list');
+    expect(checkpointAction('c', {}, true)).toBe('list');
     expect(checkpointAction('D', {}, false)).toBeUndefined();
     expect(checkpointAction('U', {}, false)).toBeUndefined();
     expect(checkpointAction('', {downArrow: true}, false)).toBeUndefined();
     expect(checkpointAction('D', {}, true)).toBe('diff');
+    expect(checkpointAction('d', {}, true)).toBe('diff');
     expect(checkpointAction('U', {}, true)).toBe('undo');
+    expect(checkpointAction('u', {}, true)).toBe('undo');
     expect(checkpointAction('', {downArrow: true}, true)).toBe('next');
     expect(adjacentCheckpointId(checkpoints, 'checkpoint-run-1-1', 1))
       .toBe('checkpoint-run-1-2');
@@ -698,7 +716,7 @@ describe('AgentView', () => {
     expect(failedFrame).toContain('连接已关闭，Ctrl+C退出');
     await new Promise(resolve => setTimeout(resolve, 20));
     expect(view.lastFrame()).toContain('连接已关闭，Ctrl+C退出');
-    expect(client.terminateCalls).toBe(0);
+    expect(client.terminateCalls).toBe(1);
     expect(client.shutdownCalls).toBe(0);
 
     view.stdin.write('');
@@ -827,7 +845,7 @@ describe('AgentView', () => {
     await waitForFrame(() => client.initializeCalls === 1);
     client.emit({version: 0, type: 'initialized', requestId: 'tui-1', sessionId: 'session-1', sequence: 1, payload: {protocolVersion: 0}});
     await waitForFrame(() => view.lastFrame()?.includes('就绪') === true);
-    expect(view.lastFrame()).toContain('Enter 发送，Shift+Enter 换行');
+    expect(view.lastFrame()).toContain('Enter 发送，Shift+Enter / Ctrl+J 换行');
 
     view.stdin.write('first');
     view.stdin.write(SHIFT_ENTER);
@@ -1881,6 +1899,97 @@ describe('approvalDecision', () => {
   });
 });
 
+describe('TUI interaction polish', () => {
+  it('审批快捷键 y/a/n 立即提交，Esc 拒绝当前工具而不取消 Run', async () => {
+    const client = new FakeAgentClient();
+    const view = await initializedTui(client);
+    view.stdin.write('patch file'); view.stdin.write('\r');
+    await waitForFrame(() => client.prompts.length === 1);
+    client.emit({version: 0, type: 'run.started', requestId: 'tui-2', sessionId: 'session-1',
+      runId: 'run-approval', sequence: 2, payload: {}});
+    client.emit({version: 0, type: 'approval.requested', requestId: 'tui-2', sessionId: 'session-1',
+      runId: 'run-approval', sequence: 3, payload: {approvalId: 'approval-y', ordinal: 1,
+        toolName: 'apply_patch', effect: 'write_workspace', target: 'src/App.java', operation: 'modify',
+        removedLines: 1, addedLines: 2}});
+    await waitForFrame(() => (view.lastFrame() ?? '').includes('Allow once'));
+    view.stdin.write('y');
+    await waitForFrame(() => client.approvals.length === 1);
+    expect(client.approvals).toEqual(['approval-y:allow_once']);
+    expect(client.cancelRunCalls).toBe(0);
+    view.unmount();
+
+    const denyClient = new FakeAgentClient();
+    const denyView = await initializedTui(denyClient);
+    denyView.stdin.write('patch file'); denyView.stdin.write('\r');
+    await waitForFrame(() => denyClient.prompts.length === 1);
+    denyClient.emit({version: 0, type: 'run.started', requestId: 'tui-2', sessionId: 'session-1',
+      runId: 'run-deny', sequence: 2, payload: {}});
+    denyClient.emit({version: 0, type: 'approval.requested', requestId: 'tui-2', sessionId: 'session-1',
+      runId: 'run-deny', sequence: 3, payload: {approvalId: 'approval-esc', ordinal: 1,
+        toolName: 'apply_patch', effect: 'write_workspace', target: 'src/App.java', operation: 'modify',
+        removedLines: 1, addedLines: 2}});
+    await waitForFrame(() => (denyView.lastFrame() ?? '').includes('N/Esc 拒绝'));
+    denyView.stdin.write('\x1b');
+    await waitForFrame(() => denyClient.approvals.length === 1);
+    expect(denyClient.approvals).toEqual(['approval-esc:deny']);
+    expect(denyClient.cancelRunCalls).toBe(0);
+    denyView.unmount();
+  });
+
+  it('完整 Slash 命令第一次 Enter 就提交，不再被补全吞掉', async () => {
+    const client = new FakeAgentClient();
+    const view = await initializedTui(client);
+    view.stdin.write('/help');
+    view.stdin.write('\r');
+    await waitForFrame(() => client.sessionCommands.length === 1);
+    expect(client.sessionCommands).toEqual(['tui-command-1:help:{}']);
+    view.unmount();
+  });
+
+  it('权限选择保留历史对话，不整屏替换', () => {
+    const state: TuiState = {
+      phase: 'ready', sessionId: 'session-1', activeRunId: undefined, notice: undefined,
+      checkpoints: [], checkpointPanelOpen: false, selectedCheckpointId: undefined,
+      checkpointDiff: undefined, pendingUndoCheckpointId: undefined, checkpointUndo: undefined,
+      runs: [{
+        requestId: 'req-keep', prompt: '保留这段历史', runId: 'run-keep', text: '已有回答',
+        tools: [], status: 'completed', stopReason: 'completed', modelTurns: 1, toolCalls: 0,
+      }],
+    };
+    const frame = render(<AgentView
+      state={state} permissionPicker={initialPermissionPickerState} columns={80}
+    />).lastFrame() ?? '';
+    expect(frame).toContain('保留这段历史');
+    expect(frame).toContain('已有回答');
+    expect(frame).toContain('Ask for approval');
+    expect(frame).toContain('权限选择');
+  });
+
+  it('行尾空白加反斜杠再 Enter 写入换行而不是提交', async () => {
+    const client = new FakeAgentClient();
+    const view = await initializedTui(client);
+    view.stdin.write('first \\');
+    view.stdin.write('\r');
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(client.prompts).toEqual([]);
+    view.stdin.write('second');
+    view.stdin.write('\r');
+    await waitForFrame(() => client.prompts.length === 1);
+    expect(client.prompts).toEqual(['first \nsecond']);
+    view.unmount();
+  });
+
+  it('Windows 路径尾部反斜杠第一次 Enter 提交而不是换行', async () => {
+    const client = new FakeAgentClient();
+    const view = await initializedTui(client);
+    view.stdin.write('C:\\Users\\foo\\');
+    view.stdin.write('\r');
+    await waitForFrame(() => client.prompts.length === 1);
+    expect(client.prompts).toEqual(['C:\\Users\\foo\\']);
+    view.unmount();
+  });
+});
+
 
 describe('continuous plan Ink interaction', () => {
   it('renders structured options and resumes the same active run with the selected option', async () => {
@@ -2369,9 +2478,11 @@ class FakeAgentClient implements AgentClient {
   readonly fileSuggestions: string[] = [];
   readonly taskCommands: string[] = [];
   readonly skillInvocations: string[] = [];
+  readonly approvals: string[] = [];
   initializeCalls = 0;
   terminateCalls = 0;
   shutdownCalls = 0;
+  cancelRunCalls = 0;
   readonly #eventListeners = new Set<(event: ProtocolEvent) => void>();
   readonly #runCommandResults = new Set<string>();
   readonly #failureListeners = new Set<(message: string) => void>();
@@ -2441,10 +2552,15 @@ class FakeAgentClient implements AgentClient {
   }
 
   public cancelRun(): string {
+    this.cancelRunCalls++;
     return 'tui-3';
   }
 
-  public resolveApproval(): string {
+  public resolveApproval(
+    approvalId: string,
+    decision: 'allow_once' | 'allow_session' | 'deny',
+  ): string {
+    this.approvals.push(`${approvalId}:${decision}`);
     return 'tui-4';
   }
 

@@ -335,6 +335,35 @@ export function renderComposerText(state: ComposerState): string {
   return editorUnits(state.text).map(unit => displayUnit(state, unit)).join('');
 }
 
+export interface PastePreview {
+  readonly id: number;
+  readonly utf8Bytes: number;
+  readonly preview: string;
+}
+
+/**
+ * 光标落在折叠粘贴块上时，给出发送前可核对的前两行摘要。
+ *
+ * <p>正文仍不进入 Composer 可见结构；预览只服务本机当前草稿。</p>
+ */
+export function pastePreviewAtCursor(state: ComposerState, maxLines = 2, maxChars = 160): PastePreview | undefined {
+  const units = editorUnits(state.text);
+  const unit = units[state.cursorGrapheme] ?? units[state.cursorGrapheme - 1];
+  if (unit?.kind !== 'paste' || unit.payloadId === undefined) return undefined;
+  const payload = state.pastePayloads.get(unit.payloadId);
+  if (payload === undefined) return undefined;
+  const lines = payload.text.split(/\r?\n/u).slice(0, Math.max(1, maxLines));
+  const preview = lines.join(' · ').replace(/\s+/gu, ' ').trim();
+  const codePoints = Array.from(preview);
+  return {
+    id: payload.id,
+    utf8Bytes: payload.utf8Bytes,
+    preview: codePoints.length <= maxChars
+      ? preview
+      : `${codePoints.slice(0, Math.max(1, maxChars - 1)).join('')}…`,
+  };
+}
+
 export interface ComposerRenderedLine {
   readonly beforeCursor: string;
   readonly cursorText: string | undefined;

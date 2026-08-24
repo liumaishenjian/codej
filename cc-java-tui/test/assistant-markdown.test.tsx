@@ -25,4 +25,12 @@ describe('AssistantMarkdown', () => {
     expect(frame).toContain('class Demo {}');
     expect(frame).toContain('还在流式');
   });
+
+  it('未闭合围栏在流式过程中保持代码区域而不是反复拆成段落', () => {
+    const view = render(<AssistantMarkdown text={'```ts\nconst ready = true;'} />);
+    const frame = view.lastFrame() ?? '';
+    expect(frame).toContain('ts');
+    expect(frame).toContain('const ready = true;');
+    expect(frame).toContain('╭');
+  });
 });

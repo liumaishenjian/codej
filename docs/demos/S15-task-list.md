@@ -69,7 +69,23 @@ npm --prefix cc-java-tui run test:real-java
 - Task snapshot 依次显示中文 PENDING/IN_PROGRESS/COMPLETED；全部 Task 与 Evidence 满足后进入零 Tool final-only，Run 与 durable Plan 均完成而不是 `time_limit_reached`；
 - 自动面板不抢输入焦点，完成行显示 `✓`，完成态装饰策略为 `strikethrough/dim`。
 
-2026-08-25 第二次 corrective 实际结果：4/4 PASS。历史首次 corrective E2E 曾因 Plan execution scope 未保留 Task Tool 而失败并报告三个 `unknown_tool`；本轮又用真实 E2E 关闭英文二次建单和完成后超时缺口，失败历史均保留为可证伪证据。
+2026-08-26 第四次 corrective 实际结果：6/6 PASS。历史首次 corrective E2E 曾因 Plan execution scope 未保留 Task Tool 而失败并报告三个 `unknown_tool`；后续真实运行又暴露通用 task_update 难以驱动逐项交互和 5m Run deadline 取消重试。本轮批准 execution 改用 `task_id/status/active_form`，并真实生成、重新打开校验 18×7=126 行 OpenXML XLSX；五项任务均观察到 PENDING/IN_PROGRESS/COMPLETED，另一个命令 timeout 场景保持 recovery，失败历史均保留为可证伪证据。
+
+## Demo 5：窄状态协议、样式节点与真实交付
+
+```powershell
+.\mvnw.cmd -pl cc-java-cli -am "-Dtest=ApprovedPlanTaskUpdateToolTest,TaskToolProductionCompositionTest,CcJavaCommandTest,StdioProtocolCodecTest" "-Dsurefire.failIfNoSpecifiedTests=false" test
+npm --prefix cc-java-tui run check
+npm --prefix cc-java-tui run test:real-java
+```
+
+预期观察：
+
+- 模型可见的批准 Plan `task_update` 只有 task/status/active form，Java 注入 Plan、Run、CAS 和 claim；
+- 最大长度 Unicode Provider call ID 的内部阶段 ID 固定有界，同一更新重放不推进 revision；
+- React 节点属性直接显示 IN_PROGRESS 主标题 bold、活动行 dim、COMPLETED strikethrough/dim 且活动行消失；
+- 默认 Run timeout 为有界 30m，显式 `--timeout` 仍覆盖；
+- 真实 Java E2E 生成并校验 XLSX，而不是只写入同名文本文件。
 
 ## 负例与事实边界
 

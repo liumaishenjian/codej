@@ -500,7 +500,7 @@ Stage 完成项。
 | TASK-02 | Task mutation 与认领 | CREATE/EDIT/TRANSITION/CLAIM/RESUME_CLAIM/RELEASE/ASSIGN/REASSIGN/DEPENDENCY/DELETE；claim epoch、CAS 与 actor/session/run/callId 幂等已由 Tool/Pipeline 和并发测试覆盖 | L2 | S15 | AUTH-01/ADR-088 |
 | TASK-03 | Task Session 持久化与恢复 | canonical 增量 Session journal、Resume 同 Board、Fork 新 Board、终止 Run recovery、损坏尾部完整前缀与容量回归 | L2 | S15 | AUTH-01/ADR-088 |
 | TASK-04 | Root/Child Task capability | 独立 child Session 经宿主验证 `taskIds` 并注入收窄 capability；生产 E2E 证明 child 可更新授权任务且不能扩大范围 | L2 | S15 | AUTH-01/ADR-088 |
-| TASK-05 | Task Tool、协议与 TUI | 四个普通 Run Model Tool 统一经过 Pipeline/Hook/Permission；批准 Plan 从唯一显式步骤 section 按原语言/顺序应用预置权威 Task，模型无 `task_create`，Task+Evidence 完成后单次 final-only 收敛；stable snapshot、stdio `/tasks`、实时快照及紧凑无边框、宽度安全、不抢焦点、完成划线/5 秒隐藏的 Ink 面板已由真实 Java→stdio→Ink E2E 验证 | L2 | S15 | AUTH-01/ADR-088 |
+| TASK-05 | Task Tool、协议与 TUI | 四个普通 Run Model Tool 统一经过 Pipeline/Hook/Permission；批准 Plan 从唯一显式步骤 section 按原语言/顺序应用预置权威 Task，模型无 `task_create`，窄 `task_update(task_id,status,active_form)` 由 Java 注入 CAS/claim/Plan/Run identity，Task+Evidence 完成后单次 final-only 收敛；strict stdio codec 接受无参数 `/tasks`，实时快照及紧凑无边框、宽度安全、不抢焦点、进行中 bold+dim activity、完成 strikethrough/dim/5 秒隐藏的 Ink 面板已由真实 Java→stdio→Ink E2E 验证，测试实际生成/校验 OpenXML XLSX，并证明 `run_command` timeout 后 Run 计数与 Task recovery 一致 | L2 | S15 | AUTH-01/ADR-088 |
 
 `TASK-01..05` 的状态、持久化与权限仍独立于 `PLAN-01` 审批/证据；批准后的唯一显式步骤 section 仅在执行边界形成确定性 Task seed，不构成反向审批或证据。它也不等于 S12 `SUB-04` 的父子执行任务；Team shared、peer messaging、跨进程 owner/lease/watch/poll 继续只属于 `SUB-11`，本批不提升其等级。
 

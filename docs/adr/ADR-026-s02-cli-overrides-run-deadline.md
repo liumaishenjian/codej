@@ -1,7 +1,7 @@
 # ADR-026：S02 类型化 CLI Override 与 Runtime 墙钟限制
 
 - Status: Accepted
-- Date: 2026-07-29
+- Date: 2026-07-29；Amended: 2026-08-26
 - Stage: S02 Model + Streaming CLI
 - Feature IDs: `CFG-01`、`CTX-01`、`LOOP-08`、`CLI-06`
 - Reference Behavior Baseline: `R2026.03`
@@ -20,7 +20,7 @@ Java Print 已能调用真实模型，但 Workspace、模型和运行时限仍�
 1. Java Headless 增加 `--workspace <path>`、`--model <name>` 和
    `--timeout <duration>`，同时适用于 `--print` 与 `--stdio`。
 2. Duration 接受整数 `ms`、`s`、`m` 或 ISO-8601，范围固定为 10ms～30m，
-   默认 5m；参数解析失败返回用法错误 2。
+   默认 30m；显式 `--timeout` 始终是硬覆盖，参数解析失败返回用法错误 2。
 3. Workspace 必须解析为可访问的真实目录。错误诊断不回显路径；S02 没有文件 Tool，
    本决定不替代 S03 的 WorkspaceGuard、Symlink/Junction 和敏感路径规则。
 4. 模型名覆盖经过与配置文件相同的长度和控制字符校验。API Key、Base URL 不提供
@@ -52,3 +52,13 @@ S04 Tool/子进程树传播和跨平台长期稳定性尚未完成。
 
 本 ADR 不证明限流重试、不完整流、输出长度恢复或 Windows TTY 全部负例，也不支持
 S02 Stage Exit。
+
+## 2026-08-26 修订：交互式复杂 Run 的默认值
+
+用户真实批准 Plan 执行证明，原默认 5m 会把首次命令失败后的读取、修补、再次执行与验证
+共同挤入同一个绝对 deadline；第二次 `run_command` 即使自身 timeout 尚未到期，也可能先被
+整个 Run 取消并最终得到 `TIME_LIMIT_REACHED`。这不是命令或交付物本身的失败语义。
+
+因此默认值提升到既有上限 30m，不改变 10ms～30m 的安全边界、Deadline 线程、取消传播、
+唯一终态或显式覆盖语义，也不引入自动重放、动态 lease 或无限 Run。CLI Fake 固定默认/显式值，
+真实 Task List E2E 另外验证成功的长耗时命令与命令自身 timeout 后的 recovery 一致性。

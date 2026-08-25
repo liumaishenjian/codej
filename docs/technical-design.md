@@ -1197,6 +1197,16 @@ Plan Review；显式 `/tasks` 才取得 ↑/↓、Enter、Esc 焦点。面板按
 pending、recent completed 排序，采用无全宽边框的紧凑行并隐藏 ID/revision/owner/实现词；IN_PROGRESS 加粗，COMPLETED
 使用真实 strikethrough/dim。整行预算通过 grapheme segmentation 与 display width 同时计算缩进、符号、CJK/emoji/
 combining、依赖/恢复后缀和控制行；全部完成保留约 5 秒后只隐藏 Surface，durable Board 可由 `/tasks` 重开。
+IN_PROGRESS 主行使用实心符号与 bold subject，下一行以 dim 投影 `activeForm ?? subject` 并保证单一尾部省略号；
+COMPLETED 主行使用 dim/strikethrough 且移除活动子行。活动行的缩进和省略号也进入 display-width 预算。
+stdio strict codec、TypeScript Client 与 Java dispatcher 必须共享同一 `session.command` intent 集；`tasks` 只允许空 arguments，
+Run terminal 后仍可读取由 terminated Run 派生 `recoveryRequired` 的权威 snapshot。跨层验收不使用扩展名占位文本：测试通过
+真实 `run_command` 子进程生成/校验 OpenXML XLSX，并以另一个 timeout 子进程对账 Tool failure、Run advisory 和 Task recovery。
+
+批准 Plan execution registry 用同名窄化 Adapter 替换通用 `task_update` mutation schema：模型只提交
+`task_id/status/active_form`，应用依据当前 canonical snapshot 注入 CAS revision、claim epoch、Plan identity 和
+root Run capability，并只允许 `PENDING -> IN_PROGRESS -> COMPLETED`。Provider call ID 与内部多阶段 mutation ID
+通过带阶段分隔的 SHA-256 稳定派生，避免合法长 Unicode ID 追加后超过内部上限，同时保持 partial retry 幂等。
 
 每次模型请求前，批准 Plan controller 重新验证当前 Plan 的权威 Task 全部精确完成且无 blocked/recovery，并运行确定性
 Evidence Gate；两者满足后单向进入唯一 final-only turn，Tool definitions 为空，违规 Tool Call 在 Pipeline 前以
@@ -1421,7 +1431,7 @@ Print 只把 `ModelTextDelta` 写到 stdout；若非流式 Fake 只给聚合终�
 
 - `--workspace <path>`：默认当前目录，进入 Runtime 前解析为真实可访问目录；
 - `--model <name>`：覆盖本次进程模型名，重新执行配置校验；
-- `--timeout <duration>`：接受 `ms/s/m` 或 ISO-8601，范围 10ms～30m，默认 5m。
+- `--timeout <duration>`：接受 `ms/s/m` 或 ISO-8601，范围 10ms～30m，默认 30m；显式值始终硬覆盖。
 
 实际 Workspace、最终模型名和 Timeout 写入 `SessionSpec.runtimeMetadata`。API Key 和
 Base URL 不提供 CLI Override。`AgentLimits.maxDuration` 由 Core 驱动虚拟 Deadline

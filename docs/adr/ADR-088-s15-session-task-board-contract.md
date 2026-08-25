@@ -141,9 +141,9 @@ Session JSONL 对每次成功 mutation 只保存命令、可信 actor identity�
 
 stable v1 通过 wire 名 `task-list-v1` 协商，只读 `task.snapshot` 支持 TaskId cursor、默认 25/最大 50 和 canonical revision；mutation 仍只通过模型 Tool/Pipeline。内部 stdio `/tasks` 返回活动任务与最近五个完成项的有界投影。每次成功 `task_create/task_update` 必须先发布 `tool.completed`，再由同一 stdio writer 发布 Java 权威 `task.board.snapshot`；失败 mutation 不发布快照。事件绑定当前 Session/Run 且携带单调 Board revision，TUI 拒绝错归属和迟到/重复 revision。
 
-自动快照只打开非聚焦 Ink live region，不拦截 Composer、Steering、Approval、Question 或 Plan Review；显式 `/tasks` 才聚焦并启用 ↑/↓、Enter、Esc。面板按“需恢复、进行中、可执行 pending、blocked pending、最近完成”排序；采用紧凑无边框行，隐藏 Task ID/revision/owner 和 Java/Ink 等实现词。IN_PROGRESS 加粗，COMPLETED 通过独立装饰策略映射到真实 `strikethrough + dimColor`；全部完成保留约 5 秒后只隐藏面板，Board 仍可 `/tasks` 重开。所有行按 terminal display width 预算缩进、符号、CJK、emoji、combining sequence 和依赖/恢复后缀。
+自动快照只打开非聚焦 Ink live region，不拦截 Composer、Steering、Approval、Question 或 Plan Review；显式 `/tasks` 才聚焦并启用 ↑/↓、Enter、Esc。面板按“需恢复、进行中、可执行 pending、blocked pending、最近完成”排序；采用紧凑无边框行，隐藏 Task ID/revision/owner 和 Java/Ink 等实现词。IN_PROGRESS 使用实心符号、加粗标题和下一行 dim activity；COMPLETED 通过独立装饰策略映射到真实 `strikethrough + dimColor` 并移除 activity。全部完成保留约 5 秒后只隐藏面板，Board 仍可 `/tasks` 重开。所有行按 terminal display width 预算缩进、符号、活动省略号、CJK、emoji、combining sequence 和依赖/恢复后缀。
 
-普通复杂 Run 在 durable Task Tool 已注册时获得四个 Tool 和 Task 指导。批准 Plan 则由 `ApprovedPlanTaskSeeder` 只读取唯一明确命名的 `拟定步骤/实施步骤/执行步骤` 或受控英文等价 heading 下的顶层有序列表；忽略其他编号列表、代码 fence 和嵌套 heading，零候选保持 legacy，多个候选 Fail Closed。应用在 Runtime 生成真实 RunId、canonical Run 已开始且取得 active ownership后、首个模型回合前幂等创建 Task；metadata 绑定 planId、content digest、稳定的 `ExecutionBrief.approvedRevision` 和 step ordinal。执行模型只获得 `task_list/task_get/task_update`，`task_create` 从 definitions 移除，因此不能另建英文标题、改序、合并或拆分批准步骤。初始 PENDING snapshot 在 `run.started` 后、首个模型 Tool 前由同一 stdio writer 发布。
+普通复杂 Run 在 durable Task Tool 已注册时获得四个 Tool 和 Task 指导。批准 Plan 则由 `ApprovedPlanTaskSeeder` 只读取唯一明确命名的 `拟定步骤/实施步骤/执行步骤` 或受控英文等价 heading 下的顶层有序列表；忽略其他编号列表、代码 fence 和嵌套 heading，零候选保持 legacy，多个候选 Fail Closed。应用在 Runtime 生成真实 RunId、canonical Run 已开始且取得 active ownership后、首个模型回合前幂等创建 Task；metadata 绑定 planId、content digest、稳定的 `ExecutionBrief.approvedRevision` 和 step ordinal。执行模型只获得 `task_list/task_get/task_update`，`task_create` 从 definitions 移除；其中同名 `task_update` 被窄 Adapter 替换，只接受 `task_id/status/active_form`，revision、claim epoch、Plan identity、Session/Run 与 actor capability 均由宿主注入，因此不能另建英文标题、改序、合并、拆分或编辑批准步骤。内部多阶段 mutation call ID 由 Provider call ID 与 phase 做 SHA-256 稳定派生，兼顾长 Unicode ID 上限与 partial retry 幂等。初始 PENDING snapshot 在 `run.started` 后、首个模型 Tool 前由同一 stdio writer 发布。
 
 Plan controller 在每个模型请求前检查当前 Plan identity 的 Task 数量、顺序、正文、COMPLETED、blocked/recovery 及确定性 Evidence。全部满足后单向进入一次 final-only turn，移除所有 Tool definition；若模型仍发 Tool Call，Runtime 在执行前以 `INVALID_MODEL_RESPONSE` 终止。最终 `PlanStatus.COMPLETED` 同时要求权威 Task 和 Evidence；未满足时沿既有有界纠正路径处理，不合成成功。这样关闭“任务已全完成但模型继续 list/update，最终 `time_limit_reached`”缺口，同时保持 Task 不构成审批或 Evidence 本身。普通 Run 的 Task terminal advisory 语义不变。
 
@@ -173,6 +173,8 @@ Batch A-E 确定性测试覆盖：
 20. 中文批准步骤与 18 项城市编号列表并存时只 seed 步骤；英文受控 heading、零/多 section、代码 fence、嵌套 heading、部分 seed、旧 revision、unrelated Task 和 recovery 均有正负例；
 21. Runtime initializer 使用真实执行 RunId，失败产生配对 `INTERNAL_ERROR` 终态且释放 ownership；权威 Task+Evidence 满足后下一请求为零 Tool final-only，违规 Tool Call 不执行；
 22. 真实 Java→stdio→Ink E2E 断言中文标题、无 `task_create`、初始 snapshot 先于首个 Tool、两个步骤完整状态迁移、Run `completed` 与 durable Plan `COMPLETED`；20/24/240 列渲染覆盖 CJK/emoji/combining/依赖/恢复且相关整行不越界。
+23. 五步中文批准 Plan 在真实临时 Workspace 中通过三个独立 `run_command` 生成并校验最小 OpenXML XLSX、执行超过一秒的质量检查，逐项观察 PENDING/IN_PROGRESS/COMPLETED；另一个真实命令 timeout 场景验证 `operation_timed_out`、Run terminal pending/recovery 计数、终止后 `/tasks` 权威投影与 Ink 恢复提示一致。stdio strict codec 必须与 dispatcher 同步接受无参数 `tasks` intent。
+24. 批准 execution 的公开 `task_update` schema 不包含 operation/revision/claim/metadata；128 个非 BMP code point 的 Provider call ID 可完成 active edit、claim、幂等重放与 complete 而不漂移 revision。React 节点测试直接断言 IN_PROGRESS bold/dim activity、COMPLETED dim/strikethrough、活动行消失及中文窄宽度。
 
 参考实现不是 Golden Output；测试只断言本 ADR 的独立状态机、Tool/Pipeline 与资源契约。
 
@@ -183,5 +185,9 @@ Batch A-E 已完成并通过 G0-G6 capability 对账，`TASK-01..05` 提升到 L
 2026-08-25 corrective review 发现初版只具备 `/tasks` 查询面板与分层组件测试，未把生产 mutation 实时推送到 Ink；首次真实 Plan E2E 又证伪 execution scope 丢失 Task Tool，出现 `unknown_tool`。Commit `0a7a4a1149371ab0e52c68838cf453cf37d2a8f1` 增加权威快照事件、非聚焦 live region、复杂任务指导、Plan execution tool 保留和跨层 E2E；该修正关闭交互证据缺口，不改变既有 L2 等级或 S15 Exit。
 
 同日第二次深度交互审查由用户真实运行证伪三个剩余假设：模型可重新创建英文 Task、全宽面板与技术词泄漏不符合紧凑交互、Task/Evidence 已完成后仍可能循环至 `time_limit_reached`。实现 Commit `dd1e8885555f0b538c535f63148068e9694f121d` 引入批准步骤的应用权威 seed、真实 Run initializer、Task+Evidence final-only Gate、紧凑宽度安全 Surface 与 5 秒完成态。该 corrective 细化 `TASK-05` 的 L2 行为，不提升 Capability Level，S15 Exit 仍 OPEN。
+
+第三次验收审查发现原跨层 `.xlsx` 证据只是扩展名文本，并且 TypeScript Client/Java dispatcher 已声明 `/tasks`，strict codec 却遗漏 `tasks` intent，导致 Run terminal 后恢复查询返回 `protocol.error`。本变更以测试 classpath 中独立 JDK 进程生成/校验真实 OpenXML ZIP package，增加长耗时成功路径与真实 command timeout；同时补齐 codec allowlist 与负参数边界。该修正关闭真实性和协议收敛缺口，`TASK-01..05` 仍维持 L2，S15 Exit 仍 OPEN。
+
+第四次真实验收继续证伪两个跨层假设：通用 `task_update` 要求模型维护 operation/revision/claim，导致模型只 list 不逐项更新；交互式复杂 Run 的 5m 默认绝对 deadline 又会在首次命令失败和修补后取消第二次命令。修正后批准 execution 使用简单三态 Adapter，Java 注入可信并发/身份字段，Ink 自动投影弱化 activity 与完成划线；CLI 默认 Run deadline 提升到既有有界上限 30m，显式 override 仍为硬限制。真实 XLSX 与 timeout E2E、长 Unicode 幂等测试和 React 样式节点断言共同关闭该缺口；Capability Level 不变。
 
 以下不因本 ADR 提升：`SUB-11` Team Task Board、跨 root Session 共享、peer messaging、文件 watch/poll、跨进程订阅、离线 owner reclaim、时间 lease、自动领取和远程 worker；stable v1 目前提供协商与分页 snapshot，未提供跨连接 push subscription。S15 Stage Exit 仍由 PERM-05/PLAN-01/双 Provider/L4 A/B Eval 等既有 blocker 决定，保持 OPEN。

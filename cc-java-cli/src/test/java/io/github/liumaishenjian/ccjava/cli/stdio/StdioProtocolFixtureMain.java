@@ -31,6 +31,10 @@ public final class StdioProtocolFixtureMain {
                             ? permissionRuntimeHandler(Path.of(args[1]))
                     : args.length == 2 && args[0].equals("plan-runtime")
                             ? planRuntimeHandler(Path.of(args[1]))
+                    : args.length == 2 && args[0].equals("xlsx-plan-runtime")
+                            ? xlsxPlanRuntimeHandler(Path.of(args[1]))
+                    : args.length == 2 && args[0].equals("task-timeout-runtime")
+                            ? taskTimeoutRuntimeHandler(Path.of(args[1]))
                     : args.length == 2 && args[0].equals("task-runtime")
                             ? taskRuntimeHandler(Path.of(args[1]))
                             : new FakeStdioCommandHandler(List.of("alpha ", "beta"), Duration.ofMillis(250));
@@ -84,8 +88,8 @@ public final class StdioProtocolFixtureMain {
                             new io.github.liumaishenjian.ccjava.domain.ToolCall(
                                     "execution-task-claim-1", "task_update",
                                     new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
-                                            "task_id", "task-1", "operation", "CLAIM",
-                                            "expected_task_revision", 1)))));
+                                            "task_id", "task-1", "status", "IN_PROGRESS",
+                                            "active_form", "正在生成正确工作簿")))));
                     if (executionCall == 1) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
                             new io.github.liumaishenjian.ccjava.domain.ToolCall(
                                     "wrong-workbook", "write_file",
@@ -103,9 +107,7 @@ public final class StdioProtocolFixtureMain {
                             new io.github.liumaishenjian.ccjava.domain.ToolCall(
                                     "execution-task-complete-1", "task_update",
                                     new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
-                                            "task_id", "task-1", "operation", "TRANSITION",
-                                            "expected_task_revision", 2, "target_status", "COMPLETED",
-                                            "expected_claim_epoch", 1)))));
+                                            "task_id", "task-1", "status", "COMPLETED")))));
                     if (executionCall == 5 && !secondStepApproved) {
                         if (!request.toolDefinitions().isEmpty()) {
                             throw new IllegalStateException("Plan final-only 回合仍暴露 Tool definition");
@@ -117,15 +119,13 @@ public final class StdioProtocolFixtureMain {
                             new io.github.liumaishenjian.ccjava.domain.ToolCall(
                                     "execution-task-claim-2", "task_update",
                                     new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
-                                            "task_id", "task-2", "operation", "CLAIM",
-                                            "expected_task_revision", 1)))));
+                                            "task_id", "task-2", "status", "IN_PROGRESS",
+                                            "active_form", "正在验证交付结果")))));
                     if (executionCall == 6) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
                             new io.github.liumaishenjian.ccjava.domain.ToolCall(
                                     "execution-task-complete-2", "task_update",
                                     new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
-                                            "task_id", "task-2", "operation", "TRANSITION",
-                                            "expected_task_revision", 2, "target_status", "COMPLETED",
-                                            "expected_claim_epoch", 1)))));
+                                            "task_id", "task-2", "status", "COMPLETED")))));
                     if (executionCall == 7) {
                         if (!request.toolDefinitions().isEmpty()) {
                             throw new IllegalStateException("Plan final-only 回合仍暴露 Tool definition");
@@ -212,6 +212,206 @@ public final class StdioProtocolFixtureMain {
             }
             throw failure;
         }
+    }
+
+    /** 为五步中文批准 Plan 建立真实 run_command → OpenXML 工作簿的跨进程 Fixture。 */
+    private static StdioProtocol.CommandHandler xlsxPlanRuntimeHandler(Path parent) throws Exception {
+        Path expectedParent = parent.toAbsolutePath().normalize();
+        Path expectedRealParent = expectedParent.toRealPath();
+        Path fixtureRoot = Files.createTempDirectory(expectedRealParent, "xlsx-plan-runtime-");
+        try {
+            Path workspace = Files.createDirectory(fixtureRoot.resolve("workspace"));
+            initializeGitRepository(workspace);
+            Path sessionStore = Files.createDirectory(fixtureRoot.resolve("sessions"));
+            String workbook = "河南各市7天天气.xlsx";
+            String markdown = """
+                    # 河南天气工作簿交付计划
+
+                    ## 实施步骤
+                    1. 创建独立的工作簿生成器。
+                    2. 生成真实的河南天气 XLSX 文件。
+                    3. 校验 OpenXML 工作簿结构与中文数据。
+                    4. 执行长耗时质量检查。
+                    5. 汇总真实交付与验证证据。
+                    """;
+            String javaCommand = fixtureJavaCommand(WorkbookMakerFixtureMain.class);
+            java.util.concurrent.atomic.AtomicInteger planningCalls = new java.util.concurrent.atomic.AtomicInteger();
+            java.util.concurrent.atomic.AtomicInteger executionCalls = new java.util.concurrent.atomic.AtomicInteger();
+            java.util.concurrent.atomic.AtomicBoolean executing = new java.util.concurrent.atomic.AtomicBoolean();
+            io.github.liumaishenjian.ccjava.core.ModelGateway model = request -> {
+                String latestUser = request.messages().stream()
+                        .filter(io.github.liumaishenjian.ccjava.domain.UserMessage.class::isInstance)
+                        .map(io.github.liumaishenjian.ccjava.domain.UserMessage.class::cast)
+                        .map(io.github.liumaishenjian.ccjava.domain.UserMessage::content)
+                        .reduce((left, right) -> right).orElse("");
+                if (executing.get() || latestUser.contains("Implement the approved plan")) {
+                    executing.set(true);
+                    int call = executionCalls.getAndIncrement();
+                    if (request.toolDefinitions().stream().anyMatch(tool -> tool.name().equals("task_create"))) {
+                        throw new IllegalStateException("批准 Plan execution 不得暴露 task_create");
+                    }
+                    return switch (call) {
+                        case 0 -> approvedTaskUpdate("xlsx-claim-1", "task-1", "IN_PROGRESS", "正在创建工作簿生成器");
+                        case 1 -> tool("xlsx-generator", "write_file", Map.of(
+                                "path", "workbook-request.json",
+                                "content", "{\"province\":\"河南\",\"days\":7,\"format\":\"xlsx\"}\n"));
+                        case 2 -> approvedTaskUpdate("xlsx-complete-1", "task-1", "COMPLETED", null);
+                        case 3 -> approvedTaskUpdate("xlsx-claim-2", "task-2", "IN_PROGRESS", "正在生成126条天气记录");
+                        case 4 -> tool("xlsx-generate", "run_command", Map.of(
+                                "command", javaCommand + " generate " + shellQuote(workbook), "timeoutSeconds", 20));
+                        case 5 -> approvedTaskUpdate("xlsx-complete-2", "task-2", "COMPLETED", null);
+                        case 6 -> approvedTaskUpdate("xlsx-claim-3", "task-3", "IN_PROGRESS", "正在校验OpenXML结构");
+                        case 7 -> tool("xlsx-verify", "run_command", Map.of(
+                                "command", javaCommand + " verify " + shellQuote(workbook), "timeoutSeconds", 20));
+                        case 8 -> approvedTaskUpdate("xlsx-complete-3", "task-3", "COMPLETED", null);
+                        case 9 -> approvedTaskUpdate("xlsx-claim-4", "task-4", "IN_PROGRESS", "正在执行长耗时质量检查");
+                        case 10 -> tool("xlsx-slow-verify", "run_command", Map.of(
+                                "command", javaCommand + " slow-verify " + shellQuote(workbook), "timeoutSeconds", 20));
+                        case 11 -> approvedTaskUpdate("xlsx-complete-4", "task-4", "COMPLETED", null);
+                        case 12 -> approvedTaskUpdate("xlsx-claim-5", "task-5", "IN_PROGRESS", "正在汇总交付证据");
+                        case 13 -> approvedTaskUpdate("xlsx-complete-5", "task-5", "COMPLETED", null);
+                        case 14 -> {
+                            if (!request.toolDefinitions().isEmpty()) {
+                                throw new IllegalStateException("全部 Task 与 Evidence 满足后必须进入 final-only");
+                            }
+                            yield io.github.liumaishenjian.ccjava.domain.ModelTurn.text(
+                                    "河南天气工作簿已真实生成并通过 OpenXML 与长耗时检查");
+                        }
+                        default -> throw new IllegalStateException("XLSX Plan fixture 收到过多执行请求");
+                    };
+                }
+                return switch (planningCalls.getAndIncrement()) {
+                    case 0 -> tool("xlsx-plan", "revise_plan_artifact", Map.of("markdown", markdown));
+                    case 1 -> tool("xlsx-deliverable", "declare_plan_evidence", Map.of(
+                            "requirementId", "xlsx-file", "kind", "DELIVERABLE", "locator", workbook,
+                            "label", "real OpenXML workbook", "required", true));
+                    case 2 -> tool("xlsx-verification", "declare_plan_evidence", Map.of(
+                            "requirementId", "xlsx-check", "kind", "VERIFICATION", "locator", "run_command",
+                            "label", "OpenXML verification command", "required", true));
+                    case 3 -> tool("xlsx-review", "request_plan_review", Map.of());
+                    case 4 -> io.github.liumaishenjian.ccjava.domain.ModelTurn.text("planning finished");
+                    default -> throw new IllegalStateException("XLSX Plan fixture 收到过多规划请求");
+                };
+            };
+            RuntimeStdioCommandHandler delegate = fixtureRuntimeHandler(
+                    model, workspace, sessionStore, Duration.ofSeconds(30), fixtureRoot, "XLSX");
+            return ownedFixtureHandler(delegate, expectedParent, expectedRealParent, fixtureRoot,
+                    "xlsx-plan-runtime-");
+        } catch (Exception failure) {
+            try {
+                deleteFixtureTree(expectedParent, expectedRealParent, fixtureRoot, "xlsx-plan-runtime-");
+            } catch (Exception cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
+            throw failure;
+        }
+    }
+
+    /** 为真实 run_command 超时后的 Run/Task 一致性建立跨进程 Fixture。 */
+    private static StdioProtocol.CommandHandler taskTimeoutRuntimeHandler(Path parent) throws Exception {
+        Path expectedParent = parent.toAbsolutePath().normalize();
+        Path expectedRealParent = expectedParent.toRealPath();
+        Path fixtureRoot = Files.createTempDirectory(expectedRealParent, "task-timeout-runtime-");
+        try {
+            Path workspace = Files.createDirectory(fixtureRoot.resolve("workspace"));
+            initializeGitRepository(workspace);
+            Path sessionStore = Files.createDirectory(fixtureRoot.resolve("sessions"));
+            java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+            String timeoutCommand = isWindows() ? "Start-Sleep -Seconds 3" : "sleep 3";
+            io.github.liumaishenjian.ccjava.core.ModelGateway model = request -> switch (calls.getAndIncrement()) {
+                case 0 -> tool("timeout-create", "task_create", Map.of(
+                        "subject", "执行超时命令", "active_form", "等待长耗时命令"));
+                case 1 -> taskUpdate("timeout-claim", "task-1", "CLAIM", 1, null);
+                case 2 -> tool("timeout-command", "run_command", Map.of(
+                        "command", timeoutCommand, "timeoutSeconds", 1));
+                case 3 -> io.github.liumaishenjian.ccjava.domain.ModelTurn.text("命令已超时，任务保持待恢复");
+                default -> throw new IllegalStateException("Task timeout fixture 收到过多模型请求");
+            };
+            RuntimeStdioCommandHandler delegate = fixtureRuntimeHandler(
+                    model, workspace, sessionStore, Duration.ofSeconds(10), fixtureRoot, "TIMEOUT");
+            return ownedFixtureHandler(delegate, expectedParent, expectedRealParent, fixtureRoot,
+                    "task-timeout-runtime-");
+        } catch (Exception failure) {
+            try {
+                deleteFixtureTree(expectedParent, expectedRealParent, fixtureRoot, "task-timeout-runtime-");
+            } catch (Exception cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
+            throw failure;
+        }
+    }
+
+    private static io.github.liumaishenjian.ccjava.domain.ModelTurn approvedTaskUpdate(
+            String callId, String taskId, String status, String activeForm) {
+        java.util.LinkedHashMap<String, Object> arguments = new java.util.LinkedHashMap<>();
+        arguments.put("task_id", taskId);
+        arguments.put("status", status);
+        if (activeForm != null) arguments.put("active_form", activeForm);
+        return tool(callId, "task_update", arguments);
+    }
+
+    private static io.github.liumaishenjian.ccjava.domain.ModelTurn taskUpdate(
+            String callId, String taskId, String operation, long revision, Integer claimEpoch) {
+        java.util.LinkedHashMap<String, Object> arguments = new java.util.LinkedHashMap<>();
+        arguments.put("task_id", taskId);
+        arguments.put("operation", operation);
+        arguments.put("expected_task_revision", revision);
+        if (claimEpoch != null) {
+            arguments.put("target_status", "COMPLETED");
+            arguments.put("expected_claim_epoch", claimEpoch);
+        }
+        return tool(callId, "task_update", arguments);
+    }
+
+    private static io.github.liumaishenjian.ccjava.domain.ModelTurn tool(
+            String callId, String name, Map<String, ?> arguments) {
+        return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
+                new io.github.liumaishenjian.ccjava.domain.ToolCall(callId, name,
+                        new io.github.liumaishenjian.ccjava.domain.JsonObject(arguments))));
+    }
+
+    private static RuntimeStdioCommandHandler fixtureRuntimeHandler(
+            io.github.liumaishenjian.ccjava.core.ModelGateway model, Path workspace, Path sessionStore,
+            Duration timeout, Path fixtureRoot, String prefix) throws Exception {
+        Path providerHome = Files.createDirectories(fixtureRoot.resolve("provider/home"));
+        Path providerRepository = Files.createDirectories(fixtureRoot.resolve("provider/repository"));
+        var credentials = new io.github.liumaishenjian.ccjava.cli.auth.RestrictedFileCredentialStore(providerHome);
+        var definitions = new io.github.liumaishenjian.ccjava.cli.provider.ProviderDefinitionStore(providerHome);
+        var providerAuth = new io.github.liumaishenjian.ccjava.cli.runtime.ProviderAuthApplicationService(
+                definitions, credentials,
+                new io.github.liumaishenjian.ccjava.cli.auth.LegacyCredentialMigrationService(
+                        new io.github.liumaishenjian.ccjava.cli.auth.LegacyProviderConfigurationReader(providerRepository),
+                        definitions, credentials),
+                Map.of("CC_JAVA_" + prefix + "_FIXTURE_KEY", "fixture-provider-sentinel"));
+        providerAuth.login(new io.github.liumaishenjian.ccjava.cli.runtime.ProviderAuthApplicationService.LoginRequest(
+                        "anthropic", "fixture", io.github.liumaishenjian.ccjava.cli.runtime
+                        .ProviderAuthApplicationService.RefKind.ENV,
+                        "CC_JAVA_" + prefix + "_FIXTURE_KEY", true), null,
+                io.github.liumaishenjian.ccjava.core.CancellationToken.none());
+        providerAuth.addModel("anthropic", "fixture-model", true,
+                io.github.liumaishenjian.ccjava.core.CancellationToken.none());
+        return new RuntimeStdioCommandHandler((events, approvals) ->
+                io.github.liumaishenjian.ccjava.cli.runtime.HeadlessRuntimeSession.production(
+                        model, events, new io.github.liumaishenjian.ccjava.cli.runtime.HeadlessRuntimeOptions(
+                                workspace.toAbsolutePath().normalize(), "fixture-model", timeout,
+                                io.github.liumaishenjian.ccjava.domain.PermissionMode.DEFAULT, List.of(),
+                                io.github.liumaishenjian.ccjava.cli.session.SessionOpenRequest.create(), sessionStore),
+                        approvals), providerAuth);
+    }
+
+    private static String fixtureJavaCommand(Class<?> mainClass) throws Exception {
+        Path java = Path.of(System.getProperty("java.home"), "bin", isWindows() ? "java.exe" : "java");
+        Path fixtureClasses = Path.of(mainClass.getProtectionDomain().getCodeSource().getLocation().toURI());
+        return (isWindows() ? "& " : "") + shellQuote(java.toString()) + " -cp "
+                + shellQuote(fixtureClasses.toString()) + " " + shellQuote(mainClass.getName());
+    }
+
+    private static String shellQuote(String value) {
+        return "'" + value.replace("'", "''") + "'";
+    }
+
+    private static boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("win");
     }
 
     /** 为普通复杂任务建立真实 durable Task Tool → stdio snapshot 的跨进程 Fixture。 */

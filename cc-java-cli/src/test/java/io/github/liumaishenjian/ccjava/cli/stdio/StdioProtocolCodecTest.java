@@ -96,6 +96,11 @@ class StdioProtocolCodecTest {
                  "arguments":{"anchors":["focus"]}}}
                 """);
         assertThat(command.type()).isEqualTo("session.command");
+        assertThat(codec.decodeCommand("""
+                {"version":0,"type":"session.command","requestId":"req-tasks","sessionId":"session-1",
+                 "sequence":3,"payload":{"protocolVersion":0,"commandId":"command-tasks","intent":"tasks",
+                 "arguments":{}}}
+                """).payload().get("intent").stringValue()).isEqualTo("tasks");
         assertProtocolError("""
                 {"version":0,"type":"session.command","requestId":"req-1","sessionId":"session-1",
                  "sequence":2,"payload":{"protocolVersion":0,"commandId":"command-1","intent":"compact",

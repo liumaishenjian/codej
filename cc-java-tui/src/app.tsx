@@ -1984,6 +1984,11 @@ function SessionTaskPanel({state, columns}: {
                   </Text>
                   <Text dimColor={task.blocked || task.status === 'COMPLETED'}>{line.suffix}</Text>
                 </Text>
+                {task.status === 'IN_PROGRESS' ? (
+                  <Text dimColor>{projectTaskActivityLine(
+                    task.activeForm, task.subject, panelColumns,
+                  )}</Text>
+                ) : null}
                 {selected && state.taskDetailOpen ? (
                   <Text dimColor>
                     {'    '}{truncateTerminalText(`${task.status === 'COMPLETED' ? '已完成'
@@ -2005,6 +2010,24 @@ function SessionTaskPanel({state, columns}: {
         : null}
     </Box>
   );
+}
+
+/**
+ * 投影进行中 Task 的弱化 activity 子行，并把缩进与尾部省略号计入完整列宽预算。
+ *
+ * <p>activeForm 缺失时安全回退到 canonical subject；已有 Unicode 或三点省略号不会重复追加。</p>
+ */
+export function projectTaskActivityLine(
+  activeForm: string | undefined,
+  subject: string,
+  availableWidth: number,
+): string {
+  const indent = '    ';
+  const source = (activeForm ?? subject).trimEnd();
+  const activity = /(?:…|\.{3})$/u.test(source) ? source : `${source}…`;
+  const width = Math.max(1, Math.floor(availableWidth));
+  if (width <= terminalDisplayWidth(indent)) return ' '.repeat(width);
+  return indent + truncateTerminalText(activity, width - terminalDisplayWidth(indent));
 }
 
 /**

@@ -83,7 +83,7 @@ record CliOverrides(
                         : ExecutionShell.POSIX_PLATFORM);
     }
 
-    static final Duration DEFAULT_TIMEOUT = Duration.ofMinutes(5);
+    static final Duration DEFAULT_TIMEOUT = Duration.ofMinutes(30);
     static final Duration MIN_TIMEOUT = Duration.ofMillis(10);
     static final Duration MAX_TIMEOUT = Duration.ofMinutes(30);
     private static final int MAX_MODEL_LENGTH = 200;

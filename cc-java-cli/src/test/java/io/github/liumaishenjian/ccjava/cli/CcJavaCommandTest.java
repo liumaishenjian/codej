@@ -22,7 +22,7 @@ class CcJavaCommandTest {
         assertThat(invocation.exitCode()).isEqualTo(17);
         assertThat(runner.printPrompt).isEqualTo("介绍一下你自己");
         assertThat(runner.overrides.model()).isEmpty();
-        assertThat(runner.overrides.timeout()).isEqualTo(Duration.ofMinutes(5));
+        assertThat(runner.overrides.timeout()).isEqualTo(Duration.ofMinutes(30));
         assertThat(runner.stdioCalls).isZero();
     }
 
@@ -296,7 +296,9 @@ class CcJavaCommandTest {
         assertThat(invocation.stdout())
                 .contains("Usage: cc-java")
                 .contains("--print")
-                .contains("--stdio");
+                .contains("--stdio")
+                .contains("--timeout=<duration>")
+                .contains("30m");
         assertThat(runner.printPrompt).isNull();
         assertThat(runner.stdioCalls).isZero();
     }

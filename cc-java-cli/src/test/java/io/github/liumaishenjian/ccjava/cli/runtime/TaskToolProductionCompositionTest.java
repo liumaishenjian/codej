@@ -83,10 +83,9 @@ class TaskToolProductionCompositionTest {
                 case 2 -> ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review", JsonObject.empty())));
                 case 3 -> ModelTurn.text("规划完成");
                 case 4 -> ModelTurn.tools(List.of(new ToolCall("claim", "task_update", new JsonObject(Map.of(
-                        "task_id", "task-1", "operation", "CLAIM", "expected_task_revision", 1)))));
+                        "task_id", "task-1", "status", "IN_PROGRESS", "active_form", "正在执行中文任务")))));
                 case 5 -> ModelTurn.tools(List.of(new ToolCall("complete", "task_update", new JsonObject(Map.of(
-                        "task_id", "task-1", "operation", "TRANSITION", "expected_task_revision", 2,
-                        "target_status", "COMPLETED", "expected_claim_epoch", 1)))));
+                        "task_id", "task-1", "status", "COMPLETED")))));
                 case 6 -> ModelTurn.text("中文任务与验证均已完成");
                 default -> throw new IllegalStateException("final-only 后不得继续模型循环");
             };
@@ -110,6 +109,18 @@ class TaskToolProductionCompositionTest {
                     .isEqualTo(io.github.liumaishenjian.ccjava.domain.PlanStatus.COMPLETED);
         }
         assertThat(calls).hasValue(7);
+        assertThat(requests.get(4).toolDefinitions())
+                .filteredOn(definition -> definition.name().equals("task_update"))
+                .singleElement()
+                .satisfies(definition -> assertThat(definition.inputSchemaJson())
+                        .contains("\"status\"", "IN_PROGRESS", "COMPLETED", "active_form")
+                        .doesNotContain("operation", "expected_task_revision", "expected_claim_epoch",
+                                "subject", "target_status"));
+        assertThat(requests.get(4).messages())
+                .filteredOn(io.github.liumaishenjian.ccjava.domain.SystemMessage.class::isInstance)
+                .extracting(message -> ((io.github.liumaishenjian.ccjava.domain.SystemMessage) message).content())
+                .anySatisfy(content -> assertThat(content)
+                        .contains("PENDING -> IN_PROGRESS -> COMPLETED", "Java injects and validates them"));
         assertThat(requests.getLast().toolDefinitions()).isEmpty();
     }
 
@@ -130,10 +141,9 @@ class TaskToolProductionCompositionTest {
                 case 2 -> ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review", JsonObject.empty())));
                 case 3 -> ModelTurn.text("规划完成");
                 case 4 -> ModelTurn.tools(List.of(new ToolCall("claim", "task_update", new JsonObject(Map.of(
-                        "task_id", "task-1", "operation", "CLAIM", "expected_task_revision", 1)))));
+                        "task_id", "task-1", "status", "IN_PROGRESS", "active_form", "正在执行中文任务")))));
                 case 5 -> ModelTurn.tools(List.of(new ToolCall("complete", "task_update", new JsonObject(Map.of(
-                        "task_id", "task-1", "operation", "TRANSITION", "expected_task_revision", 2,
-                        "target_status", "COMPLETED", "expected_claim_epoch", 1)))));
+                        "task_id", "task-1", "status", "COMPLETED")))));
                 case 6 -> ModelTurn.tools(List.of(new ToolCall("forbidden-list", "task_list", JsonObject.empty())));
                 default -> throw new IllegalStateException("违反 final-only 后不得继续模型循环");
             };
@@ -181,7 +191,7 @@ class TaskToolProductionCompositionTest {
                 case 2 -> ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review", JsonObject.empty())));
                 case 3 -> ModelTurn.text("规划完成");
                 case 4 -> ModelTurn.tools(List.of(new ToolCall("claim", "task_update", new JsonObject(Map.of(
-                        "task_id", "task-1", "operation", "CLAIM", "expected_task_revision", 1)))));
+                        "task_id", "task-1", "status", "IN_PROGRESS", "active_form", "正在执行中文任务")))));
                 case 5 -> ModelTurn.text("任务已经完成");
                 case 6 -> ModelTurn.text("再次声称任务已经完成");
                 default -> throw new IllegalStateException("未完成 Task 的纠正必须有界");
@@ -232,10 +242,9 @@ class TaskToolProductionCompositionTest {
                 case 2 -> ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review", JsonObject.empty())));
                 case 3 -> ModelTurn.text("规划完成");
                 case 4 -> ModelTurn.tools(List.of(new ToolCall("claim", "task_update", new JsonObject(Map.of(
-                        "task_id", "task-1", "operation", "CLAIM", "expected_task_revision", 1)))));
+                        "task_id", "task-1", "status", "IN_PROGRESS", "active_form", "正在执行中文任务")))));
                 case 5 -> ModelTurn.tools(List.of(new ToolCall("complete", "task_update", new JsonObject(Map.of(
-                        "task_id", "task-1", "operation", "TRANSITION", "expected_task_revision", 2,
-                        "target_status", "COMPLETED", "expected_claim_epoch", 1)))));
+                        "task_id", "task-1", "status", "COMPLETED")))));
                 case 6 -> ModelTurn.text("错误声称验证完成");
                 case 7 -> ModelTurn.text("仍未补齐验证");
                 default -> throw new IllegalStateException("缺失证据纠正必须有界");

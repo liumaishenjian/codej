@@ -386,7 +386,7 @@ public final class StdioProtocolCodec {
     private void validateSessionCommandArguments(String intent, ObjectNode arguments, String requestId)
             throws StdioProtocolException {
         Set<String> allowed = switch (intent) {
-            case "help", "clear", "context", "doctor" -> Set.of();
+            case "help", "clear", "context", "doctor", "tasks" -> Set.of();
             case "compact" -> Set.of("anchors");
             case "model" -> Set.of("name");
             case "permissions" -> Set.of("mode", "selection");
@@ -402,8 +402,8 @@ public final class StdioProtocolCodec {
         if (arguments.properties().stream().anyMatch(entry -> !allowed.contains(entry.getKey()))) {
             throw new StdioProtocolException("UNKNOWN_FIELD", requestId, "arguments 包含未知字段");
         }
-        if ((intent.equals("help") || intent.equals("clear") || intent.equals("context") || intent.equals("doctor"))
-                && !arguments.isEmpty()) {
+        if ((intent.equals("help") || intent.equals("clear") || intent.equals("context") || intent.equals("doctor")
+                || intent.equals("tasks")) && !arguments.isEmpty()) {
             throw new StdioProtocolException("INVALID_ARGUMENT", requestId, "该 intent 不接受 arguments");
         }
         if (intent.equals("compact")) {

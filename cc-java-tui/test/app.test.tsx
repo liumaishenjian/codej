@@ -1,7 +1,9 @@
 import {readFile, readdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {Text} from 'ink';
 import {render} from 'ink-testing-library';
+import TestRenderer, {act} from 'react-test-renderer';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {
   AgentTui,
@@ -15,6 +17,7 @@ import {
   editInput,
   MAX_INPUT_CHARS,
   renderProviderControlResult,
+  projectTaskActivityLine,
   scheduleTaskPanelAutoHide,
   sessionTaskTextDecoration,
   TASK_COMPLETION_VISIBLE_MS,
@@ -2034,6 +2037,57 @@ describe('TUI interaction polish', () => {
 
 describe('Session Task List Ink surface', () => {
   afterEach(() => vi.useRealTimers());
+
+  it('三态帧只在进行中显示弱化 activity，并保留主行真实文本样式', async () => {
+    const task = {taskId: 'task-1', revision: 1, subject: '生成河南天气工作簿', activeForm: '正在组装126条天气记录',
+      status: 'PENDING' as const, owner: undefined, blocked: false, blockerIds: [], recoveryRequired: false};
+    const state = (status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED', activeForm: string | undefined): TuiState => ({
+      phase: 'ready', sessionId: 'session-style', activeRunId: undefined, notice: undefined,
+      checkpoints: [], checkpointPanelOpen: false, selectedCheckpointId: undefined,
+      checkpointDiff: undefined, pendingUndoCheckpointId: undefined, checkpointUndo: undefined,
+      runs: [], taskPanelOpen: true, taskPanelFocused: false, selectedTaskId: 'task-1', taskDetailOpen: false,
+      taskBoard: {boardRevision: status === 'PENDING' ? 1 : status === 'IN_PROGRESS' ? 2 : 3,
+        totalTasks: 1, truncated: false, tasks: [{...task, status, activeForm}]},
+    });
+    const nodeText = (value: unknown): string => Array.isArray(value)
+      ? value.map(nodeText).join('') : typeof value === 'string' ? value : '';
+    const textNode = (renderer: TestRenderer.ReactTestRenderer, text: string) => renderer.root.findAllByType(Text)
+      .find(node => nodeText(node.props.children) === text);
+    let renderer!: TestRenderer.ReactTestRenderer;
+
+    await act(async () => { renderer = TestRenderer.create(
+      <AgentView state={state('PENDING', task.activeForm)} input="" columns={24} rows={30} />,
+    ); });
+    expect(textNode(renderer, task.subject)?.props).toMatchObject({bold: false, dimColor: false, strikethrough: false});
+    expect(renderer.root.findAllByType(Text).some(node => nodeText(node.props.children).includes('正在组装'))).toBe(false);
+
+    await act(async () => { renderer.update(
+      <AgentView state={state('IN_PROGRESS', task.activeForm)} input="" columns={24} rows={30} />,
+    ); });
+    expect(textNode(renderer, task.subject)?.props).toMatchObject({bold: true, dimColor: false, strikethrough: false});
+    const activeLine = projectTaskActivityLine(task.activeForm, task.subject, 22);
+    expect(textNode(renderer, activeLine)?.props).toMatchObject({dimColor: true});
+    expect(terminalDisplayWidth(activeLine)).toBeLessThanOrEqual(22);
+    expect(activeLine).toContain('正在组装');
+    expect(activeLine.endsWith('…')).toBe(true);
+
+    await act(async () => { renderer.update(
+      <AgentView state={state('IN_PROGRESS', undefined)} input="" columns={20} rows={30} />,
+    ); });
+    const fallback = projectTaskActivityLine(undefined, task.subject, 18);
+    expect(textNode(renderer, fallback)?.props).toMatchObject({dimColor: true});
+    expect(fallback).toContain('生成河南');
+    expect(fallback.endsWith('…')).toBe(true);
+    expect(projectTaskActivityLine('已有省略号…', task.subject, 22)).toBe('    已有省略号…');
+
+    await act(async () => { renderer.update(
+      <AgentView state={state('COMPLETED', task.activeForm)} input="" columns={24} rows={30} />,
+    ); });
+    expect(textNode(renderer, task.subject)?.props).toMatchObject({bold: false, dimColor: true, strikethrough: true});
+    expect(renderer.root.findAllByType(Text).some(node => nodeText(node.props.children).includes('正在组装'))).toBe(false);
+    renderer.unmount();
+  });
+
   it('/tasks 显式聚焦面板并让方向键、详情和 Esc 只作用于 Task 交互', async () => {
     const client = new FakeAgentClient();
     const view = await initializedTui(client);
@@ -2088,6 +2142,8 @@ describe('Session Task List Ink surface', () => {
     expect(frame.indexOf('需要恢复')).toBeLessThan(frame.indexOf('正在实现'));
     expect(frame.indexOf('正在实现')).toBeLessThan(frame.indexOf('等待依赖'));
     expect(frame).toContain('❯ ● 正在实现');
+    expect(frame).toContain('编写测试…');
+    expect(frame).toContain('需要恢复…');
     expect(frame).toContain('进行中 · 编写测试');
     expect(frame).toContain('✓ 已经完成');
     expect(frame).toContain('等待 1 项前置任务');

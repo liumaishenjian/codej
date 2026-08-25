@@ -82,7 +82,9 @@ class StdioProtocolFixtureCleanupTest {
             assertThat(events.stream().filter(event -> event.type().equals("task.board.snapshot")
                     && event.requestId().equals("execute"))
                     .map(event -> event.payload().get("boardRevision").longValue()))
-                    .containsExactly(1L, 2L, 3L);
+                    // 初始 seed 为 1；窄 Adapter 在一次 IN_PROGRESS Tool 内先写 activeForm、再 claim，
+                    // 只在 Tool 完成后发布 revision 3；最终 COMPLETED 发布 revision 4。
+                    .containsExactly(1L, 3L, 4L);
             assertThat(events.stream().filter(event -> event.requestId().equals("execute"))
                     .map(CapturedEvent::type)).containsSubsequence(
                             "plan.execution.accepted", "run.started", "tool.started", "tool.completed",

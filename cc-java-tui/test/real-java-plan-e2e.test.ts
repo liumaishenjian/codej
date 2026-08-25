@@ -138,7 +138,7 @@ describe('real Java stdio plan flow', () => {
         && (event.requestId === requestId || event.requestId === feedbackRequest))).toBe(false);
       const taskSnapshots = events.filter(event => event.type === 'task.board.snapshot'
         && event.requestId === executionRequest);
-      expect(taskSnapshots.map(event => event.payload.boardRevision)).toEqual([2, 3, 4, 5, 6]);
+      expect(taskSnapshots.map(event => event.payload.boardRevision)).toEqual([2, 4, 5, 7, 8]);
       expect(taskSnapshots.map(event => event.payload.tasks)).toEqual([
         [
           expect.objectContaining({subject: '生成精确命名的河南天气工作簿。', status: 'PENDING'}),
@@ -392,6 +392,185 @@ describe('real Java stdio plan flow', () => {
     expect(exit?.stderrBytes).toBe(0);
   }, 30_000);
 
+  it('executes five approved Chinese Tasks and delivers a real XLSX through run_command', async () => {
+    const classpath = process.env.CC_JAVA_TEST_CLASSPATH;
+    expect(classpath, 'CC_JAVA_TEST_CLASSPATH must point to compiled Java classes and dependencies').toBeTruthy();
+    const dependencyClasspath = process.env.CC_JAVA_TEST_DEPENDENCY_CLASSPATH;
+    const fixtureClasses = process.env.CC_JAVA_PLAN_FAKE_CLASSPATH;
+    expect(fixtureClasses, 'CC_JAVA_PLAN_FAKE_CLASSPATH must point to deterministic Java fixture classes').toBeTruthy();
+    const effectiveClasspath = dependencyClasspath === undefined
+      ? classpath!
+      : [...moduleClassDirectories, dependencyClasspath].join(path.delimiter);
+    const fixtureParent = await fs.mkdtemp(path.join(os.tmpdir(), 'codej-xlsx-plan-acceptance-'));
+    const client = new StdioClient({
+      executable: 'java',
+      args: ['-cp', [fixtureClasses!, effectiveClasspath].join(path.delimiter),
+        'io.github.liumaishenjian.ccjava.cli.stdio.StdioProtocolFixtureMain', 'xlsx-plan-runtime', fixtureParent],
+      cwd: workspacePath,
+      env: {...process.env, CC_JAVA_PLAN_FAKE_CLASSPATH: fixtureClasses!},
+    }, {shutdownTimeoutMs: 2_000});
+    const events: ProtocolEvent[] = [];
+    const failures: string[] = [];
+    let exit: {code: number | null; signal: NodeJS.Signals | null; stderrBytes: number} | undefined;
+    client.onEvent(event => events.push(event));
+    client.onFailure(message => failures.push(message));
+    client.onExit(result => { exit = result; });
+    const view = render(React.createElement(AgentTui, {client}));
+    try {
+      await waitFor(() => view.lastFrame()?.includes('就绪') === true,
+        () => diagnostic(events, failures, exit));
+      view.stdin.write('/plan 生成河南各市7天天气工作簿并验证真实文件');
+      view.stdin.write('\r');
+      await waitFor(() => events.some(event => event.type === 'plan.review.requested'
+        && String(event.payload.markdown).includes('河南天气工作簿交付计划')),
+      () => diagnostic(events, failures, exit));
+      const review = events.find(event => event.type === 'plan.review.requested')!;
+      await waitFor(() => events.some(event => event.type === 'run.completed'
+        && event.requestId === review.requestId), () => diagnostic(events, failures, exit));
+      const executionRequest = client.resolvePlanReview!({
+        planId: String(review.payload.planId),
+        revision: Number(review.payload.revision),
+        contentDigest: String(review.payload.contentDigest),
+        workspaceDigest: String(review.payload.workspaceDigest),
+        decision: 'APPROVE_USER', contextPolicy: 'KEEP', feedback: '',
+      });
+      await waitFor(() => events.some(event => event.type === 'run.started'
+        && event.requestId === executionRequest), () => diagnostic(events, failures, exit));
+      const executionStartedAt = Date.now();
+      for (let approvalCount = 1; approvalCount <= 4; approvalCount++) {
+        await waitFor(() => events.filter(event => event.type === 'approval.requested'
+          && event.requestId === executionRequest).length >= approvalCount,
+        () => diagnostic(events, failures, exit));
+        const approval = events.filter(event => event.type === 'approval.requested'
+          && event.requestId === executionRequest)[approvalCount - 1]!;
+        client.resolveApproval(String(approval.payload.approvalId), 'allow_once');
+      }
+      await waitFor(() => events.some(event => event.type === 'run.completed'
+        && event.requestId === executionRequest), () => diagnostic(events, failures, exit));
+      const runEvents = events.filter(event => event.requestId === executionRequest);
+      const snapshots = runEvents.filter(event => event.type === 'task.board.snapshot');
+      expect(snapshots.map(event => event.payload.boardRevision)).toEqual(
+        [5, 7, 8, 10, 11, 13, 14, 16, 17, 19, 20]);
+      expect((snapshots[0]!.payload.tasks as Array<{subject: string; status: string}>).map(task => task.subject))
+        .toEqual([
+          '创建独立的工作簿生成器。',
+          '生成真实的河南天气 XLSX 文件。',
+          '校验 OpenXML 工作簿结构与中文数据。',
+          '执行长耗时质量检查。',
+          '汇总真实交付与验证证据。',
+        ]);
+      const expectedActiveForms = [
+        '正在创建工作簿生成器', '正在生成126条天气记录', '正在校验OpenXML结构',
+        '正在执行长耗时质量检查', '正在汇总交付证据',
+      ];
+      for (let index = 0; index < 5; index++) {
+        const projections = snapshots.map(snapshot =>
+          (snapshot.payload.tasks as Array<{status: string; activeForm?: string}>)[index]!);
+        expect(projections.map(task => task.status)).toContain('PENDING');
+        expect(projections.map(task => task.status)).toContain('IN_PROGRESS');
+        expect(projections.at(-1)?.status).toBe('COMPLETED');
+        expect(projections.some(task => task.status === 'IN_PROGRESS'
+          && task.activeForm === expectedActiveForms[index])).toBe(true);
+      }
+      expect(runEvents.filter(event => event.type === 'tool.completed'
+        && event.payload.toolName === 'run_command'), diagnostic(events, failures, exit)).toHaveLength(3);
+      expect(runEvents.some(event => event.type === 'tool.failed')).toBe(false);
+      expect(runEvents.find(event => event.type === 'run.completed')?.payload.stopReason).toBe('completed');
+      expect(Date.now() - executionStartedAt).toBeGreaterThanOrEqual(1_000);
+      expect(view.lastFrame()).not.toContain('0/5');
+      expect(view.lastFrame()).not.toContain('time_limit_reached');
+
+      const fixtureRoot = (await fs.readdir(fixtureParent, {withFileTypes: true}))
+        .find(entry => entry.isDirectory() && entry.name.startsWith('xlsx-plan-runtime-'));
+      expect(fixtureRoot).toBeDefined();
+      const workbook = await fs.readFile(path.join(
+        fixtureParent, fixtureRoot!.name, 'workspace', '河南各市7天天气.xlsx'));
+      expect(workbook.subarray(0, 2).toString('ascii')).toBe('PK');
+      expect(workbook.includes(Buffer.from('[Content_Types].xml'))).toBe(true);
+      expect(workbook.includes(Buffer.from('xl/worksheets/sheet1.xml'))).toBe(true);
+      expect(workbook.byteLength).toBeGreaterThan(800);
+      expect(failures).toEqual([]);
+    } finally {
+      await client.shutdown();
+      view.unmount();
+      await fs.rm(fixtureParent, {recursive: true, force: true});
+    }
+    await waitFor(() => exit !== undefined, () => diagnostic(events, failures, exit));
+    expect(exit?.code).toBe(0);
+    expect(exit?.stderrBytes).toBe(0);
+  }, 45_000);
+
+  it('keeps Task recovery and Run terminal consistent after a real command timeout', async () => {
+    const classpath = process.env.CC_JAVA_TEST_CLASSPATH;
+    expect(classpath).toBeTruthy();
+    const dependencyClasspath = process.env.CC_JAVA_TEST_DEPENDENCY_CLASSPATH;
+    const fixtureClasses = process.env.CC_JAVA_PLAN_FAKE_CLASSPATH;
+    expect(fixtureClasses).toBeTruthy();
+    const effectiveClasspath = dependencyClasspath === undefined
+      ? classpath!
+      : [...moduleClassDirectories, dependencyClasspath].join(path.delimiter);
+    const fixtureParent = await fs.mkdtemp(path.join(os.tmpdir(), 'codej-task-timeout-'));
+    const client = new StdioClient({
+      executable: 'java',
+      args: ['-cp', [fixtureClasses!, effectiveClasspath].join(path.delimiter),
+        'io.github.liumaishenjian.ccjava.cli.stdio.StdioProtocolFixtureMain', 'task-timeout-runtime', fixtureParent],
+      cwd: workspacePath,
+      env: {...process.env, CC_JAVA_PLAN_FAKE_CLASSPATH: fixtureClasses!},
+    }, {shutdownTimeoutMs: 2_000});
+    const events: ProtocolEvent[] = [];
+    const failures: string[] = [];
+    let exit: {code: number | null; signal: NodeJS.Signals | null; stderrBytes: number} | undefined;
+    client.onEvent(event => events.push(event));
+    client.onFailure(message => failures.push(message));
+    client.onExit(result => { exit = result; });
+    const view = render(React.createElement(AgentTui, {client}));
+    try {
+      await waitFor(() => view.lastFrame()?.includes('就绪') === true,
+        () => diagnostic(events, failures, exit));
+      view.stdin.write('执行会超时的真实命令');
+      view.stdin.write('\r');
+      await waitFor(() => events.some(event => event.type === 'approval.requested'),
+        () => diagnostic(events, failures, exit));
+      view.stdin.write('\r');
+      await waitFor(() => events.some(event => event.type === 'run.completed'),
+        () => diagnostic(events, failures, exit));
+      const toolFailure = events.find(event => event.type === 'tool.failed'
+        && event.payload.toolName === 'run_command');
+      expect(toolFailure).toBeDefined();
+      expect(toolFailure?.payload.errorCode).toBe('operation_timed_out');
+      const terminal = events.find(event => event.type === 'run.completed')!;
+      expect(terminal.payload.stopReason).toBe('completed');
+      expect(terminal.payload.pendingTaskCount).toBe(1);
+      expect(terminal.payload.recoveryTaskCount).toBe(1);
+      await waitFor(() => view.lastFrame()?.includes('· 就绪') === true,
+        () => diagnostic(events, failures, exit));
+      const tasksRequest = client.sessionCommand!('tui-command-timeout-tasks', 'tasks', {});
+      await waitFor(() => events.some(event => event.type === 'session.command.result'
+        && event.requestId === tasksRequest), () => diagnostic(events, failures, exit));
+      const taskResult = events.find(event => event.type === 'session.command.result'
+        && event.requestId === tasksRequest)!;
+      const recoveredTasks = (taskResult.payload.result as {tasks: Array<{
+        status: string; recoveryRequired: boolean;
+      }>}).tasks;
+      expect(recoveredTasks).toEqual([expect.objectContaining({
+        status: 'IN_PROGRESS', recoveryRequired: true,
+      })]);
+      await waitFor(() => view.lastFrame()?.includes('执行超时命令') === true
+        && view.lastFrame()?.includes('需要恢复') === true,
+      () => diagnostic(events, failures, exit));
+      expect(view.lastFrame()).toContain('命令已超时，任务保持待恢复');
+      expect(view.lastFrame()).not.toContain('✓ 执行超时命令');
+      expect(failures).toEqual([]);
+    } finally {
+      await client.shutdown();
+      view.unmount();
+      await fs.rm(fixtureParent, {recursive: true, force: true});
+    }
+    await waitFor(() => exit !== undefined, () => diagnostic(events, failures, exit));
+    expect(exit?.code).toBe(0);
+    expect(exit?.stderrBytes).toBe(0);
+  }, 30_000);
+
   it('uses allow once then allow for session and suppresses the second same-scope prompt', async () => {
     const classpath = process.env.CC_JAVA_TEST_CLASSPATH;
     expect(classpath, 'CC_JAVA_TEST_CLASSPATH must point to compiled Java classes and dependencies').toBeTruthy();
@@ -480,11 +659,14 @@ function diagnostic(
   const commandResults = events.filter(event => event.type === 'run.command.result')
     .map(event => `${safeWireToken(event.payload.commandType)}:${safeWireToken(event.payload.disposition)}`)
     .join(',');
+  const protocolErrors = events.filter(event => event.type === 'protocol.error')
+    .map(event => `${safeWireToken(event.payload.code)}:${String(event.payload.message).slice(0, 160)}`)
+    .join(',');
   const startedRunIds = events.filter(event => event.type === 'run.started')
     .map(event => typeof event.runId === 'string' ? event.runId : 'missing').join(',');
   const exitMetadata = exit === undefined ? 'pending'
     : `code=${exit.code ?? 'null'}:signal=${safeSignal(exit.signal)}:stderrBytes=${Math.min(exit.stderrBytes, 999_999)}`;
-  return `等待真实 Java 事件超时；eventCount=${events.length}, eventTypes=[${eventCounts}], terminalReasons=[${terminalReasons}], startedTools=[${startedTools}], completedTools=[${completedTools}], failedTools=[${failedTools}], commandResults=[${commandResults}], startedRunIds=[${startedRunIds}], failureCount=${failures.length}, exit=${exitMetadata}`;
+  return `等待真实 Java 事件超时；eventCount=${events.length}, eventTypes=[${eventCounts}], terminalReasons=[${terminalReasons}], startedTools=[${startedTools}], completedTools=[${completedTools}], failedTools=[${failedTools}], commandResults=[${commandResults}], protocolErrors=[${protocolErrors}], startedRunIds=[${startedRunIds}], failureCount=${failures.length}, exit=${exitMetadata}`;
 }
 
 async function safeJournalLifecycle(journalPath: string): Promise<string> {

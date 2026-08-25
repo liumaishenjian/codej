@@ -9,6 +9,7 @@ import io.github.liumaishenjian.ccjava.core.CancellationToken;
 import io.github.liumaishenjian.ccjava.core.ModelGateway;
 import io.github.liumaishenjian.ccjava.cli.runtime.DoctorReportService;
 import io.github.liumaishenjian.ccjava.cli.runtime.SessionCommandDispatcher;
+import io.github.liumaishenjian.ccjava.cli.runtime.TaskBoardProjection;
 import io.github.liumaishenjian.ccjava.domain.SessionId;
 import io.github.liumaishenjian.ccjava.domain.command.CommandId;
 import io.github.liumaishenjian.ccjava.domain.command.SessionCommandEvent;
@@ -1486,6 +1487,17 @@ public final class RuntimeStdioCommandHandler
         events.emit("session.command.result", requestId, Optional.of(event.sessionId().value()), Optional.empty(), payload);
     }
 
+    /** 成功 Task mutation 后立即发布 Java 权威快照；事件顺序由同一 stdio writer 保证。 */
+    private void emitTaskBoardSnapshot(ActiveRun run) {
+        application.taskBoardSnapshot().ifPresent(snapshot -> emit(run, "task.board.snapshot",
+                sessionCommandPayload(TaskBoardProjection.project(snapshot))));
+    }
+
+    private static boolean isTaskMutationTool(String toolName) {
+        return io.github.liumaishenjian.ccjava.core.task.TaskCreateTool.NAME.equals(toolName)
+                || io.github.liumaishenjian.ccjava.core.task.TaskUpdateTool.NAME.equals(toolName);
+    }
+
     private ObjectNode sessionCommandPayload(SessionCommandEvent.SessionCommandPayload source) {
         ObjectNode payload = codec.objectNode();
         switch (source) {
@@ -2174,10 +2186,12 @@ public final class RuntimeStdioCommandHandler
                 }
             });
             safeCommandExitCode(after.result()).ifPresent(exitCode -> payload.put("exitCode", exitCode));
-            String type = after.result().status()
-                    == io.github.liumaishenjian.ccjava.domain.ToolResultStatus.SUCCESS
-                            ? "tool.completed" : "tool.failed";
-            emit(run, type, payload);
+            boolean succeeded = after.result().status()
+                    == io.github.liumaishenjian.ccjava.domain.ToolResultStatus.SUCCESS;
+            emit(run, succeeded ? "tool.completed" : "tool.failed", payload);
+            if (succeeded && isTaskMutationTool(after.result().toolName())) {
+                emitTaskBoardSnapshot(run);
+            }
         } else if (envelope.event()
                 instanceof LifecycleEvent.PlanVerificationCorrectionRequested correction) {
             ObjectNode payload = codec.objectNode();

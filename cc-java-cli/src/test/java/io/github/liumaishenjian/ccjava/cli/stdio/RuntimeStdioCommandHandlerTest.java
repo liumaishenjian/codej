@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.github.liumaishenjian.ccjava.domain.AssistantMessage;
+import io.github.liumaishenjian.ccjava.core.ModelGateway;
 import io.github.liumaishenjian.ccjava.core.ModelGatewayException;
 import io.github.liumaishenjian.ccjava.domain.ModelFailureCategory;
 import io.github.liumaishenjian.ccjava.domain.ModelFailureSummary;
@@ -117,6 +118,91 @@ class RuntimeStdioCommandHandlerTest {
         assertThat(events.stream()
                 .filter(event -> event.type().equals("run.completed") && event.requestId().equals("second")))
                 .hasSize(1);
+    }
+
+    @Test
+    void successfulTaskMutationsPushAuthoritativeSnapshotsAfterToolCompletion() throws Exception {
+        StdioProtocolCodec codec = new StdioProtocolCodec();
+        CopyOnWriteArrayList<CapturedEvent> events = new CopyOnWriteArrayList<>();
+        StdioProtocol.EventEmitter emitter = (type, requestId, sessionId, runId, payload) ->
+                events.add(new CapturedEvent(type, requestId, sessionId, runId, payload.deepCopy()));
+        AtomicInteger calls = new AtomicInteger();
+        HeadlessRuntimeOptions options = testOptions();
+        ModelGateway model = request -> switch (calls.getAndIncrement()) {
+            case 0 -> ModelTurn.tools(List.of(new ToolCall("create-task", "task_create",
+                    new JsonObject(java.util.Map.of("subject", "实时刷新")))));
+            case 1 -> ModelTurn.tools(List.of(new ToolCall("complete-task", "task_update",
+                    new JsonObject(java.util.Map.of(
+                            "task_id", "task-1", "operation", "TRANSITION",
+                            "expected_task_revision", 1, "target_status", "COMPLETED")))));
+            default -> ModelTurn.text("done");
+        };
+
+        try (RuntimeStdioCommandHandler handler = new RuntimeStdioCommandHandler((eventSink, approvals) ->
+                io.github.liumaishenjian.ccjava.cli.runtime.HeadlessRuntimeSession.production(
+                        model, eventSink, options, approvals))) {
+            handler.handle(codec.decodeCommand(
+                    "{\"version\":0,\"type\":\"initialize\",\"requestId\":\"init\",\"sequence\":1,\"payload\":{}}"),
+                    emitter);
+            String sessionId = events.getFirst().sessionId().orElseThrow();
+            handler.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"run.start\","
+                    + "\"requestId\":\"run\",\"sessionId\":\"%s\",\"sequence\":2,"
+                    + "\"payload\":{\"prompt\":\"完成复杂任务\"}}").formatted(sessionId)), emitter);
+            awaitTerminal(events);
+        }
+
+        List<CapturedEvent> mutations = events.stream()
+                .filter(event -> event.type().equals("tool.completed")
+                        || event.type().equals("task.board.snapshot"))
+                .toList();
+        assertThat(mutations).extracting(CapturedEvent::type).containsExactly(
+                "tool.completed", "task.board.snapshot", "tool.completed", "task.board.snapshot");
+        assertThat(mutations).filteredOn(event -> event.type().equals("task.board.snapshot"))
+                .allSatisfy(event -> {
+                    assertThat(event.sessionId()).isPresent();
+                    assertThat(event.runId()).isPresent();
+                    assertThat(event.payload().properties().stream().map(java.util.Map.Entry::getKey).toList())
+                            .containsExactlyInAnyOrder("boardRevision", "totalTasks", "truncated", "tasks");
+                });
+        assertThat(mutations.get(1).payload().get("boardRevision").longValue()).isEqualTo(1);
+        assertThat(mutations.get(1).payload().get("tasks").get(0).get("status").stringValue())
+                .isEqualTo("PENDING");
+        assertThat(mutations.get(3).payload().get("boardRevision").longValue()).isEqualTo(2);
+        assertThat(mutations.get(3).payload().get("tasks").get(0).get("status").stringValue())
+                .isEqualTo("COMPLETED");
+    }
+
+    @Test
+    void failedTaskMutationDoesNotPushTaskBoardSnapshot() throws Exception {
+        StdioProtocolCodec codec = new StdioProtocolCodec();
+        CopyOnWriteArrayList<CapturedEvent> events = new CopyOnWriteArrayList<>();
+        StdioProtocol.EventEmitter emitter = (type, requestId, sessionId, runId, payload) ->
+                events.add(new CapturedEvent(type, requestId, sessionId, runId, payload.deepCopy()));
+        HeadlessRuntimeOptions options = testOptions();
+        AtomicInteger calls = new AtomicInteger();
+        ModelGateway model = request -> calls.getAndIncrement() == 0
+                ? ModelTurn.tools(List.of(new ToolCall("missing-task", "task_update",
+                        new JsonObject(java.util.Map.of(
+                                "task_id", "task-99", "operation", "TRANSITION",
+                                "expected_task_revision", 1, "target_status", "COMPLETED")))))
+                : ModelTurn.text("done");
+
+        try (RuntimeStdioCommandHandler handler = new RuntimeStdioCommandHandler((eventSink, approvals) ->
+                io.github.liumaishenjian.ccjava.cli.runtime.HeadlessRuntimeSession.production(
+                        model, eventSink, options, approvals))) {
+            handler.handle(codec.decodeCommand(
+                    "{\"version\":0,\"type\":\"initialize\",\"requestId\":\"init\",\"sequence\":1,\"payload\":{}}"),
+                    emitter);
+            String sessionId = events.getFirst().sessionId().orElseThrow();
+            handler.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"run.start\","
+                    + "\"requestId\":\"run\",\"sessionId\":\"%s\",\"sequence\":2,"
+                    + "\"payload\":{\"prompt\":\"更新不存在任务\"}}").formatted(sessionId)), emitter);
+            awaitTerminal(events);
+        }
+
+        assertThat(events).anyMatch(event -> event.type().equals("tool.failed")
+                && event.payload().get("toolName").stringValue().equals("task_update"));
+        assertThat(events).noneMatch(event -> event.type().equals("task.board.snapshot"));
     }
 
     @Test

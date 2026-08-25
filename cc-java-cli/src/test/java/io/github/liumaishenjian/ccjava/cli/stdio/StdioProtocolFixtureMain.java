@@ -31,6 +31,8 @@ public final class StdioProtocolFixtureMain {
                             ? permissionRuntimeHandler(Path.of(args[1]))
                     : args.length == 2 && args[0].equals("plan-runtime")
                             ? planRuntimeHandler(Path.of(args[1]))
+                    : args.length == 2 && args[0].equals("task-runtime")
+                            ? taskRuntimeHandler(Path.of(args[1]))
                             : new FakeStdioCommandHandler(List.of("alpha ", "beta"), Duration.ofMillis(250));
             StdioProtocolServer.ExitReason reason =
                     new StdioProtocolServer(System.in, System.out, handler).run();
@@ -68,18 +70,36 @@ public final class StdioProtocolFixtureMain {
                     int executionCall = executionCalls.getAndIncrement();
                     if (executionCall == 0) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
                             new io.github.liumaishenjian.ccjava.domain.ToolCall(
+                                    "execution-task-create", "task_create",
+                                    new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
+                                            "subject", "执行获批计划", "active_form", "执行并验证计划")))));
+                    if (executionCall == 1) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
+                            new io.github.liumaishenjian.ccjava.domain.ToolCall(
+                                    "execution-task-claim", "task_update",
+                                    new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
+                                            "task_id", "task-1", "operation", "CLAIM",
+                                            "expected_task_revision", 1)))));
+                    if (executionCall == 2) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
+                            new io.github.liumaishenjian.ccjava.domain.ToolCall(
                                     "wrong-workbook", "write_file",
                                     new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
                                             "path", wrongWorkbook, "content", "wrong-name")))));
-                    if (executionCall == 1) {
+                    if (executionCall == 3) {
                         return io.github.liumaishenjian.ccjava.domain.ModelTurn.text("FIRST_UNVERIFIED_FINAL");
                     }
-                    if (executionCall == 2) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
+                    if (executionCall == 4) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
                             new io.github.liumaishenjian.ccjava.domain.ToolCall(
                                     "correct-workbook", "write_file",
                                     new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
                                             "path", expectedWorkbook, "content", "correct-name")))));
-                    if (executionCall == 3) {
+                    if (executionCall == 5) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
+                            new io.github.liumaishenjian.ccjava.domain.ToolCall(
+                                    "execution-task-complete", "task_update",
+                                    new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
+                                            "task_id", "task-1", "operation", "TRANSITION",
+                                            "expected_task_revision", 2, "target_status", "COMPLETED",
+                                            "expected_claim_epoch", 1)))));
+                    if (executionCall == 6) {
                         return io.github.liumaishenjian.ccjava.domain.ModelTurn.text("approved plan corrected and verified");
                     }
                     throw new IllegalStateException("Plan fixture 收到过多执行请求");
@@ -157,6 +177,77 @@ public final class StdioProtocolFixtureMain {
         } catch (Exception failure) {
             try {
                 deleteFixtureTree(expectedParent, expectedRealParent, fixtureRoot, "plan-runtime-");
+            } catch (Exception cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
+            throw failure;
+        }
+    }
+
+    /** 为普通复杂任务建立真实 durable Task Tool → stdio snapshot 的跨进程 Fixture。 */
+    private static StdioProtocol.CommandHandler taskRuntimeHandler(Path parent) throws Exception {
+        Path expectedParent = parent.toAbsolutePath().normalize();
+        Path expectedRealParent = expectedParent.toRealPath();
+        Path fixtureRoot = Files.createTempDirectory(expectedRealParent, "task-runtime-");
+        try {
+            Path workspace = Files.createDirectory(fixtureRoot.resolve("workspace"));
+            initializeGitRepository(workspace);
+            Path sessionStore = Files.createDirectory(fixtureRoot.resolve("sessions"));
+            java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+            io.github.liumaishenjian.ccjava.core.ModelGateway model = request -> switch (calls.getAndIncrement()) {
+                case 0 -> io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
+                        new io.github.liumaishenjian.ccjava.domain.ToolCall(
+                                "task-create", "task_create",
+                                new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
+                                        "subject", "完成真实 Task 闭环", "active_form", "验证实时面板")))));
+                case 1 -> io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
+                        new io.github.liumaishenjian.ccjava.domain.ToolCall(
+                                "task-claim", "task_update",
+                                new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
+                                        "task_id", "task-1", "operation", "CLAIM",
+                                        "expected_task_revision", 1)))));
+                case 2 -> io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
+                        new io.github.liumaishenjian.ccjava.domain.ToolCall(
+                                "task-complete", "task_update",
+                                new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
+                                        "task_id", "task-1", "operation", "TRANSITION",
+                                        "expected_task_revision", 2, "target_status", "COMPLETED",
+                                        "expected_claim_epoch", 1)))));
+                case 3 -> io.github.liumaishenjian.ccjava.domain.ModelTurn.text("task lifecycle verified");
+                default -> throw new IllegalStateException("Task fixture 收到过多模型请求");
+            };
+            Path providerRoot = Files.createDirectory(fixtureRoot.resolve("provider"));
+            Path providerHome = Files.createDirectory(providerRoot.resolve("home"));
+            Path providerRepository = Files.createDirectory(providerRoot.resolve("repository"));
+            var credentials = new io.github.liumaishenjian.ccjava.cli.auth.RestrictedFileCredentialStore(providerHome);
+            var definitions = new io.github.liumaishenjian.ccjava.cli.provider.ProviderDefinitionStore(providerHome);
+            var providerAuth = new io.github.liumaishenjian.ccjava.cli.runtime.ProviderAuthApplicationService(
+                    definitions, credentials,
+                    new io.github.liumaishenjian.ccjava.cli.auth.LegacyCredentialMigrationService(
+                            new io.github.liumaishenjian.ccjava.cli.auth.LegacyProviderConfigurationReader(
+                                    providerRepository), definitions, credentials),
+                    Map.of("CC_JAVA_TASK_FIXTURE_KEY", "fixture-provider-sentinel"));
+            providerAuth.login(
+                    new io.github.liumaishenjian.ccjava.cli.runtime.ProviderAuthApplicationService.LoginRequest(
+                            "anthropic", "fixture", io.github.liumaishenjian.ccjava.cli.runtime
+                                    .ProviderAuthApplicationService.RefKind.ENV,
+                            "CC_JAVA_TASK_FIXTURE_KEY", true),
+                    null, io.github.liumaishenjian.ccjava.core.CancellationToken.none());
+            providerAuth.addModel("anthropic", "fixture-model", true,
+                    io.github.liumaishenjian.ccjava.core.CancellationToken.none());
+            RuntimeStdioCommandHandler delegate = new RuntimeStdioCommandHandler((events, approvals) ->
+                    io.github.liumaishenjian.ccjava.cli.runtime.HeadlessRuntimeSession.production(
+                            model, events,
+                            new io.github.liumaishenjian.ccjava.cli.runtime.HeadlessRuntimeOptions(
+                                    workspace.toAbsolutePath().normalize(), "fixture-model", Duration.ofSeconds(5),
+                                    io.github.liumaishenjian.ccjava.domain.PermissionMode.DEFAULT, List.of(),
+                                    io.github.liumaishenjian.ccjava.cli.session.SessionOpenRequest.create(),
+                                    sessionStore), approvals), providerAuth);
+            return ownedFixtureHandler(delegate, expectedParent, expectedRealParent, fixtureRoot,
+                    "task-runtime-");
+        } catch (Exception failure) {
+            try {
+                deleteFixtureTree(expectedParent, expectedRealParent, fixtureRoot, "task-runtime-");
             } catch (Exception cleanupFailure) {
                 failure.addSuppressed(cleanupFailure);
             }

@@ -15,6 +15,7 @@ import {
   editInput,
   MAX_INPUT_CHARS,
   renderProviderControlResult,
+  sessionTaskTextDecoration,
   undoConfirmation,
 } from '../src/app.js';
 import type {AgentClient} from '../src/app.js';
@@ -76,7 +77,7 @@ describe('AgentView', () => {
     };
     const readyView = render(<AgentView state={ready} input="" columns={100} />);
     expect(readyView.lastFrame()).toContain('██████  ██████  ██████');
-    expect(readyView.lastFrame()).toContain('v0.1.0 · Java-powered coding agent');
+    expect(readyView.lastFrame()).toContain('v0.1.1 · Java-powered coding agent');
     expect(readyView.lastFrame()).not.toContain('输入任务开始，或使用 /connect 配置模型');
     expect(readyView.lastFrame()).not.toContain('/help 查看命令 · @file 引用工作区文件');
     expect(readyView.lastFrame()).not.toContain('S15');
@@ -878,6 +879,31 @@ describe('AgentView', () => {
     expect(client.prompts).toEqual(['initial', 'follow\nup']);
     expect(view.lastFrame()).toContain('正在处理');
     expect(view.lastFrame()).toContain('Enter 排队补充');
+    view.unmount();
+  });
+
+  it('自动 Task 面板实时显示但不抢占运行中 steering 输入', async () => {
+    const client = new FakeAgentClient();
+    const view = render(<AgentTui client={client} />);
+    await waitForFrame(() => client.initializeCalls === 1);
+    client.emit({version: 0, type: 'initialized', requestId: 'init', sessionId: 'session-1', sequence: 1, payload: {}});
+    await waitForFrame(() => view.lastFrame()?.includes('就绪') === true);
+    view.stdin.write('initial'); view.stdin.write('\r');
+    await waitForFrame(() => client.prompts.length === 1);
+    client.emit({version: 0, type: 'run.started', requestId: 'tui-2', sessionId: 'session-1',
+      runId: 'run-1', sequence: 2, payload: {}});
+    client.emit({version: 0, type: 'task.board.snapshot', requestId: 'tui-2', sessionId: 'session-1',
+      runId: 'run-1', sequence: 3, payload: {boardRevision: 1, totalTasks: 1, truncated: false, tasks: [
+        {taskId: 'task-1', revision: 1, status: 'PENDING', subject: '执行实现', blocked: false,
+          blockerIds: [], owner: null, activeForm: null, recoveryRequired: false},
+      ]}});
+    await waitForFrame(() => view.lastFrame()?.includes('Task List · rev 1') === true);
+    expect(view.lastFrame()).toContain('执行进度由 Java 实时更新；输入 /tasks 可交互查看');
+
+    view.stdin.write('follow up'); view.stdin.write('\r');
+    await waitForFrame(() => client.prompts.length === 2);
+    expect(client.prompts).toEqual(['initial', 'follow up']);
+    expect(view.lastFrame()).toContain('Task List · rev 1');
     view.unmount();
   });
 
@@ -1856,6 +1882,14 @@ function enterPlan(client: FakeAgentClient, sequence = 2, selection: 'PLAN' | 'A
   client.emit(permissionResult('tui-plan-2-enter', 'PLAN', sequence + 1));
 }
 
+function taskSnapshot(requestId: string, runId: string, sequence: number) {
+  return {version: 0 as const, type: 'task.board.snapshot' as const, requestId, sessionId: 'session-1',
+    runId, sequence, payload: {boardRevision: 1, totalTasks: 1, truncated: false, tasks: [
+      {taskId: 'task-1', revision: 1, status: 'PENDING', subject: '执行任务', blocked: false,
+        blockerIds: [], owner: null, activeForm: null, recoveryRequired: false},
+    ]}};
+}
+
 function planCommandResult(planId: string, workspaceDigest: string, status: string) {
   return {planId, status, approvalGate: status === 'APPROVED' ? 'APPROVED' : 'PENDING', objective: '计划',
     workspaceDigest, steps: [{ordinal: 1, title: '步骤', detail: '详情', expectedDigest: workspaceDigest}],
@@ -1907,8 +1941,9 @@ describe('TUI interaction polish', () => {
     await waitForFrame(() => client.prompts.length === 1);
     client.emit({version: 0, type: 'run.started', requestId: 'tui-2', sessionId: 'session-1',
       runId: 'run-approval', sequence: 2, payload: {}});
+    client.emit(taskSnapshot('tui-2', 'run-approval', 3));
     client.emit({version: 0, type: 'approval.requested', requestId: 'tui-2', sessionId: 'session-1',
-      runId: 'run-approval', sequence: 3, payload: {approvalId: 'approval-y', ordinal: 1,
+      runId: 'run-approval', sequence: 4, payload: {approvalId: 'approval-y', ordinal: 1,
         toolName: 'apply_patch', effect: 'write_workspace', target: 'src/App.java', operation: 'modify',
         removedLines: 1, addedLines: 2}});
     await waitForFrame(() => (view.lastFrame() ?? '').includes('Allow once'));
@@ -1992,12 +2027,39 @@ describe('TUI interaction polish', () => {
 
 
 describe('Session Task List Ink surface', () => {
+  it('/tasks 显式聚焦面板并让方向键、详情和 Esc 只作用于 Task 交互', async () => {
+    const client = new FakeAgentClient();
+    const view = await initializedTui(client);
+    view.stdin.write('/tasks'); view.stdin.write('\r');
+    await waitForFrame(() => client.sessionCommands.length === 1);
+    const commandId = client.sessionCommands[0]!.split(':', 1)[0]!;
+    client.emit({version: 0, type: 'session.command.result', requestId: commandId, sessionId: 'session-1', sequence: 2,
+      payload: {commandId, intent: 'tasks', status: 'succeeded', code: 'ok', result: {
+        boardRevision: 4, totalTasks: 2, truncated: false, tasks: [
+          {taskId: 'task-1', revision: 1, status: 'PENDING', subject: '第一项', blocked: false,
+            blockerIds: [], owner: null, activeForm: null, recoveryRequired: false},
+          {taskId: 'task-2', revision: 2, status: 'IN_PROGRESS', subject: '第二项', blocked: false,
+            blockerIds: [], owner: 'root', activeForm: '执行第二项', recoveryRequired: false},
+        ],
+      }}});
+    await waitForFrame(() => view.lastFrame()?.includes('↑/↓ 选择　Enter 详情　Esc 关闭') === true);
+    expect(view.lastFrame()).toContain('❯ — task-2 · 第二项');
+    view.stdin.write('[B');
+    await waitForFrame(() => view.lastFrame()?.includes('❯ ○ task-1 · 第一项') === true);
+    view.stdin.write('\r');
+    await waitForFrame(() => view.lastFrame()?.includes('状态 pending') === true);
+    view.stdin.write('\x1b');
+    await waitForFrame(() => view.lastFrame()?.includes('Task List · rev 4') === false);
+    expect(client.prompts).toEqual([]);
+    view.unmount();
+  });
+
   it('按执行优先级渲染分组、选择详情和完成项符号', () => {
     const state: TuiState = {
       phase: 'ready', sessionId: 'session-task', activeRunId: undefined, notice: undefined,
       checkpoints: [], checkpointPanelOpen: false, selectedCheckpointId: undefined,
       checkpointDiff: undefined, pendingUndoCheckpointId: undefined, checkpointUndo: undefined,
-      runs: [], taskPanelOpen: true, selectedTaskId: 'task-2',
+      runs: [], taskPanelOpen: true, taskPanelFocused: true, selectedTaskId: 'task-2',
       taskDetailOpen: true,
       taskBoard: {
         boardRevision: 7, totalTasks: 4, truncated: false,
@@ -2021,6 +2083,8 @@ describe('Session Task List Ink surface', () => {
     expect(frame).toContain('❯ — task-2 · 正在实现');
     expect(frame).toContain('状态 in_progress · owner root · 编写测试');
     expect(frame).toContain('✓ task-4 · 已经完成');
+    expect(sessionTaskTextDecoration('COMPLETED')).toEqual({dimColor: true, strikethrough: true});
+    expect(sessionTaskTextDecoration('IN_PROGRESS')).toEqual({dimColor: false, strikethrough: false});
     expect(frame).toContain('↑/↓ 选择　Enter 详情　Esc 关闭');
   });
 });
@@ -2033,8 +2097,9 @@ describe('continuous plan Ink interaction', () => {
     await waitForFrame(() => client.prompts.length === 1);
     client.emit({version: 0, type: 'run.started', requestId: 'tui-2', sessionId: 'session-1',
       runId: 'run-1', sequence: 2, payload: {}});
+    client.emit(taskSnapshot('tui-2', 'run-1', 3));
     client.emit({version: 0, type: 'question.requested', requestId: 'tui-2', sessionId: 'session-1',
-      runId: 'run-1', sequence: 3, payload: {callId: 'ask-1', question: 'Choose rollout', options: [
+      runId: 'run-1', sequence: 4, payload: {callId: 'ask-1', question: 'Choose rollout', options: [
         {optionId: 'safe', label: 'Safe', description: 'Staged'},
         {optionId: 'fast', label: 'Fast', description: 'Direct'},
       ]}});
@@ -2055,11 +2120,12 @@ describe('continuous plan Ink interaction', () => {
     await waitForFrame(() => client.prompts.length === 1);
     client.emit({version: 0, type: 'run.started', requestId: 'tui-2', sessionId: 'session-1',
       runId: 'run-1', sequence: 2, payload: {}});
+    client.emit(taskSnapshot('tui-2', 'run-1', 3));
     client.emit({version: 0, type: 'plan.review.requested', requestId: 'tui-2', sessionId: 'session-1',
-      runId: 'run-1', sequence: 3, payload: {planId: 'plan-a', status: 'awaiting_approval', revision: 3,
+      runId: 'run-1', sequence: 4, payload: {planId: 'plan-a', status: 'awaiting_approval', revision: 3,
         contentDigest: 'a'.repeat(64), markdown: '# Plan\n\nSafe rollout.', workspaceDigest: 'b'.repeat(64), originalPermissionMode: 'default', suggestedContextPolicy: 'keep'}});
     client.emit({version: 0, type: 'run.completed', requestId: 'tui-2', sessionId: 'session-1',
-      runId: 'run-1', sequence: 4, payload: {stopReason: 'completed', modelTurns: 2, toolCalls: 2}});
+      runId: 'run-1', sequence: 5, payload: {stopReason: 'completed', modelTurns: 2, toolCalls: 2}});
     await waitForFrame(() => (view.lastFrame() ?? '').includes('Safe rollout'));
     view.stdin.write('\u001b[B');
     await waitForFrame(() => (view.lastFrame() ?? '').includes('❯ 批准并执行（后续 Tool 正常逐项询问）'));

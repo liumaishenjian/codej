@@ -41,6 +41,7 @@ const EVENT_TYPES = new Set([
   'task.status',
   'task.terminal',
   'task.worktree',
+  'task.board.snapshot',
   'model.turn.started',
   'model.retry.attempt.started',
   'model.retry.scheduled',
@@ -86,6 +87,7 @@ export type EventType =
   | 'task.status'
   | 'task.terminal'
   | 'task.worktree'
+  | 'task.board.snapshot'
   | 'model.turn.started'
   | 'model.retry.attempt.started'
   | 'model.retry.scheduled'
@@ -292,6 +294,11 @@ function validateEventShape(
   }
   if (type === 'task.status' || type === 'task.terminal') {
     validateTaskEvent(sessionId, runId, payload, type === 'task.terminal');
+  } else if (type === 'task.board.snapshot') {
+    if (sessionId === undefined || runId === undefined) {
+      throw new ProtocolViolation('task.board.snapshot 缺少 Session 或 Run 归属');
+    }
+    validateTaskBoardSnapshot(payload);
   } else if (type === 'task.worktree') {
     if (!hasExactFields(payload, new Set(['taskId', 'disposition']))
       || sessionId === undefined || runId !== undefined
@@ -590,6 +597,37 @@ function validatePlanProposal(payload: Readonly<Record<string, unknown>>): void 
   });
 }
 
+function validateTaskBoardSnapshot(payload: Readonly<Record<string, unknown>>): void {
+  if (!hasExactFields(payload, new Set(['boardRevision', 'totalTasks', 'truncated', 'tasks']))
+    || !Number.isSafeInteger(payload.boardRevision) || (payload.boardRevision as number) < 0
+    || !Number.isSafeInteger(payload.totalTasks) || (payload.totalTasks as number) < 0
+    || typeof payload.truncated !== 'boolean' || !Array.isArray(payload.tasks)
+    || payload.tasks.length > 50 || (payload.totalTasks as number) < payload.tasks.length) {
+    throw new ProtocolViolation('Task Board snapshot 投影无效');
+  }
+  const ids = new Set<string>();
+  for (const item of payload.tasks) {
+    if (!isRecord(item) || !hasExactFields(item, new Set([
+      'taskId', 'revision', 'status', 'subject', 'blocked', 'blockerIds', 'owner',
+      'activeForm', 'recoveryRequired',
+    ]))
+      || typeof item.taskId !== 'string' || !/^task-[1-9][0-9]*$/u.test(item.taskId)
+      || ids.has(item.taskId)
+      || !Number.isSafeInteger(item.revision) || (item.revision as number) < 1
+      || (item.status !== 'PENDING' && item.status !== 'IN_PROGRESS' && item.status !== 'COMPLETED')
+      || !isSafeDisplayText(item.subject, 200, false)
+      || typeof item.blocked !== 'boolean' || !Array.isArray(item.blockerIds)
+      || item.blockerIds.length > 32
+      || item.blockerIds.some(id => typeof id !== 'string' || !/^task-[1-9][0-9]*$/u.test(id))
+      || (item.owner !== null && !isBoundedIdentifier(item.owner))
+      || (item.activeForm !== null && !isSafeDisplayText(item.activeForm, 200, false))
+      || typeof item.recoveryRequired !== 'boolean') {
+      throw new ProtocolViolation('Task Board snapshot 条目无效');
+    }
+    ids.add(item.taskId);
+  }
+}
+
 function validateTaskEvent(
   sessionId: string | undefined,
   runId: string | undefined,
@@ -813,11 +851,11 @@ function validateProviderControlResult(
   }
 }
 const SESSION_COMMAND_INTENTS = new Set([
-  'help', 'clear', 'compact', 'context', 'doctor', 'model', 'permissions', 'resume',
+  'help', 'clear', 'compact', 'context', 'doctor', 'model', 'permissions', 'resume', 'tasks',
   'plan-status', 'plan', 'plan-approve', 'plan-step-begin', 'plan-reject', 'plan-step-complete', 'plan-execute',
 ]);
 const PUBLIC_HELP_INTENTS = new Set([
-  'help', 'clear', 'compact', 'context', 'doctor', 'model', 'permissions', 'resume', 'plan-status', 'plan',
+  'help', 'clear', 'compact', 'context', 'doctor', 'model', 'permissions', 'resume', 'tasks', 'plan-status', 'plan',
 ]);
 const SESSION_COMMAND_CODES = new Set([
   'ok', 'active_run', 'invalid_argument', 'unavailable', 'not_available', 'deferred',
@@ -916,6 +954,10 @@ function validateSessionCommandPayload(
         throw new ProtocolViolation('session.command.result permissions 规则投影无效');
       }
     }
+    return;
+  }
+  if (intent === 'tasks') {
+    validateTaskBoardSnapshot(result);
     return;
   }
   if (intent.startsWith('plan')) {

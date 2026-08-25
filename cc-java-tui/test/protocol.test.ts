@@ -360,7 +360,8 @@ describe('decodeEvent', () => {
           {intent: 'compact', support: 'not_available'}, {intent: 'context', support: 'available'},
           {intent: 'doctor', support: 'available'}, {intent: 'model', support: 'not_available'},
           {intent: 'permissions', support: 'deferred'}, {intent: 'resume', support: 'deferred'},
-          {intent: 'plan-status', support: 'available'}, {intent: 'plan', support: 'available'},
+          {intent: 'tasks', support: 'available'}, {intent: 'plan-status', support: 'available'},
+          {intent: 'plan', support: 'available'},
         ],
       }},
     };
@@ -377,6 +378,41 @@ describe('decodeEvent', () => {
     expect(() => decodeEvent(JSON.stringify({
       ...base, payload: {...base.payload, commandId: 'bad\ncommand'},
     }), 1)).toThrowError(/session\.command\.result/);
+  });
+
+  it('严格校验 mutation-driven Task Board snapshot 与 /tasks 查询投影', () => {
+    const snapshot = {
+      boardRevision: 3, totalTasks: 2, truncated: false, tasks: [
+        {taskId: 'task-1', revision: 2, status: 'IN_PROGRESS', subject: '实现刷新', blocked: false,
+          blockerIds: [], owner: 'root', activeForm: '编写测试', recoveryRequired: false},
+        {taskId: 'task-2', revision: 4, status: 'COMPLETED', subject: '审查现状', blocked: false,
+          blockerIds: [], owner: null, activeForm: null, recoveryRequired: false},
+      ],
+    };
+    expect(decodeEvent(JSON.stringify({
+      version: 0, type: 'task.board.snapshot', requestId: 'req-task', sessionId: 'session-1',
+      runId: 'run-1', sequence: 1, payload: snapshot,
+    }), 1).payload).toEqual(snapshot);
+    expect(decodeEvent(JSON.stringify({
+      version: 0, type: 'session.command.result', requestId: 'req-tasks', sessionId: 'session-1', sequence: 1,
+      payload: {commandId: 'tasks-1', intent: 'tasks', status: 'succeeded', code: 'ok', result: snapshot},
+    }), 1).payload.result).toEqual(snapshot);
+
+    for (const invalid of [
+      {version: 0, type: 'task.board.snapshot', requestId: 'req-task', runId: 'run-1', sequence: 1, payload: snapshot},
+      {version: 0, type: 'task.board.snapshot', requestId: 'req-task', sessionId: 'session-1', sequence: 1, payload: snapshot},
+      {version: 0, type: 'task.board.snapshot', requestId: 'req-task', sessionId: 'session-1', runId: 'run-1',
+        sequence: 1, payload: {...snapshot, secret: 'leak'}},
+      {version: 0, type: 'task.board.snapshot', requestId: 'req-task', sessionId: 'session-1', runId: 'run-1',
+        sequence: 1, payload: {...snapshot, tasks: [snapshot.tasks[0], snapshot.tasks[0]]}},
+      {version: 0, type: 'task.board.snapshot', requestId: 'req-task', sessionId: 'session-1', runId: 'run-1',
+        sequence: 1, payload: {...snapshot, tasks: [{...snapshot.tasks[0], status: 'CANCELLED'}]}},
+      {version: 0, type: 'task.board.snapshot', requestId: 'req-task', sessionId: 'session-1', runId: 'run-1',
+        sequence: 1, payload: {...snapshot, totalTasks: 51, truncated: true,
+          tasks: Array.from({length: 51}, (_, index) => ({...snapshot.tasks[0], taskId: `task-${index + 1}`}))}},
+    ]) {
+      expect(() => decodeEvent(JSON.stringify(invalid), 1)).toThrowError(/Task Board|task\.board\.snapshot/);
+    }
   });
 
   it('严格校验 permissions 安全投影且不接受 selector 泄漏', () => {

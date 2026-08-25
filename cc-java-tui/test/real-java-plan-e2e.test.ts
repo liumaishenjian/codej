@@ -128,6 +128,19 @@ describe('real Java stdio plan flow', () => {
         && String(event.payload.finalText).includes('approved plan corrected and verified'))).toBe(true);
       expect(events.filter(event => event.type === 'tool.completed'
         && event.requestId === executionRequest && event.payload.toolName === 'write_file')).toHaveLength(2);
+      expect(events.some(event => event.type === 'task.board.snapshot'
+        && (event.requestId === requestId || event.requestId === feedbackRequest))).toBe(false);
+      const taskSnapshots = events.filter(event => event.type === 'task.board.snapshot'
+        && event.requestId === executionRequest);
+      expect(taskSnapshots.map(event => event.payload.boardRevision)).toEqual([1, 2, 3]);
+      expect(taskSnapshots.map(event => (event.payload.tasks as Array<{subject: string; status: string}>)[0]))
+        .toEqual([
+          expect.objectContaining({subject: '执行获批计划', status: 'PENDING'}),
+          expect.objectContaining({subject: '执行获批计划', status: 'IN_PROGRESS'}),
+          expect.objectContaining({subject: '执行获批计划', status: 'COMPLETED'}),
+        ]);
+      expect(JSON.stringify(taskSnapshots)).not.toContain('Create the exact weather workbook');
+      expect(JSON.stringify(taskSnapshots)).not.toContain('Verify rollback behavior');
       const executionTypes = events.filter(event => event.requestId === executionRequest)
         .map(event => event.type);
       expect(executionTypes.indexOf('plan.execution.accepted')).toBeLessThan(
@@ -253,6 +266,7 @@ describe('real Java stdio plan flow', () => {
       view.stdin.write('\r');
       await waitFor(() => view.lastFrame()?.includes('approved plan corrected and verified') === true
         && view.lastFrame()?.includes('计划证据已验证') === true
+        && view.lastFrame()?.includes('✓ task-1 · 执行获批计划') === true
         && view.lastFrame()?.includes('已完成') === true,
       () => diagnostic(events, failures, exit));
       await waitFor(() => view.lastFrame()?.includes('· 就绪') === true,
@@ -289,6 +303,68 @@ describe('real Java stdio plan flow', () => {
     }
     await waitFor(() => exit !== undefined, () => diagnostic(events, failures, exit));
     expect(exit?.code).toBe(0);
+    expect(exit?.stderrBytes).toBe(0);
+  }, 30_000);
+
+  it('renders ordinary durable Task mutations from real Java stdio through Ink', async () => {
+    const classpath = process.env.CC_JAVA_TEST_CLASSPATH;
+    expect(classpath, 'CC_JAVA_TEST_CLASSPATH must point to compiled Java classes and dependencies').toBeTruthy();
+    const workspace = workspacePath.replaceAll('\\', '/');
+    const dependencyClasspath = process.env.CC_JAVA_TEST_DEPENDENCY_CLASSPATH;
+    const fixtureClasses = process.env.CC_JAVA_PLAN_FAKE_CLASSPATH;
+    const effectiveClasspath = dependencyClasspath === undefined
+      ? classpath!
+      : [...moduleClassDirectories, dependencyClasspath].join(path.delimiter);
+    expect(fixtureClasses,
+      'CC_JAVA_PLAN_FAKE_CLASSPATH must point to deterministic Java fixture classes').toBeTruthy();
+    const fixtureParent = await fs.mkdtemp(path.join(os.tmpdir(), 'codej-task-acceptance-'));
+    const client = new StdioClient({
+      executable: 'java',
+      args: ['-cp', [fixtureClasses!, effectiveClasspath].join(path.delimiter),
+        'io.github.liumaishenjian.ccjava.cli.stdio.StdioProtocolFixtureMain', 'task-runtime', fixtureParent],
+      cwd: workspace,
+      env: {...process.env, CC_JAVA_PLAN_FAKE_CLASSPATH: fixtureClasses!},
+    }, {shutdownTimeoutMs: 2_000});
+    const events: ProtocolEvent[] = [];
+    const failures: string[] = [];
+    let exit: {code: number | null; signal: NodeJS.Signals | null; stderrBytes: number} | undefined;
+    client.onEvent(event => events.push(event));
+    client.onFailure(message => failures.push(message));
+    client.onExit(result => { exit = result; });
+    const view = render(React.createElement(AgentTui, {client}));
+    try {
+      await waitFor(() => view.lastFrame()?.includes('就绪') === true,
+        () => diagnostic(events, failures, exit));
+      view.stdin.write('执行普通复杂任务');
+      view.stdin.write('\r');
+      await waitFor(() => events.some(event => event.type === 'run.completed'
+        && String(event.payload.finalText).includes('task lifecycle verified')),
+      () => diagnostic(events, failures, exit));
+      await waitFor(() => view.lastFrame()?.includes('✓ task-1 · 完成真实 Task 闭环') === true
+        && view.lastFrame()?.includes('task lifecycle verified') === true,
+      () => diagnostic(events, failures, exit));
+
+      const requestId = events.find(event => event.type === 'run.started')!.requestId;
+      const runEvents = events.filter(event => event.requestId === requestId);
+      const snapshots = runEvents.filter(event => event.type === 'task.board.snapshot');
+      expect(snapshots.map(event => event.payload.boardRevision)).toEqual([1, 2, 3]);
+      expect(snapshots.map(event => (event.payload.tasks as Array<{status: string}>)[0]?.status))
+        .toEqual(['PENDING', 'IN_PROGRESS', 'COMPLETED']);
+      for (const snapshot of snapshots) {
+        const index = runEvents.indexOf(snapshot);
+        expect(runEvents[index - 1]?.type).toBe('tool.completed');
+        expect(['task_create', 'task_update']).toContain(runEvents[index - 1]?.payload.toolName);
+      }
+      expect(view.lastFrame()).toContain('执行进度由 Java 实时更新；输入 /tasks 可交互查看');
+      expect(failures).toEqual([]);
+    } finally {
+      await client.shutdown();
+      view.unmount();
+      await fs.rm(fixtureParent, {recursive: true, force: true});
+    }
+    await waitFor(() => exit !== undefined, () => diagnostic(events, failures, exit));
+    expect(exit?.code).toBe(0);
+    expect(exit?.signal).toBeNull();
     expect(exit?.stderrBytes).toBe(0);
   }, 30_000);
 
@@ -375,6 +451,8 @@ function diagnostic(
     .map(event => safeToolName(event.payload.toolName)).join(',');
   const completedTools = events.filter(event => event.type === 'tool.completed')
     .map(event => safeToolName(event.payload.toolName)).join(',');
+  const failedTools = events.filter(event => event.type === 'tool.failed')
+    .map(event => `${safeToolName(event.payload.toolName)}:${safeWireToken(event.payload.errorCode)}`).join(',');
   const commandResults = events.filter(event => event.type === 'run.command.result')
     .map(event => `${safeWireToken(event.payload.commandType)}:${safeWireToken(event.payload.disposition)}`)
     .join(',');
@@ -382,7 +460,7 @@ function diagnostic(
     .map(event => typeof event.runId === 'string' ? event.runId : 'missing').join(',');
   const exitMetadata = exit === undefined ? 'pending'
     : `code=${exit.code ?? 'null'}:signal=${safeSignal(exit.signal)}:stderrBytes=${Math.min(exit.stderrBytes, 999_999)}`;
-  return `等待真实 Java 事件超时；eventCount=${events.length}, eventTypes=[${eventCounts}], terminalReasons=[${terminalReasons}], startedTools=[${startedTools}], completedTools=[${completedTools}], commandResults=[${commandResults}], startedRunIds=[${startedRunIds}], failureCount=${failures.length}, exit=${exitMetadata}`;
+  return `等待真实 Java 事件超时；eventCount=${events.length}, eventTypes=[${eventCounts}], terminalReasons=[${terminalReasons}], startedTools=[${startedTools}], completedTools=[${completedTools}], failedTools=[${failedTools}], commandResults=[${commandResults}], startedRunIds=[${startedRunIds}], failureCount=${failures.length}, exit=${exitMetadata}`;
 }
 
 async function safeJournalLifecycle(journalPath: string): Promise<string> {
@@ -406,7 +484,7 @@ function safeEventType(type: string): string {
     'plan.execution.accepted', 'plan.execution.blocked', 'plan.feedback.submitted',
     'plan.review.requested', 'plan.verification.completed', 'plan.verification.required',
     'protocol.error', 'run.cancelled', 'run.completed', 'run.failed', 'run.started',
-    'session.command.result', 'tool.completed', 'tool.failed', 'tool.started',
+    'session.command.result', 'task.board.snapshot', 'tool.completed', 'tool.failed', 'tool.started',
   ]);
   return known.has(type) ? type : 'other';
 }

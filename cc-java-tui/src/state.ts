@@ -225,6 +225,7 @@ export interface TuiState {
   readonly childTasks?: readonly ChildTaskView[];
   readonly taskBoard?: TaskBoardView | undefined;
   readonly taskPanelOpen?: boolean | undefined;
+  readonly taskPanelFocused?: boolean | undefined;
   readonly selectedTaskId?: string | undefined;
   readonly taskDetailOpen?: boolean | undefined;
   readonly checkpointPanelOpen: boolean;
@@ -274,6 +275,7 @@ export const initialTuiState: TuiState = {
   childTasks: [],
   taskBoard: undefined,
   taskPanelOpen: false,
+  taskPanelFocused: false,
   selectedTaskId: undefined,
   taskDetailOpen: false,
   checkpointPanelOpen: false,
@@ -298,16 +300,16 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
   switch (action.type) {
     case 'task.panel.move': {
       const ordered = orderedSessionTasks(state.taskBoard?.tasks ?? []);
-      if (!state.taskPanelOpen || ordered.length === 0) return state;
+      if (!state.taskPanelOpen || !state.taskPanelFocused || ordered.length === 0) return state;
       const index = Math.max(0, ordered.findIndex(task => task.taskId === state.selectedTaskId));
       const next = ordered[(index + action.delta + ordered.length) % ordered.length];
       return next === undefined ? state : {...state, selectedTaskId: next.taskId, taskDetailOpen: false};
     }
     case 'task.panel.toggle-detail':
-      return state.taskPanelOpen && state.selectedTaskId !== undefined
+      return state.taskPanelOpen && state.taskPanelFocused && state.selectedTaskId !== undefined
         ? {...state, taskDetailOpen: !state.taskDetailOpen} : state;
     case 'task.panel.close':
-      return {...state, taskPanelOpen: false, taskDetailOpen: false};
+      return {...state, taskPanelOpen: false, taskPanelFocused: false, taskDetailOpen: false};
     case 'run.submitted': {
       const hasAuthoritativeRun = state.activeRunId !== undefined;
       if (state.phase !== 'ready' && state.phase !== 'accepted' && !hasAuthoritativeRun) {
@@ -449,6 +451,24 @@ function applyEvent(state: TuiState, event: ProtocolEvent): TuiState {
       return {...state, notice: event.payload.status === 'succeeded'
         ? `Skill /${String(event.payload.skillId)} 已完成`
         : `Skill /${String(event.payload.skillId)} 未完成`};
+    case 'task.board.snapshot': {
+      if (event.sessionId !== state.sessionId || event.runId !== state.activeRunId) return state;
+      const board = taskBoardView(event.payload);
+      if (board === undefined || (state.taskBoard !== undefined
+        && board.boardRevision <= state.taskBoard.boardRevision)) return state;
+      const ordered = orderedSessionTasks(board.tasks);
+      return {
+        ...state,
+        taskBoard: board,
+        taskPanelOpen: true,
+        taskPanelFocused: state.taskPanelFocused ?? false,
+        selectedTaskId: ordered.some(task => task.taskId === state.selectedTaskId)
+          ? state.selectedTaskId : ordered[0]?.taskId,
+        taskDetailOpen: false,
+        notice: board.truncated
+          ? `Task List 显示 ${board.tasks.length}/${board.totalTasks} 项` : state.notice,
+      };
+    }
     case 'task.status':
     case 'task.terminal': {
       const task: ChildTaskView = {
@@ -796,6 +816,7 @@ function applySessionCommandResult(state: TuiState, event: ProtocolEvent): TuiSt
         ...state,
         taskBoard: board,
         taskPanelOpen: true,
+        taskPanelFocused: true,
         selectedTaskId: ordered.some(task => task.taskId === state.selectedTaskId)
           ? state.selectedTaskId : ordered[0]?.taskId,
         taskDetailOpen: false,
@@ -819,7 +840,8 @@ function applySessionCommandResult(state: TuiState, event: ProtocolEvent): TuiSt
       && event.sessionId === result.resumedSessionId
     ) {
       return {...state, sessionId: result.resumedSessionId, steeringQueueDepth: 0,
-        taskBoard: undefined, taskPanelOpen: false, selectedTaskId: undefined, taskDetailOpen: false};
+        taskBoard: undefined, taskPanelOpen: false, taskPanelFocused: false,
+        selectedTaskId: undefined, taskDetailOpen: false};
     }
   }
   return state;

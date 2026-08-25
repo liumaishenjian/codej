@@ -9,6 +9,7 @@ import type {
   CheckpointView,
   ModelFailureView,
   RunView,
+  SessionTaskStatus,
 } from './state.js';
 import {AssistantMarkdown} from './assistant-markdown.js';
 import {ToolActivityGroup} from './tool-activity.js';
@@ -100,7 +101,7 @@ import {
   type PlanFeedbackDraft,
 } from './interaction.js';
 
-const PRODUCT_VERSION = '0.1.0';
+const PRODUCT_VERSION = '0.1.1';
 
 type PublicPermissionSelection = 'PLAN' | 'ASK' | 'AUTO' | 'ADVANCED';
 
@@ -993,7 +994,10 @@ export function AgentTui({client}: AgentTuiProps) {
       }
       return;
     }
-    if (state.taskPanelOpen) {
+    if (state.taskPanelOpen && state.taskPanelFocused
+      && planFeedbackInputRef.current === undefined && permissionPicker === undefined
+      && planReviewPicker === undefined && connectWizardRef.current === undefined
+      && pendingQuestion === undefined && pendingApproval === undefined && pendingUndo === undefined) {
       if (key.escape) dispatch({type: 'task.panel.close'});
       else if (key.upArrow) dispatch({type: 'task.panel.move', delta: -1});
       else if (key.downArrow) dispatch({type: 'task.panel.move', delta: 1});
@@ -1613,7 +1617,7 @@ export function AgentView({state, composer, input = '', columns, rows, composerL
     ? undefined
     : Math.max(5, Math.floor(rows));
   const overlayBlocksComposer = connectWizard !== undefined || permissionPicker !== undefined
-    || state.taskPanelOpen;
+    || state.taskPanelFocused === true;
   if (connectWizard !== undefined && connectWizard.required) {
     return <Box flexDirection="column">
       <Text>
@@ -1927,7 +1931,7 @@ function SessionTaskPanel({state}: {readonly state: AgentViewProps['state']}) {
               : task.status === 'PENDING' ? task.blocked ? '已阻塞' : '待处理' : '最近完成';
             const showGroup = group !== previousGroup;
             previousGroup = group;
-            const selected = task.taskId === state.selectedTaskId;
+            const selected = state.taskPanelFocused === true && task.taskId === state.selectedTaskId;
             const prefix = selected ? '❯' : ' ';
             const symbol = task.status === 'COMPLETED' ? '✓'
               : task.status === 'IN_PROGRESS' ? '—' : task.blocked ? '⊘' : '○';
@@ -1937,8 +1941,7 @@ function SessionTaskPanel({state}: {readonly state: AgentViewProps['state']}) {
                 <Text
                   {...(selected ? {color: 'cyanBright' as const}
                     : task.recoveryRequired ? {color: 'yellow' as const} : {})}
-                  dimColor={task.status === 'COMPLETED'}
-                  strikethrough={task.status === 'COMPLETED'}
+                  {...sessionTaskTextDecoration(task.status)}
                 >
                   {prefix} {symbol} {task.taskId} · {task.subject}
                 </Text>
@@ -1957,9 +1960,20 @@ function SessionTaskPanel({state}: {readonly state: AgentViewProps['state']}) {
       {board?.truncated === true
         ? <Text dimColor>仅显示 {board.tasks.length}/{board.totalTasks} 项；使用模型 Task 工具分页查看其余任务</Text>
         : null}
-      <Text dimColor>↑/↓ 选择　Enter 详情　Esc 关闭</Text>
+      <Text dimColor>{state.taskPanelFocused === true
+        ? '↑/↓ 选择　Enter 详情　Esc 关闭'
+        : '执行进度由 Java 实时更新；输入 /tasks 可交互查看'}</Text>
     </Box>
   );
+}
+
+/** 把 canonical Task 状态映射为终端文本装饰；完成项必须同时弱化并划线。 */
+export function sessionTaskTextDecoration(status: SessionTaskStatus): {
+  readonly dimColor: boolean;
+  readonly strikethrough: boolean;
+} {
+  const completed = status === 'COMPLETED';
+  return {dimColor: completed, strikethrough: completed};
 }
 
 function CheckpointPanel({state}: {readonly state: AgentViewProps['state']}) {

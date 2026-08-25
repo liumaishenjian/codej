@@ -899,6 +899,7 @@ describe('session task board projections', () => {
       }, 'tasks-1', 'session-1'),
     });
     expect(state.taskPanelOpen).toBe(true);
+    expect(state.taskPanelFocused).toBe(true);
     expect(state.selectedTaskId).toBe('task-1');
     state = reduceProductionState(state, {type: 'task.panel.move', delta: 1});
     expect(state.selectedTaskId).toBe('task-2');
@@ -906,6 +907,64 @@ describe('session task board projections', () => {
     expect(state.taskDetailOpen).toBe(true);
     state = reduceProductionState(state, {type: 'task.panel.close'});
     expect(state.taskPanelOpen).toBe(false);
+  });
+
+  it('mutation snapshot 自动显示但不抢焦点，并按 revision 即时推进到完成态', () => {
+    let state = reduceProductionState(initialTuiState, {
+      type: 'event.received', event: event('initialized', 1, {}, 'init', 'session-1'),
+    });
+    state = reduceProductionState(state, {type: 'run.submitted', requestId: 'run', prompt: 'work'});
+    state = reduceProductionState(state, {
+      type: 'event.received', event: event('run.command.result', 2, {
+        commandType: 'run.start', disposition: 'accepted', code: 'ACCEPTED',
+      }, 'run', 'session-1'),
+    });
+    state = reduceProductionState(state, {
+      type: 'event.received', event: event('run.started', 3, {}, 'run', 'session-1', 'run-1'),
+    });
+    const snapshot = (boardRevision: number, status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED',
+      taskRevision: number, subject = '执行任务') => ({
+      boardRevision, totalTasks: 1, truncated: false,
+      tasks: [{...task('task-1', status), revision: taskRevision, subject}],
+    });
+
+    state = reduceProductionState(state, {
+      type: 'event.received', event: event('task.board.snapshot', 3,
+        snapshot(1, 'PENDING', 1), 'run', 'session-1', 'run-1'),
+    });
+    expect(state.taskPanelOpen).toBe(true);
+    expect(state.taskPanelFocused).toBe(false);
+    expect(state.taskBoard?.tasks[0]).toEqual(expect.objectContaining({status: 'PENDING', revision: 1}));
+
+    state = reduceProductionState(state, {
+      type: 'event.received', event: event('task.board.snapshot', 4,
+        snapshot(2, 'IN_PROGRESS', 2), 'run', 'session-1', 'run-1'),
+    });
+    expect(state.taskBoard?.tasks[0]).toEqual(expect.objectContaining({status: 'IN_PROGRESS', revision: 2}));
+    const current = state;
+    state = reduceProductionState(state, {
+      type: 'event.received', event: event('task.board.snapshot', 5,
+        snapshot(2, 'COMPLETED', 3, '迟到重复'), 'run', 'session-1', 'run-1'),
+    });
+    expect(state).toBe(current);
+    state = reduceProductionState(state, {
+      type: 'event.received', event: event('task.board.snapshot', 6,
+        snapshot(3, 'COMPLETED', 3), 'run', 'session-1', 'run-1'),
+    });
+    expect(state.taskBoard?.tasks[0]).toEqual(expect.objectContaining({status: 'COMPLETED', revision: 3}));
+    expect(state.taskPanelFocused).toBe(false);
+
+    const completed = state;
+    state = reduceProductionState(state, {
+      type: 'event.received', event: event('task.board.snapshot', 7,
+        snapshot(4, 'PENDING', 4, 'wrong run'), 'run', 'session-1', 'run-other'),
+    });
+    expect(state).toBe(completed);
+    state = reduceProductionState(state, {
+      type: 'event.received', event: event('task.board.snapshot', 8,
+        snapshot(4, 'PENDING', 4, 'wrong session'), 'run', 'session-other', 'run-1'),
+    });
+    expect(state).toBe(completed);
   });
 
   it('canonical final 仅投影未完成任务提示，不覆盖模型最终文本', () => {

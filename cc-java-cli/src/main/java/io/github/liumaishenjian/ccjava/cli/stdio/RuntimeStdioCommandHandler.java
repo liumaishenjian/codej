@@ -2108,6 +2108,11 @@ public final class RuntimeStdioCommandHandler
             ObjectNode payload = codec.objectNode();
             payload.put("promptChars", run.promptChars);
             emit(run, "run.started", payload);
+            if (run.approvedPlanExecution) {
+                // 批准边界已创建权威 PENDING Task；在首个模型回合前通过同一 writer 投影，
+                // 避免 UI 要等到模型第一次 task_update 才看到计划步骤。
+                emitTaskBoardSnapshot(run);
+            }
         } else if (envelope.event() instanceof LifecycleEvent.ModelTurnStarted started) {
             ObjectNode payload = codec.objectNode();
             payload.put("turn", started.turnNumber());

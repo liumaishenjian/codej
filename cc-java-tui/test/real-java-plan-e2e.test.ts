@@ -60,7 +60,7 @@ describe('real Java stdio plan flow', () => {
       const revision = Number(review.payload.revision);
       const contentDigest = String(review.payload.contentDigest);
       const workspaceDigest = String(review.payload.workspaceDigest);
-      expect(String(review.payload.markdown)).toContain('Cross-process plan');
+      expect(String(review.payload.markdown)).toContain('跨进程实施计划');
       expect(revision).toBe(3); // plan + evidence declaration + review transition
       expect(events.some(event => event.type === 'plan.proposed')).toBe(false);
       expect(events.some(event => event.type === 'model.text.delta' && event.requestId === requestId)).toBe(false);
@@ -82,7 +82,7 @@ describe('real Java stdio plan flow', () => {
         && event.requestId === feedbackRequest)!;
       expect(revisedReview.payload.planId).toBe(planId);
       expect(revisedReview.payload.revision).toBe(6);
-      expect(String(revisedReview.payload.markdown)).toContain('Verify rollback behavior');
+      expect(String(revisedReview.payload.markdown)).toContain('验证纠正后的工作簿与回滚结果');
 
       const executionRequest = client.resolvePlanReview({
         planId, revision: Number(revisedReview.payload.revision),
@@ -123,29 +123,53 @@ describe('real Java stdio plan flow', () => {
         && event.requestId === executionRequest), () => diagnostic(events, failures, exit));
       await waitFor(() => events.some(event => event.type === 'run.completed'
         && event.requestId === executionRequest), () => diagnostic(events, failures, exit));
-      expect(events.some(event => event.type === 'run.completed'
-        && event.requestId === executionRequest
-        && String(event.payload.finalText).includes('approved plan corrected and verified'))).toBe(true);
+      const executionTerminal = events.find(event => event.type === 'run.completed'
+        && event.requestId === executionRequest)!;
+      expect(executionTerminal.payload.stopReason).toBe('completed');
+      expect(String(executionTerminal.payload.finalText)).toContain('approved plan corrected and verified');
+      expect(events.some(event => event.type === 'run.failed'
+        && event.requestId === executionRequest)).toBe(false);
+      // plan.verification.completed 只在 durable PlanArtifact 已进入 COMPLETED 时发布。
+      expect(events.some(event => event.type === 'plan.verification.completed'
+        && event.requestId === executionRequest)).toBe(true);
       expect(events.filter(event => event.type === 'tool.completed'
         && event.requestId === executionRequest && event.payload.toolName === 'write_file')).toHaveLength(2);
       expect(events.some(event => event.type === 'task.board.snapshot'
         && (event.requestId === requestId || event.requestId === feedbackRequest))).toBe(false);
       const taskSnapshots = events.filter(event => event.type === 'task.board.snapshot'
         && event.requestId === executionRequest);
-      expect(taskSnapshots.map(event => event.payload.boardRevision)).toEqual([1, 2, 3]);
-      expect(taskSnapshots.map(event => (event.payload.tasks as Array<{subject: string; status: string}>)[0]))
-        .toEqual([
-          expect.objectContaining({subject: '执行获批计划', status: 'PENDING'}),
-          expect.objectContaining({subject: '执行获批计划', status: 'IN_PROGRESS'}),
-          expect.objectContaining({subject: '执行获批计划', status: 'COMPLETED'}),
-        ]);
-      expect(JSON.stringify(taskSnapshots)).not.toContain('Create the exact weather workbook');
-      expect(JSON.stringify(taskSnapshots)).not.toContain('Verify rollback behavior');
+      expect(taskSnapshots.map(event => event.payload.boardRevision)).toEqual([2, 3, 4, 5, 6]);
+      expect(taskSnapshots.map(event => event.payload.tasks)).toEqual([
+        [
+          expect.objectContaining({subject: '生成精确命名的河南天气工作簿。', status: 'PENDING'}),
+          expect.objectContaining({subject: '验证纠正后的工作簿与回滚结果。', status: 'PENDING'}),
+        ],
+        [
+          expect.objectContaining({subject: '生成精确命名的河南天气工作簿。', status: 'IN_PROGRESS'}),
+          expect.objectContaining({subject: '验证纠正后的工作簿与回滚结果。', status: 'PENDING'}),
+        ],
+        [
+          expect.objectContaining({subject: '生成精确命名的河南天气工作簿。', status: 'COMPLETED'}),
+          expect.objectContaining({subject: '验证纠正后的工作簿与回滚结果。', status: 'PENDING'}),
+        ],
+        [
+          expect.objectContaining({subject: '生成精确命名的河南天气工作簿。', status: 'COMPLETED'}),
+          expect.objectContaining({subject: '验证纠正后的工作簿与回滚结果。', status: 'IN_PROGRESS'}),
+        ],
+        [
+          expect.objectContaining({subject: '生成精确命名的河南天气工作簿。', status: 'COMPLETED'}),
+          expect.objectContaining({subject: '验证纠正后的工作簿与回滚结果。', status: 'COMPLETED'}),
+        ],
+      ]);
+      expect(events.some(event => event.type === 'tool.completed'
+        && event.requestId === executionRequest && event.payload.toolName === 'task_create')).toBe(false);
+      expect(JSON.stringify(taskSnapshots)).not.toContain('执行获批计划');
       const executionTypes = events.filter(event => event.requestId === executionRequest)
         .map(event => event.type);
       expect(executionTypes.indexOf('plan.execution.accepted')).toBeLessThan(
         executionTypes.indexOf('run.started'));
-      expect(executionTypes.indexOf('run.started')).toBeLessThan(executionTypes.indexOf('tool.started'));
+      expect(executionTypes.indexOf('run.started')).toBeLessThan(executionTypes.indexOf('task.board.snapshot'));
+      expect(executionTypes.indexOf('task.board.snapshot')).toBeLessThan(executionTypes.indexOf('tool.started'));
       expect(executionTypes.indexOf('tool.started')).toBeLessThan(executionTypes.indexOf('plan.verification.correction'));
       expect(executionTypes.indexOf('plan.verification.correction')).toBeLessThan(
         executionTypes.lastIndexOf('tool.started'));
@@ -266,7 +290,7 @@ describe('real Java stdio plan flow', () => {
       view.stdin.write('\r');
       await waitFor(() => view.lastFrame()?.includes('approved plan corrected and verified') === true
         && view.lastFrame()?.includes('计划证据已验证') === true
-        && view.lastFrame()?.includes('✓ task-1 · 执行获批计划') === true
+        && view.lastFrame()?.includes('✓ 生成精确命名的河南天气工作簿。') === true
         && view.lastFrame()?.includes('已完成') === true,
       () => diagnostic(events, failures, exit));
       await waitFor(() => view.lastFrame()?.includes('· 就绪') === true,
@@ -340,7 +364,7 @@ describe('real Java stdio plan flow', () => {
       await waitFor(() => events.some(event => event.type === 'run.completed'
         && String(event.payload.finalText).includes('task lifecycle verified')),
       () => diagnostic(events, failures, exit));
-      await waitFor(() => view.lastFrame()?.includes('✓ task-1 · 完成真实 Task 闭环') === true
+      await waitFor(() => view.lastFrame()?.includes('✓ 完成真实 Task 闭环') === true
         && view.lastFrame()?.includes('task lifecycle verified') === true,
       () => diagnostic(events, failures, exit));
 
@@ -355,7 +379,7 @@ describe('real Java stdio plan flow', () => {
         expect(runEvents[index - 1]?.type).toBe('tool.completed');
         expect(['task_create', 'task_update']).toContain(runEvents[index - 1]?.payload.toolName);
       }
-      expect(view.lastFrame()).toContain('执行进度由 Java 实时更新；输入 /tasks 可交互查看');
+      expect(view.lastFrame()).not.toContain('执行进度由 Java');
       expect(failures).toEqual([]);
     } finally {
       await client.shutdown();

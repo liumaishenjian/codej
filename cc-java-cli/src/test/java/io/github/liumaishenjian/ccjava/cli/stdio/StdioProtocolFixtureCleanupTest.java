@@ -61,7 +61,7 @@ class StdioProtocolFixtureCleanupTest {
                     + "\"sequence\":4,\"payload\":{\"approvalId\":\"%s\",\"decision\":\"allow_once\"}}")
                     .formatted(sessionId, executionStarted.runId().orElseThrow(),
                             firstApproval.payload().get("approvalId").stringValue())), emitter);
-            awaitEventCount(events, "tool.completed", "execute", 3);
+            awaitEventCount(events, "tool.completed", "execute", 2);
             awaitEvent(events, "plan.verification.correction", "execute");
             CapturedEvent secondApproval = awaitEventCount(events, "approval.requested", "execute", 2);
             plan.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"approval.resolve\","
@@ -69,16 +69,16 @@ class StdioProtocolFixtureCleanupTest {
                     + "\"sequence\":5,\"payload\":{\"approvalId\":\"%s\",\"decision\":\"allow_once\"}}")
                     .formatted(sessionId, executionStarted.runId().orElseThrow(),
                             secondApproval.payload().get("approvalId").stringValue())), emitter);
-            awaitEventCount(events, "tool.completed", "execute", 5);
+            awaitEventCount(events, "tool.completed", "execute", 4);
             awaitEvent(events, "plan.verification.completed", "execute");
             CapturedEvent terminal = awaitEvent(events, "run.completed", "execute");
 
             assertThat(events.stream().filter(event -> event.type().equals("tool.started")
                     && event.requestId().equals("execute"))
                     .map(event -> event.payload().get("toolName").stringValue()))
-                    .containsExactly("task_create", "task_update", "write_file", "write_file", "task_update");
+                    .containsExactly("task_update", "write_file", "write_file", "task_update");
             assertThat(events.stream().filter(event -> event.type().equals("tool.completed")
-                    && event.requestId().equals("execute"))).hasSize(5);
+                    && event.requestId().equals("execute"))).hasSize(4);
             assertThat(events.stream().filter(event -> event.type().equals("task.board.snapshot")
                     && event.requestId().equals("execute"))
                     .map(event -> event.payload().get("boardRevision").longValue()))

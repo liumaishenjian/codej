@@ -43,6 +43,22 @@ public interface FinalAssistantHandler {
                 : FinalAssistantDecision.reject();
     }
 
+    /**
+     * 判断当前聚合响应中的 Tool Call 是否仍被宿主允许。
+     *
+     * <p>普通 Run 默认允许，并继续走统一 Tool Pipeline。批准 Plan 在进入一次性 final-only 回合后
+     * 可覆写为拒绝，使模型即使违反零 Tool 定义也立即以 INVALID_MODEL_RESPONSE 收口，而不是把
+     * unknown tool 结果送回模型形成无界循环。</p>
+     *
+     * @param sessionId 当前 Session
+     * @param runId 当前 Run
+     * @param assistant 含一个或多个 Tool Call 的完整 Assistant Message
+     * @return 允许执行时为 {@code true}；拒绝时 Runtime 不追加消息、不执行 Tool
+     */
+    default boolean allowToolCalls(SessionId sessionId, RunId runId, AssistantMessage assistant) {
+        return true;
+    }
+
     /** 返回保持历史 Agent Runtime 语义的兼容处理器。 */
     static FinalAssistantHandler acceptAll() {
         return (ignoredSession, ignoredRun, ignoredAssistant) -> true;

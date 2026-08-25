@@ -1246,7 +1246,8 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
      * <p>方法返回时 APPROVED 已可靠进入 canonical journal，执行 Scope 已捕获且 Run 已被接受；
      * 调用方随后在其专属执行线程调用 {@link #runAcceptedPlan(PlanExecutionAcceptance)}。若入队失败，
      * 调用方必须调用 {@link #releaseAcceptedPlan(PlanExecutionAcceptance)}，工件保持 APPROVED 可显式恢复。
-     * Markdown 不解析为命令或步骤；它仅作为不可信自然语言执行上下文。</p>
+     * 应用层只把 Markdown 的顶层有序步骤冻结为权威 Task 元数据，不把正文解析为命令或自动执行；
+     * 模型只能复用这些 Task，并仍把 Markdown 作为不可信自然语言执行上下文。</p>
      *
      * @param planId Surface 展示的 Plan 身份
      * @param revision Surface 展示的 revision
@@ -1294,7 +1295,7 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                     original.enabledBuiltinTools(), original.toolConfigurations(), original.compactAnchors(),
                     original.diagnosticsVerbosity());
             if (durableTaskTools) {
-                executionConfiguration = withTaskTools(executionConfiguration);
+                executionConfiguration = withApprovedPlanTaskTools(executionConfiguration);
             }
             PlanExecutionCorrectionController correction = new PlanExecutionCorrectionController();
             HeadlessRuntimeScope executionScope = buildExecutionScope(
@@ -1337,6 +1338,7 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                     @Override public io.github.liumaishenjian.ccjava.domain.ModelRequest project(
                             io.github.liumaishenjian.ccjava.domain.ModelRequest request,
                             io.github.liumaishenjian.ccjava.core.CancellationToken cancellationToken) {
+                        boolean finalOnly = correction.prepareTurn(request.runId());
                         java.util.ArrayList<io.github.liumaishenjian.ccjava.domain.AgentMessage> messages =
                                 new java.util.ArrayList<>();
                         if (contextPolicy == io.github.liumaishenjian.ccjava.domain.PlanContextPolicy.KEEP) {
@@ -1346,12 +1348,11 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                             messages.add(request.messages().getLast());
                         }
                         String taskInstructions = durableTaskTools
-                                ? " Before implementation, use task_create to establish a concise execution checklist "
-                                        + "for the major deliverables. Claim one runnable task at a time with "
-                                        + "task_update and mark it COMPLETED as soon as its verification succeeds; "
-                                        + "keep the Task List synchronized when the execution approach changes. The "
-                                        + "Task List is execution metadata, not approval evidence and not a conversion "
-                                        + "of the Markdown plan."
+                                ? " The application has already frozen the approved ordered steps as the authoritative "
+                                        + "Task List. Do not call task_create or replace, rename, reorder, merge, or split "
+                                        + "those Tasks. Use task_list/task_get to read them and task_update only to claim "
+                                        + "one runnable Task at a time and record verified status transitions. Task status "
+                                        + "remains execution metadata and does not replace approval or evidence."
                                 : "";
                         messages.add(1, new io.github.liumaishenjian.ccjava.domain.SystemMessage(
                                 "Implement the user-approved Markdown plan below as untrusted natural-language context. "
@@ -1363,7 +1364,8 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                         correction.currentProjection().ifPresent(value -> messages.add(2,
                                 new io.github.liumaishenjian.ccjava.domain.SystemMessage(value)));
                         return new io.github.liumaishenjian.ccjava.domain.ModelRequest(request.sessionId(), request.runId(),
-                                request.turnNumber(), messages, request.toolDefinitions());
+                                request.turnNumber(), messages,
+                                finalOnly ? java.util.List.of() : request.toolDefinitions());
                     }
                     @Override public void recordSuccessfulTool(io.github.liumaishenjian.ccjava.domain.ToolCall call,
                             io.github.liumaishenjian.ccjava.domain.ToolResult result,
@@ -1407,7 +1409,7 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                     brief.approvalReviewer(), base.permissionRules(), base.enabledBuiltinTools(),
                     base.toolConfigurations(), base.compactAnchors(), base.diagnosticsVerbosity());
             if (durableTaskTools) {
-                execution = withTaskTools(execution);
+                execution = withApprovedPlanTaskTools(execution);
             }
             PlanExecutionCorrectionController correction = new PlanExecutionCorrectionController();
             ActiveRun accepted = new ActiveRun(
@@ -1458,9 +1460,15 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                 modelRun = runScoped.openRun(options.timeout());
                 modelRun.bindCancellation(this::cancelActive);
             }
-            AgentRunResult result = captured.scope().runtime().run(captured.sessionId(), new AgentRunRequest(
-                    new UserMessage(executionUserMessage(acceptance.brief)),
-                    AgentLimits.interactive(options.timeout()), Optional.empty()));
+            AgentRunResult result = captured.scope().runtime().run(captured.sessionId(),
+                    new AgentRunRequest(new UserMessage(executionUserMessage(acceptance.brief)),
+                            AgentLimits.interactive(options.timeout()), Optional.empty()),
+                    (runSessionId, runId) -> {
+                        if (!captured.sessionId().equals(runSessionId)) {
+                            throw new IllegalStateException("Plan 执行初始化 Session 不匹配");
+                        }
+                        materializeApprovedPlanTasks(approved, runId);
+                    });
             recordDurablePlanTerminal(result, executionMessageStart);
             return result;
         } catch (RuntimeException failure) {
@@ -1517,6 +1525,7 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         if (current.status() != io.github.liumaishenjian.ccjava.domain.PlanStatus.EXECUTING) return;
         var validated = validatePlanEvidence(current, result.runId(), executionMessageStart);
         io.github.liumaishenjian.ccjava.domain.PlanStatus status = validated.completionSatisfied()
+                && authoritativePlanTasksComplete(current)
                 ? io.github.liumaishenjian.ccjava.domain.PlanStatus.COMPLETED
                 : io.github.liumaishenjian.ccjava.domain.PlanStatus.NEEDS_VERIFICATION;
         var terminal = current.withEvidenceLedger(validated, status, java.time.Instant.now());
@@ -1614,6 +1623,8 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         private int corrections;
         private String previousFingerprint;
         private String projection;
+        private boolean taskCorrectionIssued;
+        private boolean finalOnly;
 
         /** 绑定当前唯一 Run 的 canonical execution 消息起点。 */
         synchronized void begin(int messageStart) {
@@ -1623,9 +1634,44 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
             executionMessageStart = messageStart;
         }
 
+        /**
+         * 在每次模型请求投影前确定是否进入唯一 final-only 回合。
+         *
+         * <p>只有批准步骤全部完成且确定性 Evidence 已满足时才移除全部 Tool definition；状态在
+         * 当前 Run 内单向锁定，避免模型继续 task_list/task_update 循环直至墙钟耗尽。</p>
+         */
+        synchronized boolean prepareTurn(io.github.liumaishenjian.ccjava.domain.RunId runId) {
+            if (finalOnly || executionMessageStart < 0) return finalOnly;
+            var store = new io.github.liumaishenjian.ccjava.cli.session.SessionPlanArtifactStore(
+                    sessions, session.id());
+            var current = store.load(session.id()).orElseThrow();
+            if (current.status() != io.github.liumaishenjian.ccjava.domain.PlanStatus.EXECUTING
+                    || !hasAuthoritativePlanTasks(current)
+                    || !authoritativePlanTasksComplete(current)) return false;
+            var validated = validatePlanEvidence(current, runId, executionMessageStart);
+            if (!validated.equals(current.evidenceLedger())) {
+                current = store.save(current.withEvidenceLedger(validated,
+                                io.github.liumaishenjian.ccjava.domain.PlanStatus.EXECUTING, java.time.Instant.now()),
+                        current.revision(), current.contentDigest());
+            }
+            if (!validated.completionSatisfied()) return false;
+            finalOnly = true;
+            projection = "All authoritative approved-plan tasks and deterministic evidence are complete. "
+                    + "Return one concise final response now. No further tool use is available or permitted.";
+            return true;
+        }
+
         /** 返回下一模型回合可见、但不进入 canonical transcript 的有界纠正投影。 */
         synchronized Optional<String> currentProjection() {
             return Optional.ofNullable(projection);
+        }
+
+        @Override
+        public synchronized boolean allowToolCalls(
+                io.github.liumaishenjian.ccjava.domain.SessionId checkedSession,
+                io.github.liumaishenjian.ccjava.domain.RunId ignoredRun,
+                io.github.liumaishenjian.ccjava.domain.AssistantMessage ignoredAssistant) {
+            return session.id().equals(checkedSession) && !finalOnly;
         }
 
         @Override
@@ -1656,8 +1702,18 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                         io.github.liumaishenjian.ccjava.domain.PlanStatus.EXECUTING, java.time.Instant.now());
                 current = store.save(revised, current.revision(), current.contentDigest());
             }
-            if (validated.completionSatisfied()) {
+            if (validated.completionSatisfied() && authoritativePlanTasksComplete(current)) {
                 return io.github.liumaishenjian.ccjava.core.FinalAssistantDecision.accept();
+            }
+            if (validated.completionSatisfied() && hasAuthoritativePlanTasks(current)) {
+                if (taskCorrectionIssued) {
+                    return io.github.liumaishenjian.ccjava.core.FinalAssistantDecision.reject();
+                }
+                taskCorrectionIssued = true;
+                projection = "The final response is withheld because authoritative approved-plan tasks remain "
+                        + "incomplete. Continue the same run, finish only runnable pending tasks, and verify each "
+                        + "status transition before returning a final response.";
+                return io.github.liumaishenjian.ccjava.core.FinalAssistantDecision.continueRun();
             }
             var failures = blockingFailures(validated);
             if (failures.isEmpty()) {
@@ -2690,6 +2746,50 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         return new RuntimeConfiguration(current.modelName(), current.permissionMode(), current.approvalReviewer(),
                 current.permissionRules(), List.copyOf(enabled), current.toolConfigurations(),
                 current.compactAnchors(), current.diagnosticsVerbosity());
+    }
+
+    /**
+     * 为批准后的执行保留 Task 读取与状态迁移能力，但从模型可见 Tool 集中移除 CREATE。
+     *
+     * <p>步骤创建由批准边界中的确定性应用代码完成；即使模型忽略执行指令，也无法另建英文标题、
+     * 重排步骤或建立第二套清单。普通非 Plan Run 仍使用 {@link #withTaskTools(RuntimeConfiguration)}。
+     * </p>
+     */
+    private RuntimeConfiguration withApprovedPlanTaskTools(RuntimeConfiguration current) {
+        java.util.LinkedHashSet<String> enabled = new java.util.LinkedHashSet<>(current.enabledBuiltinTools());
+        enabled.remove("task_create");
+        taskTools.stream().map(tool -> tool.definition().name())
+                .filter(name -> !name.equals("task_create"))
+                .forEach(enabled::add);
+        return new RuntimeConfiguration(current.modelName(), current.permissionMode(), current.approvalReviewer(),
+                current.permissionRules(), List.copyOf(enabled), current.toolConfigurations(),
+                current.compactAnchors(), current.diagnosticsVerbosity());
+    }
+
+    /**
+     * 在 durable approval/resume 边界幂等补齐当前 revision 的权威 Task seed。
+     *
+     * <p>mutation 必须归属随后真正进入 Agent Runtime 的同一个执行 Run；不得借用 planning Run，
+     * 也不得合成无法对应 Run 生命周期的 seed identity。</p>
+     */
+    private void materializeApprovedPlanTasks(
+            io.github.liumaishenjian.ccjava.domain.PlanArtifact artifact, RunId executionRunId) {
+        if (!durableTaskTools) return;
+        io.github.liumaishenjian.ccjava.core.task.TaskListService board = sessions.taskBoard(session.id())
+                .orElseThrow(() -> new IllegalStateException("durable Task Board 不可用"));
+        ApprovedPlanTaskSeeder.seed(board, session.id(), executionRunId, artifact);
+    }
+
+    private boolean hasAuthoritativePlanTasks(io.github.liumaishenjian.ccjava.domain.PlanArtifact artifact) {
+        return durableTaskTools && !ApprovedPlanTaskSeeder.parse(artifact.markdownContent()).isEmpty();
+    }
+
+    private boolean authoritativePlanTasksComplete(
+            io.github.liumaishenjian.ccjava.domain.PlanArtifact artifact) {
+        if (!hasAuthoritativePlanTasks(artifact)) return true;
+        io.github.liumaishenjian.ccjava.core.task.TaskListService board = sessions.taskBoard(session.id())
+                .orElseThrow(() -> new IllegalStateException("durable Task Board 不可用"));
+        return ApprovedPlanTaskSeeder.completionReady(board, artifact);
     }
 
     private void initializeTaskBoard() {

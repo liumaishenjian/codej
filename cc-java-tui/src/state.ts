@@ -260,6 +260,7 @@ export type TuiAction =
   | {readonly type: 'task.panel.move'; readonly delta: -1 | 1}
   | {readonly type: 'task.panel.toggle-detail'}
   | {readonly type: 'task.panel.close'}
+  | {readonly type: 'task.panel.auto-hide'}
   | {readonly type: 'event.received'; readonly event: ProtocolEvent}
   | {readonly type: 'transport.failed'; readonly message: string}
   | {readonly type: 'slash.notice'; readonly message: string}
@@ -310,6 +311,12 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
         ? {...state, taskDetailOpen: !state.taskDetailOpen} : state;
     case 'task.panel.close':
       return {...state, taskPanelOpen: false, taskPanelFocused: false, taskDetailOpen: false};
+    case 'task.panel.auto-hide':
+      return state.taskPanelFocused === true || state.taskBoard === undefined
+        || state.taskBoard.tasks.length === 0
+        || state.taskBoard.tasks.some(task => task.status !== 'COMPLETED')
+        ? state
+        : {...state, taskPanelOpen: false, taskDetailOpen: false};
     case 'run.submitted': {
       const hasAuthoritativeRun = state.activeRunId !== undefined;
       if (state.phase !== 'ready' && state.phase !== 'accepted' && !hasAuthoritativeRun) {

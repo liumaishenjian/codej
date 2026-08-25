@@ -262,7 +262,7 @@ class RuntimeStdioCommandHandlerTest {
         StdioProtocol.EventEmitter emitter = (type, requestId, sessionId, runId, payload) ->
                 events.add(new CapturedEvent(type, sessionId, runId, payload.deepCopy()));
         AtomicInteger calls = new AtomicInteger();
-        String markdown = "# Plan\n\nExecute normally.\n";
+        String markdown = "# Plan\n\n## 拟定步骤\n1. 执行已批准的中文步骤。\n";
         String digest = io.github.liumaishenjian.ccjava.domain.PlanArtifact.digest(markdown);
         try (RuntimeStdioCommandHandler handler = new RuntimeStdioCommandHandler(request ->
                 switch (calls.getAndIncrement()) {

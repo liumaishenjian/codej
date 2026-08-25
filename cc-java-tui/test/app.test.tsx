@@ -2,7 +2,7 @@ import {readFile, readdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {render} from 'ink-testing-library';
-import {describe, expect, it} from 'vitest';
+import {afterEach, describe, expect, it, vi} from 'vitest';
 import {
   AgentTui,
   AgentView,
@@ -15,13 +15,18 @@ import {
   editInput,
   MAX_INPUT_CHARS,
   renderProviderControlResult,
+  scheduleTaskPanelAutoHide,
   sessionTaskTextDecoration,
+  TASK_COMPLETION_VISIBLE_MS,
+  terminalDisplayWidth,
+  truncateTerminalText,
   undoConfirmation,
 } from '../src/app.js';
 import type {AgentClient} from '../src/app.js';
 import type {ProtocolEvent} from '../src/protocol.js';
 import type {ProviderLoginRequest, ProviderLoginResult} from '../src/stdio-client.js';
-import type {TuiState} from '../src/state.js';
+import {reduceTuiState} from '../src/state.js';
+import type {TuiAction, TuiState} from '../src/state.js';
 import {createComposerState, reduceComposer} from '../src/input-editor.js';
 import {initialPermissionPickerState} from '../src/permission-picker.js';
 import {
@@ -897,13 +902,14 @@ describe('AgentView', () => {
         {taskId: 'task-1', revision: 1, status: 'PENDING', subject: '执行实现', blocked: false,
           blockerIds: [], owner: null, activeForm: null, recoveryRequired: false},
       ]}});
-    await waitForFrame(() => view.lastFrame()?.includes('Task List · rev 1') === true);
-    expect(view.lastFrame()).toContain('执行进度由 Java 实时更新；输入 /tasks 可交互查看');
+    await waitForFrame(() => view.lastFrame()?.includes('任务 0/1 完成') === true);
+    expect(view.lastFrame()).toContain('○ 执行实现');
+    expect(view.lastFrame()).not.toContain('执行进度由 Java');
 
     view.stdin.write('follow up'); view.stdin.write('\r');
     await waitForFrame(() => client.prompts.length === 2);
     expect(client.prompts).toEqual(['initial', 'follow up']);
-    expect(view.lastFrame()).toContain('Task List · rev 1');
+    expect(view.lastFrame()).toContain('任务 0/1 完成');
     view.unmount();
   });
 
@@ -2027,6 +2033,7 @@ describe('TUI interaction polish', () => {
 
 
 describe('Session Task List Ink surface', () => {
+  afterEach(() => vi.useRealTimers());
   it('/tasks 显式聚焦面板并让方向键、详情和 Esc 只作用于 Task 交互', async () => {
     const client = new FakeAgentClient();
     const view = await initializedTui(client);
@@ -2043,13 +2050,13 @@ describe('Session Task List Ink surface', () => {
         ],
       }}});
     await waitForFrame(() => view.lastFrame()?.includes('↑/↓ 选择　Enter 详情　Esc 关闭') === true);
-    expect(view.lastFrame()).toContain('❯ — task-2 · 第二项');
+    expect(view.lastFrame()).toContain('❯ ● 第二项');
     view.stdin.write('[B');
-    await waitForFrame(() => view.lastFrame()?.includes('❯ ○ task-1 · 第一项') === true);
+    await waitForFrame(() => view.lastFrame()?.includes('❯ ○ 第一项') === true);
     view.stdin.write('\r');
-    await waitForFrame(() => view.lastFrame()?.includes('状态 pending') === true);
+    await waitForFrame(() => view.lastFrame()?.includes('待处理') === true);
     view.stdin.write('\x1b');
-    await waitForFrame(() => view.lastFrame()?.includes('Task List · rev 4') === false);
+    await waitForFrame(() => view.lastFrame()?.includes('任务 0/2 完成') === false);
     expect(client.prompts).toEqual([]);
     view.unmount();
   });
@@ -2077,15 +2084,128 @@ describe('Session Task List Ink surface', () => {
       },
     };
     const frame = render(<AgentView state={state} input="" columns={100} />).lastFrame() ?? '';
-    expect(frame).toContain('Task List · rev 7');
+    expect(frame).toContain('任务 1/4 完成 · 2 进行中 · 1 等待');
     expect(frame.indexOf('需要恢复')).toBeLessThan(frame.indexOf('正在实现'));
     expect(frame.indexOf('正在实现')).toBeLessThan(frame.indexOf('等待依赖'));
-    expect(frame).toContain('❯ — task-2 · 正在实现');
-    expect(frame).toContain('状态 in_progress · owner root · 编写测试');
-    expect(frame).toContain('✓ task-4 · 已经完成');
+    expect(frame).toContain('❯ ● 正在实现');
+    expect(frame).toContain('进行中 · 编写测试');
+    expect(frame).toContain('✓ 已经完成');
+    expect(frame).toContain('等待 1 项前置任务');
+    expect(frame).not.toContain('task-');
+    expect(frame).not.toContain('owner');
+    expect(frame).not.toContain('rev 7');
     expect(sessionTaskTextDecoration('COMPLETED')).toEqual({dimColor: true, strikethrough: true});
     expect(sessionTaskTextDecoration('IN_PROGRESS')).toEqual({dimColor: false, strikethrough: false});
     expect(frame).toContain('↑/↓ 选择　Enter 详情　Esc 关闭');
+  });
+
+  it('240 列宽终端仍使用有界无边框任务行并隐藏实现字段', () => {
+    const longSubject = `生成河南🌤️天气工作簿并验证é组合字符${'全部城市数据'.repeat(30)}`;
+    const state: TuiState = {
+      phase: 'running', sessionId: 'session-wide', activeRunId: 'run-wide', notice: undefined,
+      checkpoints: [], checkpointPanelOpen: false, selectedCheckpointId: undefined,
+      checkpointDiff: undefined, pendingUndoCheckpointId: undefined, checkpointUndo: undefined,
+      runs: [], taskPanelOpen: true, taskPanelFocused: false, selectedTaskId: 'task-1', taskDetailOpen: false,
+      taskBoard: {boardRevision: 9, totalTasks: 1, truncated: false, tasks: [
+        {taskId: 'task-1', revision: 1, subject: longSubject, activeForm: undefined,
+          status: 'PENDING', owner: 'root', blocked: false, blockerIds: [], recoveryRequired: false},
+      ]},
+    };
+    const frame = render(<AgentView state={state} input="" columns={240} rows={50} />).lastFrame() ?? '';
+    expect(frame).toContain('任务 0/1 完成');
+    const truncated = truncateTerminalText(longSubject, 120);
+    expect(frame).toContain(truncated);
+    expect(frame).not.toContain(longSubject);
+    expect(terminalDisplayWidth(truncated)).toBeLessThanOrEqual(120);
+    expect(terminalDisplayWidth('河南🌤️é')).toBe(7);
+    expect(truncated).toContain('🌤️');
+    const narrow = truncateTerminalText('河南🌤️é测试', 6);
+    expect(terminalDisplayWidth(narrow)).toBeLessThanOrEqual(6);
+    expect(narrow).toBe('河南…');
+    expect(frame).not.toContain('Task List');
+    expect(frame).not.toContain('task-1');
+    expect(frame).not.toContain('rev 9');
+    expect(frame).not.toContain('owner root');
+    expect(frame).not.toContain('执行进度由 Java');
+    const summaryLine = frame.split('\n').find(line => line.includes('任务 0/1 完成')) ?? '';
+    const taskLine = frame.split('\n').find(line => line.includes(truncated)) ?? '';
+    expect(summaryLine).not.toContain('─');
+    expect(summaryLine).not.toContain('│');
+    expect(terminalDisplayWidth(taskLine.trimEnd())).toBeLessThanOrEqual(126);
+  });
+
+  it.each([20, 24])('%i 列终端中任务面板每行都不超出可见宽度', columns => {
+    const state: TuiState = {
+      phase: 'ready', sessionId: 'session-narrow', activeRunId: undefined, notice: undefined,
+      checkpoints: [], checkpointPanelOpen: false, selectedCheckpointId: undefined,
+      checkpointDiff: undefined, pendingUndoCheckpointId: undefined, checkpointUndo: undefined,
+      runs: [], taskPanelOpen: true, taskPanelFocused: true, selectedTaskId: 'task-running',
+      taskDetailOpen: true,
+      taskBoard: {boardRevision: 12, totalTasks: 8, truncated: true, tasks: [
+        {taskId: 'task-running', revision: 2, subject: '生成河南🌤️天气é工作簿并完成全部校验', activeForm: '正在组装数据',
+          status: 'IN_PROGRESS', owner: 'root', blocked: false, blockerIds: [], recoveryRequired: true},
+        {taskId: 'task-blocked', revision: 1, subject: '等待前置任务后导出文件', activeForm: undefined,
+          status: 'PENDING', owner: undefined, blocked: true,
+          blockerIds: ['task-running', 'task-other'], recoveryRequired: false},
+        {taskId: 'task-complete', revision: 3, subject: '已完成的中文任务', activeForm: undefined,
+          status: 'COMPLETED', owner: undefined, blocked: false, blockerIds: [], recoveryRequired: false},
+      ]},
+    };
+    const frame = render(<AgentView state={state} input="" columns={columns} rows={50} />).lastFrame() ?? '';
+    const taskPanelLines = frame.split('\n').filter(line =>
+      /任务 \d+\/\d+ 完成|[●◌○✓]|\u2191\/\u2193|还有 \d+ 项|进行中/.test(line));
+    expect(taskPanelLines.length).toBeGreaterThanOrEqual(6);
+    for (const line of taskPanelLines) {
+      expect(terminalDisplayWidth(line.trimEnd()), line).toBeLessThanOrEqual(columns);
+    }
+    expect(frame).not.toContain('task-running');
+    expect(frame).not.toContain('owner');
+    expect(frame).not.toContain('Java');
+    expect(sessionTaskTextDecoration('COMPLETED')).toEqual({dimColor: true, strikethrough: true});
+  });
+
+  it('全部完成保留约五秒后只隐藏且 /tasks 可以重新打开 durable 列表', async () => {
+    vi.useFakeTimers();
+    const completedBoard: NonNullable<TuiState['taskBoard']> = {
+      boardRevision: 4, totalTasks: 2, truncated: false, tasks: [
+        {taskId: 'task-1', revision: 3, status: 'COMPLETED', subject: '生成工作簿', blocked: false,
+          blockerIds: [], owner: undefined, activeForm: undefined, recoveryRequired: false},
+        {taskId: 'task-2', revision: 3, status: 'COMPLETED', subject: '验证工作簿', blocked: false,
+          blockerIds: [], owner: undefined, activeForm: undefined, recoveryRequired: false},
+      ],
+    };
+    const completedState: TuiState = {
+      phase: 'ready', sessionId: 'session-1', activeRunId: undefined, notice: undefined,
+      checkpoints: [], checkpointPanelOpen: false, selectedCheckpointId: undefined,
+      checkpointDiff: undefined, pendingUndoCheckpointId: undefined, checkpointUndo: undefined,
+      runs: [], taskPanelOpen: true, taskPanelFocused: false, selectedTaskId: 'task-1', taskDetailOpen: false,
+      taskBoard: completedBoard,
+    };
+    const dispatched: TuiAction[] = [];
+    const cancel = scheduleTaskPanelAutoHide(action => dispatched.push(action));
+
+    await vi.advanceTimersByTimeAsync(TASK_COMPLETION_VISIBLE_MS - 1);
+    expect(dispatched).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(dispatched).toEqual([{type: 'task.panel.auto-hide'}]);
+    cancel();
+
+    const hidden = reduceTuiState(completedState, dispatched[0]!);
+    expect(hidden.taskPanelOpen).toBe(false);
+    expect(hidden.taskBoard).toBe(completedBoard);
+    expect(hidden.taskBoard?.tasks).toHaveLength(2);
+
+    const reopened = reduceTuiState(hidden, {type: 'event.received', event: {
+      version: 0, type: 'session.command.result', requestId: 'tasks', sessionId: 'session-1', sequence: 5,
+      payload: {intent: 'tasks', status: 'succeeded', result: {
+        boardRevision: 4, totalTasks: 2, truncated: false, tasks: completedBoard.tasks.map(task => ({
+          ...task, owner: null, activeForm: null,
+        })),
+      }},
+    }});
+    expect(reopened.taskPanelOpen).toBe(true);
+    expect(reopened.taskPanelFocused).toBe(true);
+    expect(reopened.taskBoard?.tasks).toHaveLength(2);
   });
 });
 

@@ -492,8 +492,26 @@ public final class AgentRuntime {
      * @throws IllegalStateException Session 已关闭或已有活动 Run 时抛出
      */
     public AgentRunResult run(SessionId sessionId, AgentRunRequest request) {
+        return run(sessionId, request, RunInitializer.noop());
+    }
+
+    /**
+     * 在 Runtime 生成真实 Run identity、写入 Run journal 并取得活动所有权后，
+     * 于首个模型回合前执行一次确定性初始化。
+     *
+     * <p>该入口用于必须与实际执行 Run 绑定的应用事实，例如批准 Plan 的权威 Task seed。
+     * 调用方不能选择或伪造 Run ID；初始化失败时会记录成对的
+     * {@code INTERNAL_ERROR} Run 终态，且不会请求模型或执行 Tool。</p>
+     *
+     * @param sessionId 目标 Session
+     * @param request 用户消息和本次 Run 限制
+     * @param initializer 只接收 Runtime 生成身份的单次初始化器
+     * @return Run 终态摘要
+     */
+    public AgentRunResult run(SessionId sessionId, AgentRunRequest request, RunInitializer initializer) {
         Objects.requireNonNull(sessionId, "sessionId 不能为空");
         Objects.requireNonNull(request, "request 不能为空");
+        Objects.requireNonNull(initializer, "initializer 不能为空");
         AgentSession session = sessionStore.find(sessionId)
                 .orElseThrow(() -> new IllegalArgumentException(
                         "Session 不存在: " + sessionId.value()));
@@ -531,6 +549,23 @@ public final class AgentRuntime {
         if (activeRuns.putIfAbsent(sessionId, activeRun) != null) {
             session.endRun(runId);
             throw new IllegalStateException("Session 已有活动 Run");
+        }
+        try {
+            initializer.initialize(sessionId, runId);
+        } catch (RuntimeException initializationFailure) {
+            activeRuns.remove(sessionId, activeRun);
+            AgentRunResult rejected = AgentRunResult.stopped(
+                    sessionId, runId, StopReason.INTERNAL_ERROR, 0, 0);
+            try {
+                sessionJournal.runCompleted(sessionId, runId, StopReason.INTERNAL_ERROR);
+            } catch (RuntimeException journalFailure) {
+                session.fence();
+            } finally {
+                session.endRun(runId);
+            }
+            lifecycle.dispatch(session, runId, new LifecycleEvent.RunStarted(request));
+            lifecycle.dispatch(session, runId, new LifecycleEvent.RunFinished(rejected));
+            return rejected;
         }
         lifecycle.dispatch(session, runId, new LifecycleEvent.RunStarted(request));
         AutoCloseable runHookLease = () -> { };
@@ -787,6 +822,9 @@ public final class AgentRuntime {
 
                 List<ToolCall> calls = assistant.toolCalls();
                 if (!hasValidToolCallIds(session, calls)) {
+                    return state.stop(StopReason.INVALID_MODEL_RESPONSE);
+                }
+                if (!calls.isEmpty() && !finalAssistantHandler.allowToolCalls(session.id(), runId, assistant)) {
                     return state.stop(StopReason.INVALID_MODEL_RESPONSE);
                 }
                 if (calls.isEmpty()) {

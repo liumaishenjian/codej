@@ -1,5 +1,6 @@
 import {useEffect, useReducer, useRef, useState} from 'react';
 import {Box, Static, Text, useApp, useInput, usePaste, useWindowSize} from 'ink';
+import stringWidth from 'string-width';
 import {initialTuiState, orderedSessionTasks, reduceTuiState} from './state.js';
 import type {ProtocolEvent} from './protocol.js';
 import type {ProviderLoginRequest, ProviderLoginResult, RunHandshakeNotice} from './stdio-client.js';
@@ -10,6 +11,7 @@ import type {
   ModelFailureView,
   RunView,
   SessionTaskStatus,
+  TuiAction,
 } from './state.js';
 import {AssistantMarkdown} from './assistant-markdown.js';
 import {ToolActivityGroup} from './tool-activity.js';
@@ -268,6 +270,17 @@ export {
  * 组件只把键盘动作转换成命令并渲染 Reducer 投影；Java Headless 始终拥有 Session、
  * Run、Tool 与终态。当前只展示脱敏 Tool 摘要，不执行 Tool；审批仍属于 S04。
  */
+export const TASK_COMPLETION_VISIBLE_MS = 5_000;
+
+/** 安排完成态面板隐藏；取消函数用于手动聚焦或新 snapshot 到达时保留面板。 */
+export function scheduleTaskPanelAutoHide(
+  dispatch: (action: TuiAction) => void,
+  delayMillis = TASK_COMPLETION_VISIBLE_MS,
+): () => void {
+  const timer = setTimeout(() => dispatch({type: 'task.panel.auto-hide'}), delayMillis);
+  return () => clearTimeout(timer);
+}
+
 export function AgentTui({client}: AgentTuiProps) {
   const [state, dispatch] = useReducer(reduceTuiState, initialTuiState);
   const [composer, setComposer] = useState<ComposerState>(() => createComposerState(4));
@@ -280,6 +293,13 @@ export function AgentTui({client}: AgentTuiProps) {
   const [questionPicker, setQuestionPicker] = useState<QuestionPickerState | undefined>(undefined);
   const [activityTick, setActivityTick] = useState(0);
   const planReviewPickerRef = useRef<PlanReviewPickerState | undefined>(undefined);
+  const allSessionTasksCompleted = state.taskBoard !== undefined
+    && state.taskBoard.tasks.length > 0
+    && state.taskBoard.tasks.every(task => task.status === 'COMPLETED');
+  useEffect(() => {
+    if (!state.taskPanelOpen || state.taskPanelFocused === true || !allSessionTasksCompleted) return undefined;
+    return scheduleTaskPanelAutoHide(dispatch);
+  }, [allSessionTasksCompleted, state.taskBoard?.boardRevision, state.taskPanelFocused, state.taskPanelOpen]);
   const planFeedbackInputRef = useRef<PlanFeedbackInputState | undefined>(undefined);
   const composerRef = useRef(composer);
   const permissionPickerSubmittedRef = useRef(false);
@@ -1706,7 +1726,7 @@ export function AgentView({state, composer, input = '', columns, rows, composerL
         questionPicker={questionPicker}
         spinnerGlyph={spinnerGlyph}
       />)}
-      <SessionTaskPanel state={state} />
+      <SessionTaskPanel state={state} columns={width} />
       <ChildTaskPanel state={state} />
       <CheckpointPanel state={state} />
       {historicalToolDetailRun === undefined ? null : (
@@ -1913,58 +1933,118 @@ function ChildTaskPanel({state}: {readonly state: AgentViewProps['state']}) {
   );
 }
 
-function SessionTaskPanel({state}: {readonly state: AgentViewProps['state']}) {
+function SessionTaskPanel({state, columns}: {
+  readonly state: AgentViewProps['state'];
+  readonly columns: number;
+}) {
   if (!state.taskPanelOpen) return null;
   const board = state.taskBoard;
   const tasks = orderedSessionTasks(board?.tasks ?? []);
-  let previousGroup = '';
+  const completed = tasks.filter(task => task.status === 'COMPLETED').length;
+  const running = tasks.filter(task => task.status === 'IN_PROGRESS').length;
+  const blocked = tasks.filter(task => task.status === 'PENDING' && task.blocked).length;
+  const allCompleted = tasks.length > 0 && completed === tasks.length;
+  const panelColumns = Math.max(1, Math.floor(columns) - 2);
+  const summary = truncateTerminalText(board === undefined
+    ? '正在读取任务…'
+    : allCompleted
+      ? `✓ 全部 ${board.totalTasks} 项任务已完成`
+      : `任务 ${completed}/${board.totalTasks} 完成`
+        + (running === 0 ? '' : ` · ${running} 进行中`)
+        + (blocked === 0 ? '' : ` · ${blocked} 等待`), panelColumns);
   return (
-    <Box marginTop={1} flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1}>
-      <Text bold color="cyan">Task List{board === undefined ? '' : ` · rev ${board.boardRevision}`}</Text>
+    <Box marginTop={1} marginLeft={2} flexDirection="column">
+      <Text bold color={allCompleted ? 'green' : 'cyan'}>{summary}</Text>
       {board === undefined
-        ? <Text dimColor>正在读取 Task List…</Text>
+        ? null
         : tasks.length === 0
-          ? <Text dimColor>当前 Session 还没有执行任务</Text>
+          ? <Text dimColor>  暂无执行任务</Text>
           : tasks.map(task => {
-            const group = task.status === 'IN_PROGRESS'
-              ? task.recoveryRequired ? '需要恢复' : '进行中'
-              : task.status === 'PENDING' ? task.blocked ? '已阻塞' : '待处理' : '最近完成';
-            const showGroup = group !== previousGroup;
-            previousGroup = group;
             const selected = state.taskPanelFocused === true && task.taskId === state.selectedTaskId;
             const prefix = selected ? '❯' : ' ';
             const symbol = task.status === 'COMPLETED' ? '✓'
-              : task.status === 'IN_PROGRESS' ? '—' : task.blocked ? '⊘' : '○';
+              : task.status === 'IN_PROGRESS' ? '●' : task.blocked ? '◌' : '○';
+            const dependency = task.blockerIds.length === 0
+              ? '' : ` · 等待 ${task.blockerIds.length} 项前置任务`;
+            const recovery = task.recoveryRequired ? ' · 需要恢复' : '';
+            const compactSuffix = `${task.blockerIds.length === 0
+              ? '' : ` · 等待${task.blockerIds.length}项`}${task.recoveryRequired ? ' · 恢复' : ''}`;
+            const line = projectSessionTaskLine(task.subject, `${dependency}${recovery}`, compactSuffix, columns);
             return (
               <Box key={task.taskId} flexDirection="column">
-                {showGroup ? <Text bold dimColor>{group}</Text> : null}
-                <Text
-                  {...(selected ? {color: 'cyanBright' as const}
-                    : task.recoveryRequired ? {color: 'yellow' as const} : {})}
-                  {...sessionTaskTextDecoration(task.status)}
-                >
-                  {prefix} {symbol} {task.taskId} · {task.subject}
+                <Text {...(selected ? {color: 'cyanBright' as const}
+                  : task.recoveryRequired ? {color: 'yellow' as const} : {})}>
+                  {prefix} {symbol}{' '}
+                  <Text
+                    bold={task.status === 'IN_PROGRESS'}
+                    dimColor={task.blocked || sessionTaskTextDecoration(task.status).dimColor}
+                    strikethrough={sessionTaskTextDecoration(task.status).strikethrough}
+                  >
+                    {line.subject}
+                  </Text>
+                  <Text dimColor={task.blocked || task.status === 'COMPLETED'}>{line.suffix}</Text>
                 </Text>
                 {selected && state.taskDetailOpen ? (
                   <Text dimColor>
-                    {'    '}状态 {task.status.toLowerCase()}
-                    {task.owner === undefined ? '' : ` · owner ${task.owner}`}
-                    {task.activeForm === undefined ? '' : ` · ${task.activeForm}`}
-                    {task.blockerIds.length === 0 ? '' : ` · blocked by ${task.blockerIds.join(', ')}`}
-                    {task.recoveryRequired ? ' · 需要显式恢复认领' : ''}
+                    {'    '}{truncateTerminalText(`${task.status === 'COMPLETED' ? '已完成'
+                      : task.status === 'IN_PROGRESS' ? '进行中' : task.blocked ? '等待前置任务' : '待处理'}${
+                      task.activeForm === undefined ? '' : ` · ${task.activeForm}`}`,
+                    Math.max(1, panelColumns - 4))}
                   </Text>
                 ) : null}
               </Box>
             );
           })}
       {board?.truncated === true
-        ? <Text dimColor>仅显示 {board.tasks.length}/{board.totalTasks} 项；使用模型 Task 工具分页查看其余任务</Text>
+        ? <Text dimColor>{truncateTerminalText(
+          `  还有 ${Math.max(0, board.totalTasks - board.tasks.length)} 项未显示`, panelColumns,
+        )}</Text>
         : null}
-      <Text dimColor>{state.taskPanelFocused === true
-        ? '↑/↓ 选择　Enter 详情　Esc 关闭'
-        : '执行进度由 Java 实时更新；输入 /tasks 可交互查看'}</Text>
+      {state.taskPanelFocused === true
+        ? <Text dimColor>{truncateTerminalText('  ↑/↓ 选择　Enter 详情　Esc 关闭', panelColumns)}</Text>
+        : null}
     </Box>
   );
+}
+
+/**
+ * 为 Task 行统一计算完整宽度预算；缩进、选择符、状态符、正文和依赖后缀都计入终端列数。
+ */
+function projectSessionTaskLine(
+  subject: string,
+  suffix: string,
+  compactSuffix: string,
+  columns: number,
+): {readonly subject: string; readonly suffix: string} {
+  const textColumns = Math.max(1, Math.floor(columns) - 2 - 4);
+  const fullSuffixFits = terminalDisplayWidth(suffix) <= Math.max(0, textColumns - Math.min(12, textColumns));
+  const compactSuffixFits = terminalDisplayWidth(compactSuffix) <= Math.max(0, textColumns - Math.min(4, textColumns));
+  const projectedSuffix = suffix === '' ? '' : fullSuffixFits ? suffix : compactSuffixFits ? compactSuffix : '';
+  const subjectColumns = Math.max(1, Math.min(120, textColumns - terminalDisplayWidth(projectedSuffix)));
+  return {subject: truncateTerminalText(subject, subjectColumns), suffix: projectedSuffix};
+}
+
+/** 按终端显示列安全缩短用户可见文本，正确处理 CJK、emoji 与 combining sequence。 */
+export function truncateTerminalText(text: string, maximumColumns: number): string {
+  const safeMaximum = Math.max(1, Math.floor(maximumColumns));
+  if (stringWidth(text) <= safeMaximum) return text;
+  const ellipsis = '…';
+  const contentLimit = Math.max(0, safeMaximum - stringWidth(ellipsis));
+  const segmenter = new Intl.Segmenter(undefined, {granularity: 'grapheme'});
+  let result = '';
+  let used = 0;
+  for (const {segment} of segmenter.segment(text)) {
+    const width = stringWidth(segment);
+    if (used + width > contentLimit) break;
+    result += segment;
+    used += width;
+  }
+  return `${result}${ellipsis}`;
+}
+
+/** 返回不含 ANSI 控制序列的文本在终端中占用的显示列数。 */
+export function terminalDisplayWidth(text: string): number {
+  return stringWidth(text);
 }
 
 /** 把 canonical Task 状态映射为终端文本装饰；完成项必须同时弱化并划线。 */

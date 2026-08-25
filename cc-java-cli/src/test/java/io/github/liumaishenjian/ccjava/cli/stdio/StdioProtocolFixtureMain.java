@@ -53,8 +53,8 @@ public final class StdioProtocolFixtureMain {
             java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
             java.util.concurrent.atomic.AtomicInteger executionCalls = new java.util.concurrent.atomic.AtomicInteger();
             java.util.concurrent.atomic.AtomicBoolean directExecution = new java.util.concurrent.atomic.AtomicBoolean();
-            String markdown = "# Cross-process plan\n\n1. Create the exact weather workbook.\n";
-            String revisedMarkdown = "# Cross-process plan\n\n1. Create the exact weather workbook.\n2. Verify rollback behavior.\n";
+            String markdown = "# 跨进程实施计划\n\n## 拟定步骤\n1. 生成精确命名的河南天气工作簿。\n";
+            String revisedMarkdown = "# 跨进程实施计划\n\n## 拟定步骤\n1. 生成精确命名的河南天气工作簿。\n2. 验证纠正后的工作簿与回滚结果。\n";
             String expectedWorkbook = "河南各市7天天气.xlsx";
             String wrongWorkbook = "河南各市7天天气预报.xlsx";
             io.github.liumaishenjian.ccjava.core.ModelGateway model = request -> {
@@ -64,42 +64,72 @@ public final class StdioProtocolFixtureMain {
                         .map(io.github.liumaishenjian.ccjava.domain.UserMessage::content)
                         .reduce((previous, current) -> current)
                         .orElse("");
-                boolean executing = latestUser.contains("Implement the approved plan");
+                if (directExecution.get() && latestUser.contains("普通输入")) {
+                    return io.github.liumaishenjian.ccjava.domain.ModelTurn.text("follow-up completed");
+                }
+                boolean executing = directExecution.get()
+                        || latestUser.contains("Implement the approved plan");
+                boolean secondStepApproved = request.messages().stream().anyMatch(message ->
+                        message instanceof io.github.liumaishenjian.ccjava.domain.UserMessage user
+                                && user.content().contains("验证纠正后的工作簿与回滚结果")
+                        || message instanceof io.github.liumaishenjian.ccjava.domain.SystemMessage system
+                                && system.content().contains("验证纠正后的工作簿与回滚结果"));
                 if (executing) {
                     directExecution.set(true);
                     int executionCall = executionCalls.getAndIncrement();
+                    if (request.toolDefinitions().stream().anyMatch(tool -> tool.name().equals("task_create"))) {
+                        throw new IllegalStateException("批准 Plan execution 不得暴露 task_create");
+                    }
                     if (executionCall == 0) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
                             new io.github.liumaishenjian.ccjava.domain.ToolCall(
-                                    "execution-task-create", "task_create",
-                                    new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
-                                            "subject", "执行获批计划", "active_form", "执行并验证计划")))));
-                    if (executionCall == 1) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
-                            new io.github.liumaishenjian.ccjava.domain.ToolCall(
-                                    "execution-task-claim", "task_update",
+                                    "execution-task-claim-1", "task_update",
                                     new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
                                             "task_id", "task-1", "operation", "CLAIM",
                                             "expected_task_revision", 1)))));
-                    if (executionCall == 2) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
+                    if (executionCall == 1) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
                             new io.github.liumaishenjian.ccjava.domain.ToolCall(
                                     "wrong-workbook", "write_file",
                                     new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
                                             "path", wrongWorkbook, "content", "wrong-name")))));
-                    if (executionCall == 3) {
+                    if (executionCall == 2) {
                         return io.github.liumaishenjian.ccjava.domain.ModelTurn.text("FIRST_UNVERIFIED_FINAL");
                     }
-                    if (executionCall == 4) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
+                    if (executionCall == 3) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
                             new io.github.liumaishenjian.ccjava.domain.ToolCall(
                                     "correct-workbook", "write_file",
                                     new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
                                             "path", expectedWorkbook, "content", "correct-name")))));
-                    if (executionCall == 5) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
+                    if (executionCall == 4) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
                             new io.github.liumaishenjian.ccjava.domain.ToolCall(
-                                    "execution-task-complete", "task_update",
+                                    "execution-task-complete-1", "task_update",
                                     new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
                                             "task_id", "task-1", "operation", "TRANSITION",
                                             "expected_task_revision", 2, "target_status", "COMPLETED",
                                             "expected_claim_epoch", 1)))));
-                    if (executionCall == 6) {
+                    if (executionCall == 5 && !secondStepApproved) {
+                        if (!request.toolDefinitions().isEmpty()) {
+                            throw new IllegalStateException("Plan final-only 回合仍暴露 Tool definition");
+                        }
+                        return io.github.liumaishenjian.ccjava.domain.ModelTurn.text(
+                                "approved plan corrected and verified");
+                    }
+                    if (executionCall == 5) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
+                            new io.github.liumaishenjian.ccjava.domain.ToolCall(
+                                    "execution-task-claim-2", "task_update",
+                                    new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
+                                            "task_id", "task-2", "operation", "CLAIM",
+                                            "expected_task_revision", 1)))));
+                    if (executionCall == 6) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
+                            new io.github.liumaishenjian.ccjava.domain.ToolCall(
+                                    "execution-task-complete-2", "task_update",
+                                    new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
+                                            "task_id", "task-2", "operation", "TRANSITION",
+                                            "expected_task_revision", 2, "target_status", "COMPLETED",
+                                            "expected_claim_epoch", 1)))));
+                    if (executionCall == 7) {
+                        if (!request.toolDefinitions().isEmpty()) {
+                            throw new IllegalStateException("Plan final-only 回合仍暴露 Tool definition");
+                        }
                         return io.github.liumaishenjian.ccjava.domain.ModelTurn.text("approved plan corrected and verified");
                     }
                     throw new IllegalStateException("Plan fixture 收到过多执行请求");

@@ -55,6 +55,36 @@ class AgentRuntimeTest {
             ZoneOffset.UTC);
 
     @Test
+    void runInitializerObservesEstablishedRuntimeOwnership() {
+        Harness harness = newHarness(ScriptedModelGateway.of(ModelTurn.text("unused")));
+        AtomicReference<RunId> initializedRun = new AtomicReference<>();
+
+        AgentRunResult result = harness.runtime().run(harness.session().id(),
+                AgentRunRequest.of("initialize owned run"), (sessionId, runId) -> {
+                    initializedRun.set(runId);
+                    assertThat(harness.runtime().cancel(sessionId, runId)).isTrue();
+                });
+
+        assertThat(initializedRun.get()).isEqualTo(result.runId());
+        assertThat(result.stopReason()).isEqualTo(StopReason.USER_CANCELLED);
+    }
+
+    @Test
+    void runInitializerFailurePairsInternalErrorTerminalAndReleasesOwnership() {
+        Harness harness = newHarness(ScriptedModelGateway.of(ModelTurn.text("recovered")));
+
+        AgentRunResult failed = harness.runtime().run(harness.session().id(),
+                AgentRunRequest.of("failing initialization"),
+                (ignoredSession, ignoredRun) -> { throw new IllegalStateException("seed failed"); });
+
+        assertThat(failed.stopReason()).isEqualTo(StopReason.INTERNAL_ERROR);
+        assertThat(harness.events().envelopes()).extracting(AgentEventEnvelope::event)
+                .containsSequence(new LifecycleEvent.RunStarted(AgentRunRequest.of("failing initialization")),
+                        new LifecycleEvent.RunFinished(failed));
+        assertThat(harness.run("next run", AgentLimits.DEFAULT).status()).isEqualTo(RunStatus.COMPLETED);
+    }
+
+    @Test
     void adaptiveInteractiveBudgetCompletesAfterMoreThanThirtyTwoProgressingToolCalls() {
         ModelTurn[] turns = new ModelTurn[35];
         for (int index = 0; index < 34; index++) {

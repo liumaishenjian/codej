@@ -164,13 +164,13 @@ Stage 是学习顺序，不是要求等到上一阶段 100% 成熟才能开始�
 
 | 指标 | R2026.03 当前值 |
 | --- | --- |
-| 纳入追踪的 Capability ID | 199 |
-| 当前阶段 | S15 Independent Innovation `IN_PROGRESS`（实现 Commit `f0e274f779143164e0859961437a53acd220e7bd` 完整包含 TOOL-18 L2 与 MODEL-13 L1） |
-| Stage Exit | S01-S14 Accepted；TOOL-18 与 MODEL-13 实现切片已完成 Commit-scoped G6 对账，S15 整体仍 `OPEN`，不得由两项切片进展推断 Stage Accepted |
-| 当前等级 | 151 项为 L2，40 项为 L1，8 项为 L0 |
-| 默认最终目标 | 199 项达到 L3，或存在明确 `Accepted Deviation` |
-| 当前能力覆盖 | 57.29%（199 项加权、按各 Feature 目标等级计算；PLAN-01 为 S15 L1 durable continuous-planning 切片，不因新增条目宣称 L4 创新收益） |
-| 下一步 | 补齐 PERM-05 真实 Provider 的对抗性误放行、语义上下文质量、延迟、成本与 A/B Eval；同时补齐至少两个 distinct Provider 的真实 BYOK text stream、Tool call、cancel 与 auth-negative 证据，并完成 S15 L4 创新评测 |
+| 纳入追踪的 Capability ID | 204 |
+| 当前阶段 | S15 Independent Innovation `IN_PROGRESS`（ADR-088 Task List Batch A-E 已完成，`TASK-01..05` 达到 L2；S15 其他既有差距不变） |
+| Stage Exit | S01-S14 Accepted；Task List 已完成 Domain/Core、统一 Tool/Pipeline、Session 恢复、root/child production composition、stable protocol 与 Ink TUI 的 G0-G6 capability 对账；S15 整体仍 `OPEN` |
+| 当前等级 | 156 项为 L2，40 项为 L1，8 项为 L0 |
+| 默认最终目标 | 204 项达到各自矩阵 Target，或存在明确 `Accepted Deviation`；TASK-01..05 当前批次 Target 为 L2 |
+| 当前能力覆盖 | 57.52%（204 项按当前矩阵 Target 加权；`TASK-01..05` 的 L2 capability 已计入，S15 Stage Exit 不因此自动 Accepted） |
+| 下一步 | 保留 `SUB-11` Team Board、PERM-05 真实质量、双 Provider BYOK、跨平台安装和 S15 L4 Eval 等既有差距；Task List 后续只扩展已明确延期的跨 Session/多进程能力 |
 
 每次新增、合并或排除 Capability ID 时必须同步更新这张快照。
 
@@ -492,6 +492,18 @@ Stage 完成项。
 | SUB-10 | Git Worktree | fixed-argv create/enter/keep/remove、child root 重装配、identity/registration recovery 与保守 preserve 矩阵 | L2 | S12 | REF-02 |
 | SUB-11 | Team Task Board | 共享任务和消息 | L0 | S14/S15 | REF-03 |
 
+### 19.1 Session-local Task Board 对照
+
+| ID | 参考能力 | Java 重实现目标 | 当前 | Stage | 参考 |
+| --- | --- | --- | --- | --- | --- |
+| TASK-01 | Task 状态与依赖图 | root-owned Session-local Board；三态、单向 canonical blockedBy、派生 blocks/blocked、revision/tombstone 与资源上限；生产装配与确定性测试已完成 | L2 | S15 | AUTH-01/ADR-088 |
+| TASK-02 | Task mutation 与认领 | CREATE/EDIT/TRANSITION/CLAIM/RESUME_CLAIM/RELEASE/ASSIGN/REASSIGN/DEPENDENCY/DELETE；claim epoch、CAS 与 actor/session/run/callId 幂等已由 Tool/Pipeline 和并发测试覆盖 | L2 | S15 | AUTH-01/ADR-088 |
+| TASK-03 | Task Session 持久化与恢复 | canonical 增量 Session journal、Resume 同 Board、Fork 新 Board、终止 Run recovery、损坏尾部完整前缀与容量回归 | L2 | S15 | AUTH-01/ADR-088 |
+| TASK-04 | Root/Child Task capability | 独立 child Session 经宿主验证 `taskIds` 并注入收窄 capability；生产 E2E 证明 child 可更新授权任务且不能扩大范围 | L2 | S15 | AUTH-01/ADR-088 |
+| TASK-05 | Task Tool、协议与 TUI | 四个 Model Tool 统一经过 Pipeline/Hook/Permission；stable `task-list-v1` snapshot、stdio `/tasks` 与可交互 Ink 面板已实现 | L2 | S15 | AUTH-01/ADR-088 |
+
+`TASK-01..05` 与 `PLAN-01` 完全独立，也不等于 S12 `SUB-04` 的父子执行任务；Team shared、peer messaging、跨进程 owner/lease/watch/poll 继续只属于 `SUB-11`，本批不提升其等级。
+
 ## 20. Observability / Eval / Distribution 对照
 
 | ID | 参考能力 | Java 重实现目标 | 当前 | Stage | 参考 |
@@ -786,7 +798,7 @@ ADR-063/064 冻结的范围已在实现 Commit `8a75d5f5e977ce4c5fcd19fafb3e5776
 
 ### S15：Independent Innovation
 
-状态：`IN_PROGRESS`，Stage Exit `OPEN`。ADR-067/068 的 `TOOL-18 L2` 与真实 Exa/codej 证据继续有效；网络读取仍经唯一 Permission/Approval/Hook/Pipeline，NetworkAccessPort 不是 OS Sandbox。ADR-076/077 已把 `PLAN-01` 推进为 durable continuous-planning L1：`/plan <task>` 在同一 Session 复用 AgentRuntime/ModelGateway/Context/Canonical Transcript，按显式 capability/effect 开放本地只读、Permission-gated 只读网络、唯一 PlanArtifact CAS 写入与 callId 结构化问题，并在 definitions 与 Pipeline 双重拒绝 Workspace mutation、process 和未声明能力的外部 Tool。模型可增量维护 Markdown；request-review 只发布已提交 revision，stdio/Ink 不显示 Tool/final JSON；反馈执行 `AWAITING_APPROVAL -> DRAFT` 并保持同一 planId/revision chain，Resume 可继续。旧严格 JSON parser、`PlanDocument`、`plan.proposed` 和 execute 命令只保留内部兼容，不属于新 TUI `/plan task` 路径。离线 Fake/loopback 覆盖 read→update→ask→answer→update→review、network deny hit=0、mutation/external default denial、duplicate/late/cancel/disconnect、feedback/revision/Resume。Batch 3 已完成 durable review 原子 approval-to-execution、ExecutionBrief、USER/AUTO、keep/clear 和 restart recovery；真实 Provider 计划质量、完整 fault matrix 与 S15 L4 A/B Eval 尚缺；Batch 5 Evidence Gate/安装版构建身份闭环已完成但不改变 Capability Level；Batch 7 又修复 durable approval execution Run 的 requestId 预投影、协议拒绝回滚、unknown/late event 安全忽略及 projection/transport 状态分离，并要求真实 Java/安装版通过 Ink reducer/render 验证。`PLAN-01` 保持 L1，Stage Exit 保持 OPEN。S07 的 Context compaction 证据继续有效。 Batch 4 又完成 adaptive interactive budget、typed Tool failure taxonomy、Run-owned repeated-failure governance、Web 403/429/5xx 与 command process-exit 语义；本轮不提升 Capability Level，S15 仍 OPEN。
+状态：`IN_PROGRESS`，Stage Exit `OPEN`。ADR-088 Session-local Task List Batch A-E 已完成 G0-G6 capability 对账，`TASK-01..05` 达到 L2：Domain/Core、四个生产 Tool 的统一 Pipeline/Permission/Hook、增量 Session journal 与 Resume/Fork、root/child capability、stable `task-list-v1`、stdio `/tasks` 和 Ink 面板均已验证；Plan 保持独立，`SUB-11` 仍为 L0。ADR-067/068 的 `TOOL-18 L2` 与真实 Exa/codej 证据继续有效；网络读取仍经唯一 Permission/Approval/Hook/Pipeline，NetworkAccessPort 不是 OS Sandbox。ADR-076/077 已把 `PLAN-01` 推进为 durable continuous-planning L1：`/plan <task>` 在同一 Session 复用 AgentRuntime/ModelGateway/Context/Canonical Transcript，按显式 capability/effect 开放本地只读、Permission-gated 只读网络、唯一 PlanArtifact CAS 写入与 callId 结构化问题，并在 definitions 与 Pipeline 双重拒绝 Workspace mutation、process 和未声明能力的外部 Tool。模型可增量维护 Markdown；request-review 只发布已提交 revision，stdio/Ink 不显示 Tool/final JSON；反馈执行 `AWAITING_APPROVAL -> DRAFT` 并保持同一 planId/revision chain，Resume 可继续。旧严格 JSON parser、`PlanDocument`、`plan.proposed` 和 execute 命令只保留内部兼容，不属于新 TUI `/plan task` 路径。离线 Fake/loopback 覆盖 read→update→ask→answer→update→review、network deny hit=0、mutation/external default denial、duplicate/late/cancel/disconnect、feedback/revision/Resume。Batch 3 已完成 durable review 原子 approval-to-execution、ExecutionBrief、USER/AUTO、keep/clear 和 restart recovery；真实 Provider 计划质量、完整 fault matrix 与 S15 L4 A/B Eval 尚缺；Batch 5 Evidence Gate/安装版构建身份闭环已完成但不改变 Capability Level；Batch 7 又修复 durable approval execution Run 的 requestId 预投影、协议拒绝回滚、unknown/late event 安全忽略及 projection/transport 状态分离，并要求真实 Java/安装版通过 Ink reducer/render 验证。`PLAN-01` 保持 L1，Stage Exit 保持 OPEN。S07 的 Context compaction 证据继续有效。 Batch 4 又完成 adaptive interactive budget、typed Tool failure taxonomy、Run-owned repeated-failure governance、Web 403/429/5xx 与 command process-exit 语义；本轮不提升 Capability Level，S15 仍 OPEN。
 
 ADR-069/070 冻结的 `MODEL-13` Provider/Auth 受控双源研究与契约已绑定实现 Commit `f0e274f779143164e0859961437a53acd220e7bd`：本地直连 BYOK，不建设官方中转 Gateway；ProviderDefinition 与多 CredentialProfile/SecretRef 分离，覆盖 OpenAI-compatible、Anthropic、OpenRouter，提供 `/connect`、`/auth list/logout`、`/models` 及 headless 对等入口。list/status 零网络，probe 显式有界；profile 优先级为显式→default→env→legacy，logout 对同进程 active run 建 fence/cancel/drain 并明确不等于 Provider revoke。secret 不进入 Domain/Session/log/event/error/argv/evidence；普通文件只能称权限受限存储；不实现 silent rotation/failover、Gateway、SQLite 或通用 OAuth。`MODEL-13` L1 切片已完成 commit-scoped G6；G5 仅有离线 Demo，双 Provider 在线证据仍缺失，不得虚报；S15 Stage Exit 仍为 OPEN。
 

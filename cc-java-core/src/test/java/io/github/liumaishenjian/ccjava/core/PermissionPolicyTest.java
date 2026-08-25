@@ -210,6 +210,63 @@ class PermissionPolicyTest {
                 .isEqualTo(PermissionDecision.DENY);
     }
 
+    @Test
+    void batchBTaskSessionEffectsAllowAllModesWithoutOverridingDenyOrHardDenial() {
+        for (PermissionMode mode : PermissionMode.values()) {
+            PermissionPolicy policy = policy(mode, List.of(), true);
+            assertThat(policy.evaluate(invocation("task_list", Map.of()),
+                    definition("task_list", ToolEffect.READ_SESSION_STATE)).decision())
+                    .as("READ_SESSION_STATE in %s", mode)
+                    .isEqualTo(PermissionDecision.ALLOW);
+            assertThat(policy.evaluate(invocation("task_update", Map.of()),
+                    definition("task_update", ToolEffect.WRITE_SESSION_STATE)).decision())
+                    .as("WRITE_SESSION_STATE in %s", mode)
+                    .isEqualTo(PermissionDecision.ALLOW);
+        }
+        PermissionRule deny = rule(PermissionDecision.DENY,
+                PermissionSelector.toolWide("task_update", ToolSource.BUILT_IN));
+        assertThat(policy(PermissionMode.DEFAULT, List.of(deny), true).evaluate(
+                invocation("task_update", Map.of()),
+                definition("task_update", ToolEffect.WRITE_SESSION_STATE)).decision())
+                .isEqualTo(PermissionDecision.DENY);
+        assertThat(policy(PermissionMode.DEFAULT, List.of(), true).evaluate(
+                invocation("task_update", Map.of()),
+                definition("task_update", ToolEffect.WRITE_SESSION_STATE, ToolSource.PLUGIN)).reason())
+                .isEqualTo(PermissionReason.HARD_DENIAL);
+        assertThat(policy(PermissionMode.DEFAULT, List.of(), true).evaluate(
+                invocation("task_list", Map.of()),
+                definition("task_list", ToolEffect.WRITE_SESSION_STATE)).reason())
+                .isEqualTo(PermissionReason.HARD_DENIAL);
+    }
+
+    @Test
+    void exactBuiltinDelegateAsksInDefaultButPlanDenyAndSpoofRemainClosed() {
+        ToolDefinition builtin = definition(
+                "delegate_agent", ToolEffect.SYSTEM_OR_DESTRUCTIVE, ToolSource.BUILT_IN);
+        assertThat(policy(PermissionMode.DEFAULT, List.of(), true)
+                .evaluate(invocation("delegate_agent", Map.of()), builtin))
+                .satisfies(outcome -> {
+                    assertThat(outcome.decision()).isEqualTo(PermissionDecision.ASK);
+                    assertThat(outcome.reason()).isEqualTo(PermissionReason.EFFECT_DEFAULT);
+                });
+        assertThat(policy(PermissionMode.PLAN, List.of(), true)
+                .evaluate(invocation("delegate_agent", Map.of()), builtin).decision())
+                .isEqualTo(PermissionDecision.DENY);
+        PermissionRule deny = rule(PermissionDecision.DENY,
+                PermissionSelector.toolWide("delegate_agent", ToolSource.BUILT_IN));
+        assertThat(policy(PermissionMode.DEFAULT, List.of(deny), true)
+                .evaluate(invocation("delegate_agent", Map.of()), builtin).reason())
+                .isEqualTo(PermissionReason.EXPLICIT_DENY);
+        assertThat(policy(PermissionMode.DEFAULT, List.of(), true).evaluate(
+                invocation("delegate_agent", Map.of()),
+                definition("delegate_agent", ToolEffect.SYSTEM_OR_DESTRUCTIVE, ToolSource.PLUGIN)).reason())
+                .isEqualTo(PermissionReason.HARD_DENIAL);
+        assertThat(policy(PermissionMode.DEFAULT, List.of(), true).evaluate(
+                invocation("other_system", Map.of()),
+                definition("other_system", ToolEffect.SYSTEM_OR_DESTRUCTIVE, ToolSource.BUILT_IN)).reason())
+                .isEqualTo(PermissionReason.HARD_DENIAL);
+    }
+
     private PermissionPolicy policy(
             PermissionMode mode,
             List<PermissionRule> rules,

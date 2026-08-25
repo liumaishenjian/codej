@@ -10,6 +10,7 @@ export type SlashIntent =
   | 'models'
   | 'permissions'
   | 'resume'
+  | 'tasks'
   | 'plan-status'
   | 'plan';
 
@@ -46,7 +47,7 @@ const MAX_COMPACT_ANCHOR_CODE_POINTS = 512;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/u;
 const COMMAND_NAMES: readonly SlashIntent[] = [
   'help', 'clear', 'compact', 'context', 'doctor', 'model', 'connect', 'auth', 'models', 'permissions', 'resume',
-  'plan-status', 'plan',
+  'tasks', 'plan-status', 'plan',
 ];
 const COMMANDS = new Set<SlashIntent>(COMMAND_NAMES);
 const TYPO_PROTECTED_COMMANDS: readonly string[] = [...COMMAND_NAMES, 'task'];
@@ -64,6 +65,7 @@ const COMMAND_USAGE: Readonly<Record<SlashIntent, string>> = {
   models: '/models [provider] | use <provider> <model> [profile] | add <provider> <model> [default] | remove <provider> <model> — 本地模型选择',
   permissions: '/permissions [query|mode MODE] — 查看或切换权限模式',
   resume: '/resume <session-id> — 安全恢复会话',
+  tasks: '/tasks — 打开当前 Session 的执行任务列表',
   'plan-status': '/plan-status — 查看当前计划状态',
   plan: '/plan [自然语言任务] — 进入只读 Plan 模式、规划任务或查看当前计划',
 };
@@ -95,7 +97,7 @@ export function parseSlashCommand(input: string): SlashParseResult {
     return {kind: 'invalid', message: '未知 Slash 命令'};
   }
   const intent = rawName as SessionSlashIntent;
-  if (['help', 'clear', 'context', 'doctor', 'plan-status'].includes(intent)) {
+  if (['help', 'clear', 'context', 'doctor', 'tasks', 'plan-status'].includes(intent)) {
     return values.length === 0
       ? {kind: 'command', command: {intent, arguments: {}}}
       : {kind: 'invalid', message: `/${intent} 不接受参数`};
@@ -214,6 +216,11 @@ function renderSuccessfulResult(
       ...entryLines,
     ].join('\n');
   }
+  if (intent === 'tasks') {
+    return result.truncated === true
+      ? `Task List 已打开（显示 ${safeValue(Array.isArray(result.tasks) ? result.tasks.length : 0)}/${safeValue(result.totalTasks)}）`
+      : `Task List 已打开（${safeValue(result.totalTasks)} 项）`;
+  }
   if (intent === 'plan-status' || intent === 'plan') {
     const steps = Array.isArray(result.steps) ? result.steps : [];
     return [
@@ -273,6 +280,7 @@ function isSlashIntent(value: unknown): value is SlashIntent {
     case 'models':
     case 'permissions':
     case 'resume':
+    case 'tasks':
     case 'plan-status':
     case 'plan':
       return true;
@@ -387,6 +395,11 @@ function protectedCommandTypoMatch(
 ): ProtectedCommandTypoMatch {
   if (Array.from(name).length < MIN_SHORT_TYPO_LENGTH) return {kind: 'none'};
   const candidates = protectedCommands.filter(candidate => isSingleCommandEdit(name, candidate));
+  // `/task` 是既有 child-task 控制命令；新增 `/tasks` 后，历史拼写 `/taks` 同时距两者一步。
+  // 固定保留旧建议，不自动执行，也不把其他歧义输入降级成 Skill。
+  if (name === 'taks' && candidates.includes('task') && candidates.includes('tasks')) {
+    return {kind: 'unique', suggestion: 'task'};
+  }
   const [suggestion] = candidates;
   if (suggestion === undefined) return {kind: 'none'};
   return candidates.length === 1

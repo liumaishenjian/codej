@@ -89,6 +89,14 @@ public final class AutoReviewCoordinator {
                 || request.source() != ToolSource.BUILT_IN) {
             return false;
         }
+        if (request.effect() == ToolEffect.READ_SESSION_STATE
+                || request.effect() == ToolEffect.WRITE_SESSION_STATE) {
+            return switch (request.toolName()) {
+                case "task_list", "task_get" -> request.effect() == ToolEffect.READ_SESSION_STATE;
+                case "task_create", "task_update" -> request.effect() == ToolEffect.WRITE_SESSION_STATE;
+                default -> false;
+            };
+        }
         if (request.effect() == ToolEffect.READ_WORKSPACE
                 || request.effect() == ToolEffect.PLAN_ARTIFACT_WRITE
                 || request.effect() == ToolEffect.USER_INTERACTION) {

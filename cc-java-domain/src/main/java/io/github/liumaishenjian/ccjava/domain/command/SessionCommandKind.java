@@ -22,6 +22,8 @@ public enum SessionCommandKind {
     PERMISSIONS,
     /** 请求恢复指定会话。 */
     RESUME,
+    /** 读取当前 Session-local Task Board 的有界展示投影。 */
+    TASKS,
     /** 查询当前项目计划。 */
     PLAN_STATUS,
     /** 创建或替换待审批项目计划。 */

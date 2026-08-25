@@ -3,7 +3,13 @@ package io.github.liumaishenjian.ccjava.domain;
 import java.util.Objects;
 import java.util.Set;
 
-/** Plan 步骤的受限结构化 Tool 意图；不允许从 detail 文本推断命令。 */
+/**
+ * Plan 步骤的受限结构化 Tool 意图；不允许从 detail 文本推断命令。
+ *
+ * @param toolName 受白名单约束的 Tool 名或内部 Agent Run 标记
+ * @param arguments 结构化且不可为空的 Tool 参数
+ * @param safePreview 不含秘密的用户可见摘要
+ */
 public record PlanStepAction(String toolName, JsonObject arguments, String safePreview) {
     public static final String AGENT_RUN = "agent_run";
     private static final Set<String> EXECUTABLE = Set.of(

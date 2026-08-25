@@ -10,6 +10,7 @@ import java.util.Objects;
  * @param title 面向用户的短标题
  * @param detail 只读探索得出的说明
  * @param expectedDigest 执行前用于冲突检测的工作区摘要
+ * @param action 受限结构化执行意图或内部 Agent Run 标记
  */
 public record PlanStep(int ordinal, String title, String detail, String expectedDigest, PlanStepAction action) {
     public PlanStep {

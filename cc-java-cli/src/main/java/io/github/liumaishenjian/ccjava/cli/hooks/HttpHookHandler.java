@@ -132,7 +132,7 @@ public final class HttpHookHandler implements HookHandler {
         root.put("sessionId", invocation.sessionId().value());
         invocation.runId().ifPresent(run -> root.put("runId", run.value()));
         root.put("subject", invocation.subject());
-        root.set("data", JSON.valueToTree(invocation.data().values()));
+        root.set("data", JSON.valueToTree(invocation.data().jsonValues()));
         return JSON.writeValueAsBytes(root);
     }
 

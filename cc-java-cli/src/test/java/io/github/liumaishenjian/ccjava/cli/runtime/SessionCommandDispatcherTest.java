@@ -59,6 +59,31 @@ class SessionCommandDispatcherTest {
     }
 
     @Test
+    void tasksReturnsCanonicalBoundedBoardProjectionWithoutChangingJournal() throws Exception {
+        Path workspace = Files.createDirectory(root.resolve("workspace"));
+        Path sessions = root.resolve("task-sessions");
+        try (HeadlessRuntimeSession runtime = runtime(workspace, sessions)) {
+            runtime.open();
+            Path journal = Files.walk(sessions)
+                    .filter(path -> path.getFileName().toString().endsWith(".jsonl"))
+                    .findFirst().orElseThrow();
+            byte[] before = Files.readAllBytes(journal);
+
+            var result = dispatcher(runtime).dispatch(new CommandId("tasks"),
+                    new SessionCommandIntent.Tasks(), CancellationToken.none());
+
+            assertThat(result.event().status()).isEqualTo(SessionCommandStatus.SUCCEEDED);
+            assertThat(result.event().code()).isEqualTo(SessionCommandResultCode.OK);
+            var payload = (io.github.liumaishenjian.ccjava.domain.command.SessionCommandEvent.TaskListPayload)
+                    result.event().payload();
+            assertThat(payload.boardRevision()).isZero();
+            assertThat(payload.totalTasks()).isZero();
+            assertThat(payload.tasks()).isEmpty();
+            assertThat(Files.readAllBytes(journal)).isEqualTo(before);
+        }
+    }
+
+    @Test
     void helpReflectsWhetherTheCurrentSurfaceCanClear() throws Exception {
         Path workspace = Files.createDirectory(root.resolve("workspace"));
         try (HeadlessRuntimeSession runtime = runtime(workspace, root.resolve("sessions"))) {

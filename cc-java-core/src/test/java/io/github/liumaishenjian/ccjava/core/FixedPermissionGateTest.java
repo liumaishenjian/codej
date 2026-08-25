@@ -34,12 +34,26 @@ class FixedPermissionGateTest {
                 .isEqualTo(PermissionDecision.ASK);
         assertThat(gate.evaluate(invocation, definition(ToolEffect.NETWORK_OR_REMOTE)).decision())
                 .isEqualTo(PermissionDecision.DENY);
+        assertThat(gate.evaluate(invocation, definition(ToolEffect.READ_SESSION_STATE)).decision())
+                .isEqualTo(PermissionDecision.DENY);
+        assertThat(gate.evaluate(invocation, definition(ToolEffect.WRITE_SESSION_STATE)).decision())
+                .isEqualTo(PermissionDecision.DENY);
+        assertThat(gate.evaluate(invocation, definition("task_list", ToolEffect.READ_SESSION_STATE)).decision())
+                .isEqualTo(PermissionDecision.ALLOW);
+        assertThat(gate.evaluate(invocation, definition("task_update", ToolEffect.WRITE_SESSION_STATE)).decision())
+                .isEqualTo(PermissionDecision.ALLOW);
+        assertThat(gate.evaluate(invocation,
+                definition("task_list", ToolEffect.READ_SESSION_STATE, ToolSource.MCP)).decision())
+                .isEqualTo(PermissionDecision.DENY);
+        assertThat(gate.evaluate(invocation,
+                definition("task_update", ToolEffect.WRITE_SESSION_STATE, ToolSource.PLUGIN)).decision())
+                .isEqualTo(PermissionDecision.DENY);
         assertThat(gate.evaluate(invocation, definition(ToolEffect.SYSTEM_OR_DESTRUCTIVE)).decision())
                 .isEqualTo(PermissionDecision.DENY);
     }
 
     @Test
-    void planAllowsOnlyReads() {
+    void planAllowsWorkspaceReadsAndSessionTaskState() {
         FixedPermissionGate gate = new FixedPermissionGate(PermissionMode.PLAN);
 
         for (ToolEffect effect : ToolEffect.values()) {
@@ -49,15 +63,27 @@ class FixedPermissionGateTest {
             assertThat(gate.evaluate(invocation, definition(effect)).decision())
                     .isEqualTo(expected);
         }
+        assertThat(gate.evaluate(invocation, definition("task_get", ToolEffect.READ_SESSION_STATE)).decision())
+                .isEqualTo(PermissionDecision.ALLOW);
+        assertThat(gate.evaluate(invocation, definition("task_create", ToolEffect.WRITE_SESSION_STATE)).decision())
+                .isEqualTo(PermissionDecision.ALLOW);
     }
 
     private ToolDefinition definition(ToolEffect effect) {
+        return definition("fake", effect);
+    }
+
+    private ToolDefinition definition(String name, ToolEffect effect) {
+        return definition(name, effect, ToolSource.BUILT_IN);
+    }
+
+    private ToolDefinition definition(String name, ToolEffect effect, ToolSource source) {
         return new ToolDefinition(
-                "fake",
+                name,
                 "Fake tool",
                 "{\"type\":\"object\"}",
                 effect,
-                ToolSource.BUILT_IN,
+                source,
                 true,
                 Duration.ofSeconds(1),
                 "text/plain",

@@ -194,6 +194,28 @@ export interface ChildTaskView {
   readonly worktreeDisposition: string | undefined;
 }
 
+export type SessionTaskStatus = 'PENDING' | 'IN_PROGRESS' | 'COMPLETED';
+
+/** Java canonical Task Board 的有界 TUI 摘要；不是第二套状态机。 */
+export interface SessionTaskView {
+  readonly taskId: string;
+  readonly revision: number;
+  readonly status: SessionTaskStatus;
+  readonly subject: string;
+  readonly blocked: boolean;
+  readonly blockerIds: readonly string[];
+  readonly owner: string | undefined;
+  readonly activeForm: string | undefined;
+  readonly recoveryRequired: boolean;
+}
+
+export interface TaskBoardView {
+  readonly boardRevision: number;
+  readonly totalTasks: number;
+  readonly truncated: boolean;
+  readonly tasks: readonly SessionTaskView[];
+}
+
 export interface TuiState {
   readonly phase: ClientPhase;
   readonly sessionId: string | undefined;
@@ -201,6 +223,10 @@ export interface TuiState {
   readonly runs: readonly RunView[];
   readonly checkpoints: readonly CheckpointView[];
   readonly childTasks?: readonly ChildTaskView[];
+  readonly taskBoard?: TaskBoardView | undefined;
+  readonly taskPanelOpen?: boolean | undefined;
+  readonly selectedTaskId?: string | undefined;
+  readonly taskDetailOpen?: boolean | undefined;
   readonly checkpointPanelOpen: boolean;
   readonly selectedCheckpointId: string | undefined;
   readonly checkpointDiff: CheckpointDiffView | undefined;
@@ -230,6 +256,9 @@ export type TuiAction =
   | {readonly type: 'checkpoint.undo.cancelled'}
   | {readonly type: 'tool.detail.next'}
   | {readonly type: 'tool.detail.toggle'}
+  | {readonly type: 'task.panel.move'; readonly delta: -1 | 1}
+  | {readonly type: 'task.panel.toggle-detail'}
+  | {readonly type: 'task.panel.close'}
   | {readonly type: 'event.received'; readonly event: ProtocolEvent}
   | {readonly type: 'transport.failed'; readonly message: string}
   | {readonly type: 'slash.notice'; readonly message: string}
@@ -243,6 +272,10 @@ export const initialTuiState: TuiState = {
   runs: [],
   checkpoints: [],
   childTasks: [],
+  taskBoard: undefined,
+  taskPanelOpen: false,
+  selectedTaskId: undefined,
+  taskDetailOpen: false,
   checkpointPanelOpen: false,
   selectedCheckpointId: undefined,
   checkpointDiff: undefined,
@@ -263,6 +296,18 @@ export const initialTuiState: TuiState = {
  */
 export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
   switch (action.type) {
+    case 'task.panel.move': {
+      const ordered = orderedSessionTasks(state.taskBoard?.tasks ?? []);
+      if (!state.taskPanelOpen || ordered.length === 0) return state;
+      const index = Math.max(0, ordered.findIndex(task => task.taskId === state.selectedTaskId));
+      const next = ordered[(index + action.delta + ordered.length) % ordered.length];
+      return next === undefined ? state : {...state, selectedTaskId: next.taskId, taskDetailOpen: false};
+    }
+    case 'task.panel.toggle-detail':
+      return state.taskPanelOpen && state.selectedTaskId !== undefined
+        ? {...state, taskDetailOpen: !state.taskDetailOpen} : state;
+    case 'task.panel.close':
+      return {...state, taskPanelOpen: false, taskDetailOpen: false};
     case 'run.submitted': {
       const hasAuthoritativeRun = state.activeRunId !== undefined;
       if (state.phase !== 'ready' && state.phase !== 'accepted' && !hasAuthoritativeRun) {
@@ -740,6 +785,26 @@ function isStartedRun(run: RunView): boolean {
 
 function applySessionCommandResult(state: TuiState, event: ProtocolEvent): TuiState {
   if (
+    event.payload.intent === 'tasks'
+    && event.payload.status === 'succeeded'
+    && isRecord(event.payload.result)
+  ) {
+    const board = taskBoardView(event.payload.result);
+    if (board !== undefined) {
+      const ordered = orderedSessionTasks(board.tasks);
+      return {
+        ...state,
+        taskBoard: board,
+        taskPanelOpen: true,
+        selectedTaskId: ordered.some(task => task.taskId === state.selectedTaskId)
+          ? state.selectedTaskId : ordered[0]?.taskId,
+        taskDetailOpen: false,
+        notice: board.truncated
+          ? `Task List 显示 ${board.tasks.length}/${board.totalTasks} 项` : undefined,
+      };
+    }
+  }
+  if (
     event.payload.intent === 'resume'
     && event.payload.status === 'succeeded'
     && typeof event.payload.result === 'object'
@@ -753,10 +818,49 @@ function applySessionCommandResult(state: TuiState, event: ProtocolEvent): TuiSt
       && typeof result.resumedSessionId === 'string'
       && event.sessionId === result.resumedSessionId
     ) {
-      return {...state, sessionId: result.resumedSessionId, steeringQueueDepth: 0};
+      return {...state, sessionId: result.resumedSessionId, steeringQueueDepth: 0,
+        taskBoard: undefined, taskPanelOpen: false, selectedTaskId: undefined, taskDetailOpen: false};
     }
   }
   return state;
+}
+
+/** 按 ADR-088 的展示优先级排序；完成组只保留 Java 已投影的最近五项。 */
+export function orderedSessionTasks(tasks: readonly SessionTaskView[]): readonly SessionTaskView[] {
+  const rank = (task: SessionTaskView): number => task.status === 'IN_PROGRESS'
+    ? task.recoveryRequired ? 0 : 1
+    : task.status === 'PENDING' ? task.blocked ? 3 : 2 : 4;
+  return [...tasks].sort((left, right) => rank(left) - rank(right)
+    || taskSequence(left.taskId) - taskSequence(right.taskId));
+}
+
+function taskSequence(taskId: string): number {
+  const value = Number(taskId.slice('task-'.length));
+  return Number.isSafeInteger(value) ? value : Number.MAX_SAFE_INTEGER;
+}
+
+function taskBoardView(value: Readonly<Record<string, unknown>>): TaskBoardView | undefined {
+  if (!Number.isSafeInteger(value.boardRevision) || (value.boardRevision as number) < 0
+    || !Number.isSafeInteger(value.totalTasks) || (value.totalTasks as number) < 0
+    || typeof value.truncated !== 'boolean' || !Array.isArray(value.tasks) || value.tasks.length > 50) return undefined;
+  const tasks: SessionTaskView[] = [];
+  for (const raw of value.tasks) {
+    if (!isRecord(raw) || typeof raw.taskId !== 'string' || !/^task-[1-9][0-9]*$/u.test(raw.taskId)
+      || !Number.isSafeInteger(raw.revision) || (raw.revision as number) < 1
+      || (raw.status !== 'PENDING' && raw.status !== 'IN_PROGRESS' && raw.status !== 'COMPLETED')
+      || typeof raw.subject !== 'string' || typeof raw.blocked !== 'boolean'
+      || !Array.isArray(raw.blockerIds) || raw.blockerIds.some(id => typeof id !== 'string')
+      || typeof raw.recoveryRequired !== 'boolean') return undefined;
+    tasks.push({
+      taskId: raw.taskId, revision: raw.revision as number, status: raw.status,
+      subject: raw.subject, blocked: raw.blocked, blockerIds: raw.blockerIds as string[],
+      owner: typeof raw.owner === 'string' ? raw.owner : undefined,
+      activeForm: typeof raw.activeForm === 'string' ? raw.activeForm : undefined,
+      recoveryRequired: raw.recoveryRequired,
+    });
+  }
+  return {boardRevision: value.boardRevision as number, totalTasks: value.totalTasks as number,
+    truncated: value.truncated, tasks};
 }
 
 function steeringDiscardedNotice(reason: unknown): string {
@@ -1067,7 +1171,18 @@ function finishRun(
     runs,
     phase: state.activeRunId === event.runId ? 'ready' : state.phase,
     activeRunId: state.activeRunId === event.runId ? undefined : state.activeRunId,
+    notice: taskFinalAdvisory(event.payload.pendingTaskCount, event.payload.recoveryTaskCount)
+      ?? state.notice,
   };
+}
+
+function taskFinalAdvisory(pendingValue: unknown, recoveryValue: unknown): string | undefined {
+  const pending = terminalCount(pendingValue);
+  if (pending === undefined || pending === 0) return undefined;
+  const recovery = terminalCount(recoveryValue) ?? 0;
+  return recovery > 0
+    ? `Task List 仍有 ${pending} 项未完成，其中 ${recovery} 项需要显式恢复；输入 /tasks 查看`
+    : `Task List 仍有 ${pending} 项未完成；输入 /tasks 查看`;
 }
 
 function modelFailureView(value: unknown): ModelFailureView | undefined {

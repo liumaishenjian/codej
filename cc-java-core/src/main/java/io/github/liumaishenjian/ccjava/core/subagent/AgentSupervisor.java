@@ -265,9 +265,9 @@ public final class AgentSupervisor implements AutoCloseable {
                 ChildTaskRequest effectiveRequest = startContext.map(context -> new ChildTaskRequest(
                         request.delegationId(), request.definitionId(), request.prompt()
                                 + "\n<sub-agent-hook-context trust=\"untrusted\">\n" + context
-                                + "\n</sub-agent-hook-context>",
+                        + "\n</sub-agent-hook-context>",
                         request.requestedTools(), request.requestedBudget(), request.background(), request.depth(),
-                        request.worktree())).orElse(request);
+                        request.worktree(), request.taskScope())).orElse(request);
                 journal.started(id);
                 try (ChildRuntimeScope scope = scopeFactory.create(definition, effectiveRequest, cancellation.token())) {
                     report.set(report(ChildTaskStatus.RUNNING, ChildTaskFailureCode.NONE, 0, 0, "running", false));

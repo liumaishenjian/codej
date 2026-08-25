@@ -52,6 +52,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
@@ -63,7 +64,8 @@ import tools.jackson.databind.node.ObjectNode;
  *
  * @since 0.6.0
  */
-public final class FileSessionStore implements SessionStore, SessionJournal, AutoCloseable {
+public final class FileSessionStore implements SessionStore, SessionJournal,
+        io.github.liumaishenjian.ccjava.core.task.TaskMutationJournal, AutoCloseable {
 
     private final Path root;
     private final Path workspace;
@@ -72,8 +74,12 @@ public final class FileSessionStore implements SessionStore, SessionJournal, Aut
     private final LifecycleDispatcher lifecycle;
     private final HookCoordinator hooks;
     private final NewSessionFault newSessionFault;
+    private final Clock clock;
     private final JsonlSessionCodec codec = new JsonlSessionCodec();
     private final Map<SessionId, OpenSession> writerSessions = new LinkedHashMap<>();
+    private final Map<SessionId, io.github.liumaishenjian.ccjava.core.task.TaskListService> taskBoards =
+            new LinkedHashMap<>();
+    private final Map<SessionId, java.util.Set<RunId>> terminatedTaskRuns = new LinkedHashMap<>();
     private final List<OpenSession> inspectedSessions = new ArrayList<>();
 
     /**
@@ -139,7 +145,7 @@ public final class FileSessionStore implements SessionStore, SessionJournal, Aut
         this.lifecycle = Objects.requireNonNull(lifecycle, "lifecycle 不能为空");
         this.hooks = Objects.requireNonNull(hooks, "hooks 不能为空");
         this.newSessionFault = Objects.requireNonNull(newSessionFault, "newSessionFault 不能为空");
-        Objects.requireNonNull(clock, "clock 不能为空");
+        this.clock = Objects.requireNonNull(clock, "clock 不能为空");
         initializeRoot(checkedWorkspace);
     }
 
@@ -177,7 +183,10 @@ public final class FileSessionStore implements SessionStore, SessionJournal, Aut
 
     @Override
     public synchronized void close(SessionId id) {
-        OpenSession opened = writerSessions.remove(Objects.requireNonNull(id, "id 不能为空"));
+        SessionId checkedId = Objects.requireNonNull(id, "id 不能为空");
+        OpenSession opened = writerSessions.remove(checkedId);
+        taskBoards.remove(checkedId);
+        terminatedTaskRuns.remove(checkedId);
         if (opened == null) {
             throw new IllegalArgumentException("Session 不存在: " + id.value());
         }
@@ -279,6 +288,29 @@ public final class FileSessionStore implements SessionStore, SessionJournal, Aut
         OpenSession opened = writer(sessionId);
         appendAndAdvance(opened, codec.encodeRunCompleted(
                 opened.nextSequence, runId, stopReason.name()));
+        terminatedTaskRuns.computeIfAbsent(sessionId, ignored -> new java.util.HashSet<>()).add(runId);
+    }
+
+    /**
+     * 在所属 Session writer lease 内可靠追加成功 Task mutation；失败时 fence Session。
+     */
+    @Override
+    public synchronized void append(SessionId ownerSessionId,
+            io.github.liumaishenjian.ccjava.core.task.TaskMutationEvent event) {
+        OpenSession opened = writer(ownerSessionId);
+        try {
+            appendAndAdvance(opened, codec.encodeTaskMutation(opened.nextSequence, event));
+        } catch (RuntimeException failure) {
+            SessionStoreAccess.fenceSession(opened.session);
+            throw failure;
+        }
+    }
+
+    /** 返回仅在 durable writer 可用时存在的 Session-owned Task Board 服务。 */
+    public synchronized Optional<io.github.liumaishenjian.ccjava.core.task.TaskListService> taskBoard(SessionId id) {
+        OpenSession opened = writerSessions.get(Objects.requireNonNull(id, "id 不能为空"));
+        if (opened == null || opened.readOnly || opened.session.isFenced()) return Optional.empty();
+        return Optional.ofNullable(taskBoards.get(id));
     }
 
     /**
@@ -387,6 +419,8 @@ public final class FileSessionStore implements SessionStore, SessionJournal, Aut
             opened.nextSequence++;
             newSessionFault.afterJournalWritten(id);
             writerSessions.put(id, opened);
+            terminatedTaskRuns.put(id, new java.util.HashSet<>());
+            taskBoards.put(id, newTaskBoard(id, List.of(), Optional.empty()));
             lifecycle.dispatch(opened.session, new LifecycleEvent.SessionStarted(spec));
             hooks.evaluate(
                     new HookInvocation(
@@ -400,6 +434,8 @@ public final class FileSessionStore implements SessionStore, SessionJournal, Aut
             return new SessionOpenResult(opened.session, mode, parent, false, List.of(), List.of());
         } catch (RuntimeException failure) {
             writerSessions.remove(id, opened);
+            taskBoards.remove(id);
+            terminatedTaskRuns.remove(id);
             opened.release();
             rollbackNewSession(id);
             throw failure;
@@ -483,6 +519,9 @@ public final class FileSessionStore implements SessionStore, SessionJournal, Aut
         }
         OpenSession opened = acquireWriter(id, session, read.nextSequence);
         writerSessions.put(id, opened);
+        terminatedTaskRuns.put(id, new java.util.HashSet<>(snapshot.runIds()));
+        JsonlSessionCodec.TaskJournalProjection taskProjection = codec.replayTaskBoard(read.lines);
+        taskBoards.put(id, newTaskBoard(id, taskProjection.events(), taskProjection.seed()));
         return new SessionOpenResult(
                 session, mode, snapshot.parentSessionId(), false, snapshot.issues(), snapshot.skillRecords());
     }
@@ -549,6 +588,12 @@ public final class FileSessionStore implements SessionStore, SessionJournal, Aut
         if (Files.exists(sessionDirectory(targetId), LinkOption.NOFOLLOW_LINKS)) {
             throw new SessionOpenException("DUPLICATE_ID", "Session ID 已存在");
         }
+        JsonlSessionCodec.TaskJournalProjection sourceTasks = codec.replayTaskBoard(read.lines);
+        io.github.liumaishenjian.ccjava.core.task.TaskListService sourceBoard =
+                newTaskBoard(sourceId, sourceTasks.events(), sourceTasks.seed());
+        io.github.liumaishenjian.ccjava.core.task.TaskBoardSeed forkSeed =
+                io.github.liumaishenjian.ccjava.core.task.TaskBoardSeed.fork(sourceBoard.snapshot(),
+                        boardId(targetId), targetId);
         List<ObjectNode> records = new ArrayList<>(codec.forkRecords(
                 read.lines,
                 targetId,
@@ -557,7 +602,8 @@ public final class FileSessionStore implements SessionStore, SessionJournal, Aut
                 sourceId));
         records.removeIf(record -> {
             String type = record.path("recordType").stringValue();
-            return "plan.artifact.saved".equals(type) || "plan.snapshot".equals(type);
+            return "plan.artifact.saved".equals(type) || "plan.snapshot".equals(type)
+                    || "task.mutation.succeeded".equals(type) || "task.board.forked".equals(type);
         });
         for (int index = 0; index < records.size(); index++) records.get(index).put("sequence", index + 1L);
         if (forkArtifact.isPresent() && forkPlan.isPresent()) {
@@ -570,6 +616,7 @@ public final class FileSessionStore implements SessionStore, SessionJournal, Aut
             forkPlan.ifPresent(projection -> records.add(codec.encodePlanSnapshot(
                     records.size() + 1L, projection.document(), projection.state())));
         }
+        records.add(codec.encodeTaskBoardSeed(records.size() + 1L, forkSeed));
         SessionRecoverySnapshot targetSnapshot = codec.replay(
                 records.stream().map(codec::encode).toList(),
                 false,
@@ -583,6 +630,9 @@ public final class FileSessionStore implements SessionStore, SessionJournal, Aut
             }
             newSessionFault.afterJournalWritten(targetId);
             writerSessions.put(targetId, target);
+            terminatedTaskRuns.put(targetId, new java.util.HashSet<>(targetSnapshot.runIds()));
+            taskBoards.put(targetId, io.github.liumaishenjian.ccjava.core.task.TaskListService.fromSeed(
+                    forkSeed, clock, runId -> terminatedTaskRuns.getOrDefault(targetId, Set.of()).contains(runId), this));
             forkArtifact.ifPresent(artifact -> planArtifacts(targetId).restoreMissing(artifact));
             newSessionFault.afterArtifactRestored(targetId);
             lifecycle.dispatch(targetSession, new LifecycleEvent.SessionStarted(createSpec));
@@ -604,6 +654,8 @@ public final class FileSessionStore implements SessionStore, SessionJournal, Aut
                     targetSnapshot.skillRecords());
         } catch (RuntimeException failure) {
             writerSessions.remove(targetId, target);
+            taskBoards.remove(targetId);
+            terminatedTaskRuns.remove(targetId);
             target.release();
             rollbackNewSession(targetId);
             throw failure;
@@ -1034,6 +1086,28 @@ public final class FileSessionStore implements SessionStore, SessionJournal, Aut
         if (!known || Files.isSymbolicLink(path)) return false;
         rejectLink(path);
         return Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS);
+    }
+
+    private io.github.liumaishenjian.ccjava.core.task.TaskListService newTaskBoard(SessionId id,
+            List<io.github.liumaishenjian.ccjava.core.task.TaskMutationEvent> events,
+            Optional<io.github.liumaishenjian.ccjava.core.task.TaskBoardSeed> seed) {
+        io.github.liumaishenjian.ccjava.core.task.TaskRunState runState = runId ->
+                terminatedTaskRuns.getOrDefault(id, Set.of()).contains(runId);
+        if (seed.isPresent()) {
+            io.github.liumaishenjian.ccjava.core.task.TaskBoardSeed value = seed.orElseThrow();
+            if (!value.snapshot().ownerSessionId().equals(id) || !value.snapshot().boardId().equals(boardId(id))) {
+                throw new SessionOpenException("INVALID_RECORD", "Task fork Board identity 无效");
+            }
+            return io.github.liumaishenjian.ccjava.core.task.TaskListService.fromSeed(
+                    value, clock, runState, this, events);
+        }
+        return new io.github.liumaishenjian.ccjava.core.task.TaskListService(
+                boardId(id), id, clock, runState, this, events);
+    }
+
+    private static io.github.liumaishenjian.ccjava.domain.task.TaskBoardId boardId(SessionId id) {
+        String suffix = id.value().startsWith("session-") ? id.value().substring("session-".length()) : id.value();
+        return new io.github.liumaishenjian.ccjava.domain.task.TaskBoardId("board-" + suffix);
     }
 
     private static String workspaceIdentity(Path workspace) {

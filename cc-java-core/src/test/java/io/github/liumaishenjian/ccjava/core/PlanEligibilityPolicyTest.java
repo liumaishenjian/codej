@@ -27,11 +27,24 @@ class PlanEligibilityPolicyTest {
         assertThat(policy.eligible(definition(ToolEffect.EXECUTE_PROCESS, ToolSource.BUILT_IN, Set.of()))).isFalse();
         assertThat(policy.eligible(definition(ToolEffect.READ_WORKSPACE, ToolSource.PLUGIN, Set.of()))).isFalse();
         assertThat(policy.eligible(definition(ToolEffect.NETWORK_OR_REMOTE, ToolSource.MCP, Set.of()))).isFalse();
+        assertThat(policy.eligible(definition("task_list", ToolEffect.READ_SESSION_STATE,
+                ToolSource.BUILT_IN, Set.of()))).isTrue();
+        assertThat(policy.eligible(definition("task_update", ToolEffect.WRITE_SESSION_STATE,
+                ToolSource.BUILT_IN, Set.of()))).isTrue();
+        assertThat(policy.eligible(definition("task_update", ToolEffect.WRITE_SESSION_STATE,
+                ToolSource.PLUGIN, Set.of()))).isFalse();
+        assertThat(policy.eligible(definition("safe_tool", ToolEffect.WRITE_SESSION_STATE,
+                ToolSource.BUILT_IN, Set.of()))).isFalse();
     }
 
     private static ToolDefinition definition(ToolEffect effect, ToolSource source,
                                              Set<PlanToolCapability> capabilities) {
-        return new ToolDefinition("safe_tool", "safe tool", "{}", effect, source, false,
+        return definition("safe_tool", effect, source, capabilities);
+    }
+
+    private static ToolDefinition definition(String name, ToolEffect effect, ToolSource source,
+                                             Set<PlanToolCapability> capabilities) {
+        return new ToolDefinition(name, "safe tool", "{}", effect, source, false,
                 Duration.ofSeconds(1), "text/plain", 100, capabilities);
     }
 }

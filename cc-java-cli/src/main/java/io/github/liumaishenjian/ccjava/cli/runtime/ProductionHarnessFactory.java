@@ -109,6 +109,7 @@ public final class ProductionHarnessFactory {
                 ProtocolFeature.SESSION_INDEX,
                 ProtocolFeature.GOVERNANCE,
                 ProtocolFeature.CHECKPOINT,
+                ProtocolFeature.TASK_LIST_V1,
                 ProtocolFeature.DAEMON));
         return Objects.requireNonNull(governance, "governance 不能为空")
                 .negotiatedFeatures(defaults);

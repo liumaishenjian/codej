@@ -443,7 +443,7 @@ export class StdioClient {
 
   public sessionCommand(
     commandId: string,
-    intent: 'help' | 'clear' | 'compact' | 'context' | 'doctor' | 'model' | 'permissions' | 'resume' | 'plan-status' | 'plan' | 'plan-approve' | 'plan-reject' | 'plan-step-begin' | 'plan-step-complete' | 'plan-execute',
+    intent: 'help' | 'clear' | 'compact' | 'context' | 'doctor' | 'model' | 'permissions' | 'resume' | 'tasks' | 'plan-status' | 'plan' | 'plan-approve' | 'plan-reject' | 'plan-step-begin' | 'plan-step-complete' | 'plan-execute',
     arguments_: Readonly<Record<string, unknown>>,
   ): string {
     if (this.#sessionId === undefined) {

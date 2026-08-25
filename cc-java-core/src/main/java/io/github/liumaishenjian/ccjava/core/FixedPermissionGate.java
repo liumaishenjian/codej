@@ -36,7 +36,7 @@ public final class FixedPermissionGate implements PermissionGate {
      *
      * @param invocation 已通过参数校验的调用上下文
      * @param definition Tool Definition
-     * @return Read 为 Allow；DEFAULT 的 Write/Process 为 Ask；其余为 Deny
+     * @return Workspace Read 与名称、来源、Effect 精确匹配的内置 Task Tool 为 Allow；DEFAULT 的 Workspace Write/Process 为 Ask；其余为 Deny
      */
     @Override
     public PermissionOutcome evaluate(
@@ -47,7 +47,14 @@ public final class FixedPermissionGate implements PermissionGate {
         ToolEffect effect = checked.effect();
         PermissionSelector selector = PermissionSelector.toolWide(
                 checked.name(), checked.source());
+        boolean trustedTaskState = checked.source() == io.github.liumaishenjian.ccjava.domain.ToolSource.BUILT_IN
+                && switch (checked.name()) {
+                    case "task_list", "task_get" -> effect == ToolEffect.READ_SESSION_STATE;
+                    case "task_create", "task_update" -> effect == ToolEffect.WRITE_SESSION_STATE;
+                    default -> false;
+                };
         if (effect == ToolEffect.READ_WORKSPACE
+                || trustedTaskState
                 || (mode == PermissionMode.DEFAULT
                     && (effect == ToolEffect.PLAN_ARTIFACT_WRITE || effect == ToolEffect.USER_INTERACTION))) {
             return PermissionOutcome.of(

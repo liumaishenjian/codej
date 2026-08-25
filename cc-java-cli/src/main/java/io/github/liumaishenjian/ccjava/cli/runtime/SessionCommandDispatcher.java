@@ -136,6 +136,7 @@ public final class SessionCommandDispatcher {
                 case SessionCommandIntent.Permissions permissions -> permissions(commandId, sessionId, permissions.operation(),
                         cancellationToken);
                 case SessionCommandIntent.Resume resume -> resume(commandId, sessionId, resume.sessionId(), cancellationToken);
+                case SessionCommandIntent.Tasks ignored -> tasks(commandId, sessionId);
                 case SessionCommandIntent.PlanStatus ignored -> planStatus(commandId, sessionId);
                 case SessionCommandIntent.Plan create -> createPlan(commandId, sessionId, create);
                 case SessionCommandIntent.PlanApprove approve -> planApprove(commandId, sessionId,
@@ -413,6 +414,53 @@ public final class SessionCommandDispatcher {
                         SessionCommandResultCode.UNAVAILABLE));
     }
 
+    private SessionCommandResult tasks(CommandId commandId, SessionId sessionId) {
+        return runtime.taskBoardSnapshot()
+                .<SessionCommandResult>map(snapshot -> success(SessionCommandKind.TASKS, commandId, sessionId,
+                        taskPayload(snapshot)))
+                .orElseGet(() -> rejected(SessionCommandKind.TASKS, commandId, sessionId,
+                        SessionCommandResultCode.UNAVAILABLE));
+    }
+
+    /** 活动任务优先，并保留最近五个已完成任务；整个 stdio 投影最多 50 项。 */
+    private static SessionCommandEvent.TaskListPayload taskPayload(
+            io.github.liumaishenjian.ccjava.domain.task.TaskBoardSnapshot snapshot) {
+        var active = snapshot.tasks().values().stream()
+                .filter(view -> view.status() != io.github.liumaishenjian.ccjava.domain.task.TaskStatus.COMPLETED)
+                .sorted(java.util.Comparator
+                        .comparingInt(SessionCommandDispatcher::taskDisplayRank)
+                        .thenComparing(io.github.liumaishenjian.ccjava.domain.task.TaskItemView::id))
+                .toList();
+        var completed = snapshot.tasks().values().stream()
+                .filter(view -> view.status() == io.github.liumaishenjian.ccjava.domain.task.TaskStatus.COMPLETED)
+                .sorted(java.util.Comparator
+                        .comparing((io.github.liumaishenjian.ccjava.domain.task.TaskItemView view) ->
+                                view.item().updatedAt()).reversed()
+                        .thenComparing(io.github.liumaishenjian.ccjava.domain.task.TaskItemView::id))
+                .limit(5)
+                .toList();
+        java.util.ArrayList<io.github.liumaishenjian.ccjava.domain.task.TaskItemView> selected =
+                new java.util.ArrayList<>(50);
+        active.stream().limit(Math.max(0, 50 - completed.size())).forEach(selected::add);
+        completed.forEach(selected::add);
+        selected.sort(java.util.Comparator.comparing(io.github.liumaishenjian.ccjava.domain.task.TaskItemView::id));
+        var rows = selected.stream().map(view -> new SessionCommandEvent.TaskView(
+                view.id().value(), view.revision(), view.status().name(), view.subject(), view.blocked(),
+                view.activeBlockers().stream().map(io.github.liumaishenjian.ccjava.domain.task.TaskId::value).toList(),
+                view.owner().map(io.github.liumaishenjian.ccjava.domain.task.TaskActorId::value).orElse(null),
+                view.activeForm().orElse(null), view.recoveryRequired())).toList();
+        return new SessionCommandEvent.TaskListPayload(snapshot.revision(), snapshot.tasks().size(),
+                snapshot.tasks().size() > rows.size(), rows);
+    }
+
+    private static int taskDisplayRank(
+            io.github.liumaishenjian.ccjava.domain.task.TaskItemView task) {
+        if (task.status() == io.github.liumaishenjian.ccjava.domain.task.TaskStatus.IN_PROGRESS) {
+            return task.recoveryRequired() ? 0 : 1;
+        }
+        return task.blocked() ? 3 : 2;
+    }
+
     private static boolean requiresIdle(SessionCommandIntent intent) {
         return intent instanceof SessionCommandIntent.Compact
                 || intent instanceof SessionCommandIntent.Plan
@@ -451,6 +499,8 @@ public final class SessionCommandDispatcher {
             case MODEL_CHANGE -> runtime.settingsSnapshot().isPresent()
                     ? SessionCommandEvent.CommandSupport.AVAILABLE : SessionCommandEvent.CommandSupport.NOT_AVAILABLE;
             case PERMISSIONS -> SessionCommandEvent.CommandSupport.AVAILABLE;
+            case TASKS -> runtime.taskBoardSnapshot().isPresent()
+                    ? SessionCommandEvent.CommandSupport.AVAILABLE : SessionCommandEvent.CommandSupport.NOT_AVAILABLE;
             case RESUME, PLAN_STATUS, PLAN, PLAN_APPROVE, PLAN_REJECT, PLAN_STEP_BEGIN, PLAN_STEP_COMPLETE, PLAN_EXECUTE -> SessionCommandEvent.CommandSupport.AVAILABLE;
         };
     }

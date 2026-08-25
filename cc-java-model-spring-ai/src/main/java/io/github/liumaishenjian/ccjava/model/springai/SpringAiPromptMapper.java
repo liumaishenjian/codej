@@ -175,7 +175,7 @@ final class SpringAiPromptMapper {
                                 call.id(),
                                 "function",
                                 call.name(),
-                                SpringAiJson.write(call.arguments().values())))
+                                SpringAiJson.write(call.arguments().jsonValues())))
                         .toList();
         return org.springframework.ai.chat.messages.AssistantMessage.builder()
                 .content(assistant.text())
@@ -204,7 +204,7 @@ final class SpringAiPromptMapper {
                 .append(error.category().name()).append(", retryable=")
                 .append(error.retryable()).append("]: ").append(error.message());
         if (!error.details().values().isEmpty()) {
-            response.append(" details=").append(SpringAiJson.write(error.details().values()));
+            response.append(" details=").append(SpringAiJson.write(error.details().jsonValues()));
         }
         if (!evidence.isBlank()) response.append("\n").append(evidence);
         return response.toString();

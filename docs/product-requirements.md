@@ -624,6 +624,29 @@ S15 第一优先级补齐 `TOOL-18` 的可控网络检索基线：新增 BUILT_I
 
 S15 的准确 Feature `MODEL-13` 不复用 Managed Policy 的 `CFG-07`。ADR-069 将 OpenCode/OpenClaw 官方 Documented 输入、Claude 授权快照与 Codex 0.147.0 的 Observed 机制、项目 Inferred/Unknown 分开；ADR-070 冻结 ProviderDefinition/CredentialProfile、用户级 restricted store、CLI/TUI/stdio 共用服务、优先级、legacy 迁移、probe、logout active-run fence/drain、隐私错误/事件及测试/E2E。当前工作树已实现 restricted store、OpenAI-compatible/Anthropic/OpenRouter 三类 Provider Factory、CLI/TUI/stdio 管理入口、masked Console `/connect`、显式有界 probe、logout fence/drain，以及 strict 本地 `modelOverrides`，`MODEL-13` 已达到 L1。由于尚未完成至少两个 distinct Provider 的真实 BYOK 在线 E2E，且 remote model sync 尚未实现，因此不得提升到 L2；它仍是参考能力补齐而非 L4 创新，S15 Exit 继续 OPEN。
 
+### 16.1 S15 Session-local Task Board（ADR-088，Batch A-E）
+
+`TASK-01..05` 已完成 Batch A-E 并达到 L2；以下需求同时约束 Core、生产 Tool、持久化、协议与 TUI，Plan 审批工件继续保持独立：
+
+- FR-TASK-001：每个 root Session 独占一个 Task Board；不同 Session 不因 Workspace 相同而共享。Task 与 Plan 完全独立，不互转、不互相审批，也不解析 Plan Markdown。
+- FR-TASK-002：Task 公开状态仅为 `PENDING/IN_PROGRESS/COMPLETED`；`blocked`、反向 `blocks` 与 `recoveryRequired` 均为确定性投影。canonical 只保存单向 `blockedBy`，提交前拒绝自依赖、缺失节点、重复边和全图环。
+- FR-TASK-003：Task/Board revision 提供 CAS，ID 由 high-water mark 单调生成，删除形成 tombstone 且 ID 永不复用；同 actor 的 callId 只用于重试幂等，不能代替 Writer lock 或 CAS。
+- FR-TASK-004：Claim 绑定 actor、Run、epoch 与时间；blocked 任务不能 claim/complete。Run 终止后状态仍为 IN_PROGRESS，但投影 `recoveryRequired`，必须由 Root 显式续领、释放、重分配或完成，绝不自动重放副作用。
+- FR-TASK-005：Child 保持独立 Session/Context/Permission，只能通过宿主绑定 Board/owner Session/actor/actor Session/effect/task scope 的 capability 访问 parent-owned Board；不能自行提交 Board identity 或扩权。
+- FR-TASK-006：Core mutation 集为 CREATE、EDIT、TRANSITION、CLAIM、RESUME_CLAIM、RELEASE、ASSIGN/REASSIGN、DEPENDENCY、DELETE；`task_create/task_update/task_list/task_get` 四个 BUILT_IN Tool 必须经过统一 Pipeline/Hook/Permission，不能旁路。
+- FR-TASK-007：资源上限为 live 256、成功 mutation/幂等索引 4096、每任务依赖和单次边变更 32、subject/activeForm 200 code points、description 4096 UTF-8 bytes、metadata 16 keys/4096 bytes；达到上限在 mutation 前 Fail Closed，已存完全相同重试仍可返回。
+- FR-TASK-008：Resume 同 Board、Fork 新 Board；Team shared、peer messaging、跨进程 owner/lease/watch/poll 和自动领取继续延期 `SUB-11`。
+- FR-TASK-009：模型不能提交 Board/actor Session/actor Run/current owner/status 等可信字段；CLAIM/RESUME_CLAIM 的 Run 只能来自宿主 capability。`task_update` 必须按 operation 拒绝无关、缺失和混用字段；ASSIGN/REASSIGN 的目标 actor 必须由宿主 actor directory 确认存在且可分配。
+- FR-TASK-010：List 默认 25、最大 50，按 TaskId 稳定分页，只返回摘要；超过 16KiB UTF-8 时按完整条目语义分页并提供 cursor。Get 返回同一临界区内捕获的 Board revision 与 canonical/derived detail，完整 JSON 超过 16KiB 时整体失败，禁止切断 JSON。
+- FR-TASK-011：metadata 只允许 boolean、JSON-safe integer、string；metadata patch 的显式 JSON null 表示删除，字段缺失表示不修改；Context 与 Provider/MCP/Session JSON 边界必须保持 null 语义。
+- FR-TASK-012：Session state Effect 只对四个精确 BUILT_IN Task name/effect 组合开放；显式 Deny 优先，Plugin/MCP spoof、Registry collision、错配 Effect 与 Child 越权必须拒绝。
+- FR-TASK-013：每次成功 mutation 以 canonical 增量事件 append+force 到 Session JSONL；Resume 线性重建完整 Board 与幂等索引，Fork 只写一次重置 IN_PROGRESS 的完整 seed。日志不得按 mutation 重复保存整个 Board。
+- FR-TASK-014：root 委托只能通过 `delegate_agent.taskIds` 提出最多 32 个已存在 Task ID；宿主重新验证并注入 child capability，嵌套委托不继承 parent Board。精确 BUILT_IN `delegate_agent` 在 DEFAULT/ACCEPT_EDITS 中必须审批，PLAN 和伪造来源继续拒绝。
+- FR-TASK-015：stable v1 以 `task-list-v1` 协商只读 `task.snapshot`，支持 revision、TaskId cursor 与最大 50 条；模型 mutation 仍只能走四个 Tool。内部 stdio `/tasks` 返回活动项与最近五个完成项的有界投影。
+- FR-TASK-016：Ink Task 面板按 recovery、in-progress、可执行 pending、blocked pending、recent completed 排序，支持 ↑/↓、Enter、Esc；完成项必须真实使用删除线和 dim 样式。Run 结束时只追加 pending/recovery advisory，不能修改 canonical final。
+
+Team shared、peer messaging、跨进程 owner/lease/watch/poll、自动领取和 stable push subscription 继续延期 `SUB-11`；S15 其他 Stage Exit blocker 不因本切片完成而关闭。
+
 ## 17. 非功能需求
 
 ### 17.1 来源控制、独立重实现与可维护性

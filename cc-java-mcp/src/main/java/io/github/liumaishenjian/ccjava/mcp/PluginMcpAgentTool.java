@@ -61,7 +61,7 @@ final class PluginMcpAgentTool implements AgentTool {
         try (var executor = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("cc-java-plugin-mcp-tool-", 0).factory())) {
             var future = executor.submit(() -> callGate.call(() -> client.callTool(
-                    remoteName, invocation.call().arguments().values(),
+                    remoteName, invocation.call().arguments().jsonValues(),
                     definition.defaultTimeout(), invocation.cancellationToken())));
             try (var registration = invocation.cancellationToken().onCancellation(() -> future.cancel(true))) {
                 try {

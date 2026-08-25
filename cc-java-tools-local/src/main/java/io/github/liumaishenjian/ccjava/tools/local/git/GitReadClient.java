@@ -201,7 +201,13 @@ public final class GitReadClient {
         }
     }
 
-    /** Git 摘要原始输入；所有数组均防御性复制。 */
+    /**
+     * Git 摘要原始输入；所有数组均防御性复制。
+     *
+     * @param paths 有序路径字节
+     * @param indexState Git index 状态字节
+     * @param porcelainState 有界 porcelain 状态字节
+     */
     public record WorkspaceDigestInputs(byte[] paths, byte[] indexState, byte[] porcelainState) {
         public WorkspaceDigestInputs {
             paths = paths.clone();

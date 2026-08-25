@@ -7,6 +7,7 @@ import io.github.liumaishenjian.ccjava.domain.ContextEstimateKind;
 import io.github.liumaishenjian.ccjava.domain.ContextSummaryMessage;
 import io.github.liumaishenjian.ccjava.domain.ContextUsage;
 import io.github.liumaishenjian.ccjava.domain.MemoryContextMessage;
+import io.github.liumaishenjian.ccjava.domain.JsonNull;
 import io.github.liumaishenjian.ccjava.domain.MemoryProjectionItem;
 import io.github.liumaishenjian.ccjava.domain.SystemMessage;
 import io.github.liumaishenjian.ccjava.domain.ToolCall;
@@ -159,7 +160,7 @@ public final class CodePointContextTokenEstimator implements ContextTokenEstimat
             }
             return size;
         }
-        if (value == null) {
+        if (value == null || value == JsonNull.INSTANCE) {
             return 1;
         }
         throw new IllegalArgumentException("JsonObject 包含不支持的值类型: " + value.getClass());

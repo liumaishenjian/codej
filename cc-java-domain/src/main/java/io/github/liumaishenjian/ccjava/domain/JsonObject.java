@@ -14,8 +14,8 @@ import java.util.Optional;
  * Tool 参数使用的递归不可变 JSON Object 值。
  *
  * <p>该类型避免直接把可变 {@code Map<String, Object>} 暴露给模型端口和工具。
- * 当前支持字符串、布尔值、常见数字、List 和 String-key Map；可选字段应直接
- * 省略，S01 不接受 JSON {@code null}。输入在构造时被递归复制并冻结。</p>
+ * 当前支持字符串、布尔值、常见数字、JSON null、List 和 String-key Map；可选字段通常直接
+ * 省略，只有 Tool schema 明确允许时才可解释 {@link JsonNull}。输入在构造时被递归复制并冻结。</p>
  *
  * @since 0.1.0
  */
@@ -55,6 +55,18 @@ public final class JsonObject {
     }
 
     /**
+     * 返回可直接交给 JSON serializer 或远端 Tool client 的递归不可变视图。
+     *
+     * <p>该视图把内部 {@link JsonNull} sentinel 还原为真正的 Java {@code null}；内部参数解析应继续
+     * 使用 {@link #values()}，以区分字段缺失和显式 JSON null。</p>
+     *
+     * @return 保持键与数组顺序、以 Java null 表示 JSON null 的 Map
+     */
+    public Map<String, Object> jsonValues() {
+        return thawMap(values);
+    }
+
+    /**
      * 读取字符串参数。
      *
      * @param name 参数名
@@ -79,16 +91,13 @@ public final class JsonObject {
             if (key == null || key.isBlank()) {
                 throw new IllegalArgumentException("JSON Object 的键不能为空");
             }
-            if (value == null) {
-                throw new IllegalArgumentException("JSON Object 暂不接受 null 值，请省略可选字段");
-            }
-            copy.put(key, freezeValue(value));
+            copy.put(key, value == null ? JsonNull.INSTANCE : freezeValue(value));
         });
         return Collections.unmodifiableMap(copy);
     }
 
     private static Object freezeValue(Object value) {
-        if (value instanceof String || value instanceof Boolean) {
+        if (value == JsonNull.INSTANCE || value instanceof String || value instanceof Boolean) {
             return value;
         }
         if (isSupportedNumber(value)) {
@@ -108,15 +117,33 @@ public final class JsonObject {
         if (value instanceof List<?> list) {
             ArrayList<Object> copy = new ArrayList<>(list.size());
             for (Object element : list) {
-                if (element == null) {
-                    throw new IllegalArgumentException("JSON Array 暂不接受 null 值");
-                }
-                copy.add(freezeValue(element));
+                copy.add(element == null ? JsonNull.INSTANCE : freezeValue(element));
             }
             return Collections.unmodifiableList(copy);
         }
         throw new IllegalArgumentException(
                 "不支持的 JSON 值类型: " + value.getClass().getName());
+    }
+
+    private static Map<String, Object> thawMap(Map<String, Object> source) {
+        LinkedHashMap<String, Object> copy = new LinkedHashMap<>();
+        source.forEach((key, value) -> copy.put(key, thawValue(value)));
+        return Collections.unmodifiableMap(copy);
+    }
+
+    private static Object thawValue(Object value) {
+        if (value == JsonNull.INSTANCE) return null;
+        if (value instanceof Map<?, ?> map) {
+            LinkedHashMap<String, Object> copy = new LinkedHashMap<>();
+            map.forEach((key, nested) -> copy.put((String) key, thawValue(nested)));
+            return Collections.unmodifiableMap(copy);
+        }
+        if (value instanceof List<?> list) {
+            ArrayList<Object> copy = new ArrayList<>(list.size());
+            list.forEach(element -> copy.add(thawValue(element)));
+            return Collections.unmodifiableList(copy);
+        }
+        return value;
     }
 
     private static boolean isSupportedNumber(Object value) {

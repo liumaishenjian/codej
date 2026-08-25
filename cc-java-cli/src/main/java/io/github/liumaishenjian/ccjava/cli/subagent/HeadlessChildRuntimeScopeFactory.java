@@ -20,6 +20,12 @@ import io.github.liumaishenjian.ccjava.core.PermissionPolicy;
 import io.github.liumaishenjian.ccjava.core.ToolExecutionPipeline;
 import io.github.liumaishenjian.ccjava.core.ToolRegistry;
 import io.github.liumaishenjian.ccjava.core.hook.HookCoordinator;
+import io.github.liumaishenjian.ccjava.core.task.ChildTaskBoardAccess;
+import io.github.liumaishenjian.ccjava.core.task.TaskBoardCapabilityFactory;
+import io.github.liumaishenjian.ccjava.core.task.TaskCreateTool;
+import io.github.liumaishenjian.ccjava.core.task.TaskGetTool;
+import io.github.liumaishenjian.ccjava.core.task.TaskListTool;
+import io.github.liumaishenjian.ccjava.core.task.TaskUpdateTool;
 import io.github.liumaishenjian.ccjava.core.instructions.InstructionContextService;
 import io.github.liumaishenjian.ccjava.core.subagent.AgentSupervisor;
 import io.github.liumaishenjian.ccjava.core.subagent.ChildRuntimeScope;
@@ -52,6 +58,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
@@ -75,6 +82,7 @@ public final class HeadlessChildRuntimeScopeFactory implements ChildRuntimeScope
     private final Supplier<AgentSupervisor> supervisor;
     private final ExecutionBackendPreference executionBackend;
     private final ExecutionShell executionShell;
+    private final Function<ChildTaskRequest, Optional<ChildTaskBoardAccess>> taskBoardAccess;
     private final ConcurrentMap<DelegationId, WorktreeLease> retainedWorktrees =
             new ConcurrentHashMap<>();
 
@@ -169,6 +177,37 @@ public final class HeadlessChildRuntimeScopeFactory implements ChildRuntimeScope
             Supplier<AgentSupervisor> supervisor,
             ExecutionBackendPreference executionBackend,
             ExecutionShell executionShell) {
+        this(parentWorkspace, sessionRoot, gateway, approvals, ids, lifecycle, hooks, supervisor,
+                executionBackend, executionShell, ignored -> Optional.empty());
+    }
+
+    /**
+     * 创建可由宿主按委托注入 parent Task Board 范围的 child composition。
+     *
+     * @param parentWorkspace 父 Session 的 canonical Workspace
+     * @param sessionRoot 子 Session 持久化根
+     * @param gateway 模型回合端口
+     * @param approvals 审批端口
+     * @param ids Agent 与 Session ID 生成器
+     * @param lifecycle 生命周期分发器
+     * @param hooks 父 Session Hook 协调器
+     * @param supervisor 延迟取得父 Supervisor 的可信入口
+     * @param executionBackend 父 Session 显式选择的执行后端
+     * @param executionShell 父 Session 显式选择的 shell 语义
+     * @param taskBoardAccess 可信宿主按委托返回的 parent Board 固定范围；模型字段不能扩大范围
+     */
+    public HeadlessChildRuntimeScopeFactory(
+            Path parentWorkspace,
+            Path sessionRoot,
+            ModelGateway gateway,
+            ApprovalHandler approvals,
+            AgentIdGenerator ids,
+            LifecycleDispatcher lifecycle,
+            HookCoordinator hooks,
+            Supplier<AgentSupervisor> supervisor,
+            ExecutionBackendPreference executionBackend,
+            ExecutionShell executionShell,
+            Function<ChildTaskRequest, Optional<ChildTaskBoardAccess>> taskBoardAccess) {
         this.parentWorkspace = Objects.requireNonNull(parentWorkspace)
                 .toAbsolutePath()
                 .normalize();
@@ -184,6 +223,7 @@ public final class HeadlessChildRuntimeScopeFactory implements ChildRuntimeScope
         this.supervisor = Objects.requireNonNull(supervisor);
         this.executionBackend = Objects.requireNonNull(executionBackend);
         this.executionShell = Objects.requireNonNull(executionShell);
+        this.taskBoardAccess = Objects.requireNonNull(taskBoardAccess);
         LocalGitWorktreeManager available;
         try {
             available = new LocalGitWorktreeManager(this.parentWorkspace);
@@ -234,6 +274,28 @@ public final class HeadlessChildRuntimeScopeFactory implements ChildRuntimeScope
             Set<String> visibleNames = new LinkedHashSet<>(definition.visibleTools());
             visibleNames.retainAll(requested);
             List<AgentTool> availableTools = new ArrayList<>(bootstrap.tools());
+            Optional<ChildTaskBoardAccess> parentBoard = Objects.requireNonNull(
+                    taskBoardAccess.apply(request), "taskBoardAccess 不能返回 null");
+            AtomicReference<io.github.liumaishenjian.ccjava.domain.SessionId> childSessionId =
+                    new AtomicReference<>();
+            parentBoard.ifPresent(access -> {
+                Function<io.github.liumaishenjian.ccjava.core.ToolInvocation,
+                        io.github.liumaishenjian.ccjava.domain.task.TaskBoardCapability> capabilities = invocation -> {
+                    io.github.liumaishenjian.ccjava.domain.SessionId childId = childSessionId.get();
+                    if (childId == null || !childId.equals(invocation.sessionId())) {
+                        throw new SecurityException("child Task capability Session 不匹配");
+                    }
+                    var snapshot = access.board().snapshot();
+                    return TaskBoardCapabilityFactory.child(
+                            snapshot.boardId(), snapshot.ownerSessionId(), access.actorId(), childId,
+                            invocation.runId(), access.taskScope());
+                };
+                availableTools.add(new TaskCreateTool(access.board(), capabilities));
+                availableTools.add(new TaskUpdateTool(
+                        access.board(), capabilities, access.actorDirectory()));
+                availableTools.add(new TaskListTool(access.board(), capabilities));
+                availableTools.add(new TaskGetTool(access.board(), capabilities));
+            });
             AgentSupervisor sharedSupervisor = supervisor.get();
             // 嵌套 provenance 只能由 Host 从父请求递增；子模型既看不到也不能覆盖 depth。
             if (sharedSupervisor != null) {
@@ -286,6 +348,7 @@ public final class HeadlessChildRuntimeScopeFactory implements ChildRuntimeScope
                             "bounded-report",
                             "worktree",
                             Boolean.toString(request.worktree()))));
+            childSessionId.set(child.id());
             AgentRuntime runtime = new AgentRuntime(
                     sessions,
                     ids,

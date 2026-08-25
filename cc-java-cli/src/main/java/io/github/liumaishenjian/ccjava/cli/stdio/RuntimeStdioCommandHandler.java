@@ -1540,6 +1540,28 @@ public final class RuntimeStdioCommandHandler
                 payload.put("previousSessionId", resume.previousSessionId());
                 payload.put("resumedSessionId", resume.resumedSessionId());
             }
+            case SessionCommandEvent.TaskListPayload tasks -> {
+                payload.put("boardRevision", tasks.boardRevision());
+                payload.put("totalTasks", tasks.totalTasks());
+                payload.put("truncated", tasks.truncated());
+                ArrayNode rows = codec.arrayNode();
+                tasks.tasks().forEach(task -> {
+                    ObjectNode item = codec.objectNode();
+                    item.put("taskId", task.taskId());
+                    item.put("revision", task.revision());
+                    item.put("status", task.status());
+                    item.put("subject", task.subject());
+                    item.put("blocked", task.blocked());
+                    ArrayNode blockers = codec.arrayNode();
+                    task.blockerIds().forEach(blockers::add);
+                    item.set("blockerIds", blockers);
+                    if (task.owner() == null) item.putNull("owner"); else item.put("owner", task.owner());
+                    if (task.activeForm() == null) item.putNull("activeForm"); else item.put("activeForm", task.activeForm());
+                    item.put("recoveryRequired", task.recoveryRequired());
+                    rows.add(item);
+                });
+                payload.set("tasks", rows);
+            }
             case SessionCommandEvent.PlanPayload plan -> {
                 payload.put("planId", plan.planId());
                 payload.put("status", plan.status());
@@ -1607,6 +1629,7 @@ public final class RuntimeStdioCommandHandler
                                     io.github.liumaishenjian.ccjava.domain.PermissionMode.valueOf(
                                             arguments.get("mode").stringValue())));
             case "resume" -> new SessionCommandIntent.Resume(new SessionId(arguments.get("sessionId").stringValue()));
+            case "tasks" -> new SessionCommandIntent.Tasks();
             case "plan-status" -> new SessionCommandIntent.PlanStatus();
             case "plan-approve" -> new SessionCommandIntent.PlanApprove(
                     arguments.get("planId").stringValue(), arguments.get("workspaceDigest").stringValue());
@@ -1647,6 +1670,7 @@ public final class RuntimeStdioCommandHandler
             case MODEL_CHANGE -> "model";
             case PERMISSIONS -> "permissions";
             case RESUME -> "resume";
+            case TASKS -> "tasks";
             case PLAN_STATUS -> "plan-status";
             case PLAN -> "plan";
             case PLAN_APPROVE -> "plan-approve";
@@ -2255,6 +2279,17 @@ public final class RuntimeStdioCommandHandler
         });
         application.telemetry(result.runId())
                 .ifPresent(value -> payload.set("telemetry", telemetryPayload(value)));
+        application.taskBoardSnapshot().ifPresent(board -> {
+            long pending = board.tasks().values().stream()
+                    .filter(task -> task.status()
+                            != io.github.liumaishenjian.ccjava.domain.task.TaskStatus.COMPLETED)
+                    .count();
+            long recovery = board.tasks().values().stream()
+                    .filter(io.github.liumaishenjian.ccjava.domain.task.TaskItemView::recoveryRequired)
+                    .count();
+            payload.put("pendingTaskCount", pending);
+            payload.put("recoveryTaskCount", recovery);
+        });
         String type = switch (result.stopReason()) {
             case COMPLETED -> "run.completed";
             case USER_CANCELLED -> "run.cancelled";

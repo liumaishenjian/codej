@@ -1,6 +1,7 @@
 import {describe, expect, it} from 'vitest';
 import {
   initialTuiState,
+  orderedSessionTasks,
   reduceTuiState as reduceProductionState,
   type TuiAction,
   type TuiState,
@@ -875,3 +876,71 @@ describe('continuous plan projections', () => {
     expect(state.runs[0]?.planReview).toEqual(expect.objectContaining({revision: 3, markdown: '# Plan\n\nSafe.'}));
   });
 });
+
+describe('session task board projections', () => {
+  it('按恢复、进行中、可执行、阻塞、完成排序，并响应选择与详情动作', () => {
+    const tasks = [
+      task('task-5', 'COMPLETED'),
+      task('task-4', 'PENDING', true),
+      task('task-3', 'PENDING'),
+      task('task-2', 'IN_PROGRESS'),
+      task('task-1', 'IN_PROGRESS', false, true),
+    ] as const;
+    expect(orderedSessionTasks(tasks).map(item => item.taskId))
+      .toEqual(['task-1', 'task-2', 'task-3', 'task-4', 'task-5']);
+
+    let state = reduceProductionState(initialTuiState, {
+      type: 'event.received', event: event('initialized', 1, {}, 'init', 'session-1'),
+    });
+    state = reduceProductionState(state, {
+      type: 'event.received', event: event('session.command.result', 2, {
+        commandId: 'tasks-1', intent: 'tasks', status: 'succeeded', code: 'ok',
+        result: {boardRevision: 9, totalTasks: 5, truncated: false, tasks},
+      }, 'tasks-1', 'session-1'),
+    });
+    expect(state.taskPanelOpen).toBe(true);
+    expect(state.selectedTaskId).toBe('task-1');
+    state = reduceProductionState(state, {type: 'task.panel.move', delta: 1});
+    expect(state.selectedTaskId).toBe('task-2');
+    state = reduceProductionState(state, {type: 'task.panel.toggle-detail'});
+    expect(state.taskDetailOpen).toBe(true);
+    state = reduceProductionState(state, {type: 'task.panel.close'});
+    expect(state.taskPanelOpen).toBe(false);
+  });
+
+  it('canonical final 仅投影未完成任务提示，不覆盖模型最终文本', () => {
+    let state = reduceProductionState(initialTuiState, {
+      type: 'event.received', event: event('initialized', 1, {}, 'init', 'session-1'),
+    });
+    state = reduceProductionState(state, {type: 'run.submitted', requestId: 'run', prompt: 'work'});
+    state = reduceProductionState(state, {
+      type: 'event.received', event: event('run.command.result', 2, {
+        commandType: 'run.start', disposition: 'accepted', code: 'ACCEPTED',
+      }, 'run', 'session-1'),
+    });
+    state = reduceProductionState(state, {
+      type: 'event.received', event: event('run.started', 3, {}, 'run', 'session-1', 'run-1'),
+    });
+    state = reduceProductionState(state, {
+      type: 'event.received', event: event('run.completed', 4, {
+        stopReason: 'completed', modelTurns: 1, toolCalls: 2, finalText: 'canonical answer',
+        pendingTaskCount: 3, recoveryTaskCount: 1,
+      }, 'run', 'session-1', 'run-1'),
+    });
+    expect(state.runs[0]?.text).toBe('canonical answer');
+    expect(state.notice).toBe('Task List 仍有 3 项未完成，其中 1 项需要显式恢复；输入 /tasks 查看');
+  });
+});
+
+function task(
+  taskId: string,
+  status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED',
+  blocked = false,
+  recoveryRequired = false,
+) {
+  return {
+    taskId, revision: 1, status, subject: taskId, blocked,
+    blockerIds: blocked ? ['task-99'] : [], owner: undefined,
+    activeForm: undefined, recoveryRequired,
+  } as const;
+}

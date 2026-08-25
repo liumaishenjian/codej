@@ -62,6 +62,7 @@ public final class StableProtocolHandler implements AutoCloseable {
             "sessionId", "action", "firstConfirmation", "secondConfirmation");
     private static final Set<String> SESSION_MIGRATE_FIELDS = Set.of(
             "sourceFile", "targetFile", "fromMajor", "toMajor");
+    private static final Set<String> TASK_SNAPSHOT_FIELDS = Set.of("cursor", "limit");
 
     private final StableProtocolCodec codec;
     private final ProtocolConnection connection;
@@ -137,6 +138,7 @@ public final class StableProtocolHandler implements AutoCloseable {
             case "session.retain" -> sessionRetain(request);
             case "session.migrate" -> sessionMigrate(request);
             case "governance.get" -> governance(request);
+            case "task.snapshot" -> taskSnapshot(request);
             case "drain" -> drain(request);
             case "shutdown" -> shutdown(request);
             default -> throw failAccepted(request, "UNKNOWN_REQUEST");
@@ -152,6 +154,7 @@ public final class StableProtocolHandler implements AutoCloseable {
             case "session.retain" -> ProtocolFeature.SESSION_RETENTION;
             case "session.migrate" -> ProtocolFeature.SESSION_MIGRATION;
             case "governance.get" -> ProtocolFeature.GOVERNANCE;
+            case "task.snapshot" -> ProtocolFeature.TASK_LIST_V1;
             case "drain", "shutdown" -> ProtocolFeature.DAEMON;
             default -> null;
         };
@@ -215,7 +218,7 @@ public final class StableProtocolHandler implements AutoCloseable {
                 token, version, requested, request.sequence());
         ObjectNode responsePayload = codec.objectNode().put("version", "1.0");
         ArrayNode features = responsePayload.putArray("features");
-        negotiated.stream().sorted().forEach(feature -> features.add(feature.name()));
+        negotiated.stream().sorted().forEach(feature -> features.add(feature.wireName()));
         enqueue(envelope(
                 ProtocolMessageKind.RESPONSE, "initialized", request.messageId(),
                 request.sessionId(), request.runId(), Optional.empty(), responsePayload), true);
@@ -314,6 +317,16 @@ public final class StableProtocolHandler implements AutoCloseable {
                 .put("modelTurns", result.modelTurns())
                 .put("toolCalls", result.toolCalls());
         result.finalText().ifPresent(text -> payload.put("text", text));
+        application.taskBoardSnapshot().ifPresent(board -> {
+            long pending = board.tasks().values().stream()
+                    .filter(task -> task.status()
+                            != io.github.liumaishenjian.ccjava.domain.task.TaskStatus.COMPLETED)
+                    .count();
+            long recovery = board.tasks().values().stream()
+                    .filter(io.github.liumaishenjian.ccjava.domain.task.TaskItemView::recoveryRequired)
+                    .count();
+            payload.put("pendingTaskCount", pending).put("recoveryTaskCount", recovery);
+        });
         enqueue(envelope(
                 ProtocolMessageKind.EVENT, "run.terminal", request.messageId(),
                 Optional.of(result.sessionId().value()), Optional.of(result.runId().value()),
@@ -426,6 +439,46 @@ public final class StableProtocolHandler implements AutoCloseable {
         ArrayNode stable = payload.putArray("stableEnabled"); view.stableEnabled().forEach(stable::add);
         ArrayNode experimental = payload.putArray("experimentalEnabled"); view.experimentalEnabled().forEach(experimental::add);
         respond(request, "governance.current", payload);
+    }
+
+    private void taskSnapshot(ProtocolEnvelope request) throws ProtocolCodecException {
+        rejectUnknown(request.payload(), TASK_SNAPSHOT_FIELDS);
+        int limit = positiveInt(request.payload(), "limit", 25);
+        if (limit > 50) throw failAccepted(request, "TASK_LIMIT_INVALID");
+        long cursor = 0;
+        JsonNode rawCursor = request.payload().get("cursor");
+        if (rawCursor != null && !rawCursor.isNull()) {
+            if (!rawCursor.isTextual() || !rawCursor.asText().matches("task-[1-9][0-9]*")) {
+                throw failAccepted(request, "TASK_CURSOR_INVALID");
+            }
+            try { cursor = Long.parseLong(rawCursor.asText().substring(5)); }
+            catch (NumberFormatException invalid) { throw failAccepted(request, "TASK_CURSOR_INVALID"); }
+        }
+        var snapshot = application.taskBoardSnapshot()
+                .orElseThrow(() -> failAccepted(request, "TASK_BOARD_UNAVAILABLE"));
+        ObjectNode payload = codec.objectNode().put("schema", "task-list-v1")
+                .put("boardRevision", snapshot.revision()).put("totalTasks", snapshot.tasks().size());
+        ArrayNode tasks = payload.putArray("tasks");
+        long last = cursor;
+        boolean hasMore = false;
+        for (var entry : snapshot.tasks().entrySet()) {
+            if (entry.getKey().sequence() <= cursor) continue;
+            if (tasks.size() >= limit) { hasMore = true; break; }
+            var task = entry.getValue();
+            ObjectNode item = codec.objectNode().put("taskId", task.id().value())
+                    .put("revision", task.revision()).put("status", task.status().name())
+                    .put("subject", task.subject()).put("blocked", task.blocked())
+                    .put("recoveryRequired", task.recoveryRequired());
+            task.owner().ifPresent(owner -> item.put("owner", owner.value()));
+            task.activeForm().ifPresent(value -> item.put("activeForm", value));
+            ArrayNode blockers = item.putArray("blockerIds");
+            task.activeBlockers().forEach(blocker -> blockers.add(blocker.value()));
+            tasks.add(item);
+            last = task.id().sequence();
+        }
+        payload.put("hasMore", hasMore);
+        if (hasMore) payload.put("nextCursor", "task-" + last);
+        respond(request, "task.snapshot", payload);
     }
 
     private ObjectNode sessionEntry(io.github.liumaishenjian.ccjava.core.session.SessionIndexEntry entry) {
@@ -557,7 +610,7 @@ public final class StableProtocolHandler implements AutoCloseable {
                 throw new ProtocolCodecException("FEATURES");
             }
             try {
-                if (!result.add(ProtocolFeature.valueOf(item.asText()))) {
+                if (!result.add(ProtocolFeature.fromWireName(item.asText()))) {
                     throw new ProtocolCodecException("FEATURES_DUPLICATE");
                 }
             } catch (IllegalArgumentException unknown) {

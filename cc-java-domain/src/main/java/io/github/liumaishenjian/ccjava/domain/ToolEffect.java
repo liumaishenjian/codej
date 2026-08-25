@@ -19,6 +19,12 @@ public enum ToolEffect {
     /** 只写当前 Session 独占的 PlanArtifact，不触碰 Workspace。 */
     PLAN_ARTIFACT_WRITE,
 
+    /** 读取当前 Session 内部状态，不读取 Workspace；仅可信内置 Task Tool 可默认使用。 */
+    READ_SESSION_STATE,
+
+    /** 修改当前 Session 内部状态，不触碰 Workspace；仅可信内置 Task Tool 可默认使用。 */
+    WRITE_SESSION_STATE,
+
     /** 暂停当前模型循环并等待结构化用户选择。 */
     USER_INTERACTION,
 

@@ -143,6 +143,8 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
     private io.github.liumaishenjian.ccjava.cli.subagent.FileAgentDefinitionCatalog agentDefinitions;
     private io.github.liumaishenjian.ccjava.cli.subagent.FileChildTaskJournal childTaskJournal;
     private io.github.liumaishenjian.ccjava.core.subagent.AgentSupervisor agentSupervisor;
+    private final boolean durableTaskTools;
+    private List<io.github.liumaishenjian.ccjava.core.AgentTool> taskTools = List.of();
     private volatile io.github.liumaishenjian.ccjava.core.subagent.ChildTaskObserver childTaskObserver =
             io.github.liumaishenjian.ccjava.core.subagent.ChildTaskObserver.noop();
     private ModelDiagnostics diagnosticResource;
@@ -559,6 +561,7 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
             checkedModel = Objects.requireNonNull(model, "model 不能为空");
             downstream = Objects.requireNonNull(eventSink, "eventSink 不能为空");
             this.options = Objects.requireNonNull(options, "options 不能为空");
+            this.durableTaskTools = productionExtensions;
             approvals = Objects.requireNonNull(approvalHandler, "approvalHandler 不能为空");
             this.approvalHandler = approvals;
         } catch (RuntimeException | Error failure) {
@@ -720,6 +723,10 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
             openResult = sessions.open(options.sessionOpenRequest(), spec);
             verifySkillRecovery(openResult);
             session = openResult.session();
+            if (durableTaskTools) {
+                initializeTaskBoard();
+                scope.set(buildScope(withTaskTools(scope.get().configuration())));
+            }
             initializeSubagents();
             return session.id();
         }
@@ -1954,6 +1961,18 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
     }
 
     /**
+     * 返回当前 durable Session Task Board 的不可变展示快照。
+     *
+     * <p>该只读 seam 供 Session Command/stable protocol 使用，不暴露可变服务，也不把 Task List
+     * 转换成 Plan。易失测试装配和只读 Inspect Session 返回 empty。</p>
+     *
+     * @return 当前 Board 快照；没有 durable writer 时为空
+     */
+    public Optional<io.github.liumaishenjian.ccjava.domain.task.TaskBoardSnapshot> taskBoardSnapshot() {
+        return sessions.taskBoard(session.id()).map(io.github.liumaishenjian.ccjava.core.task.TaskListService::snapshot);
+    }
+
+    /**
      * 有界等待子任务终态；超时返回当时的状态。
      *
      * @param id 子任务 identity
@@ -2523,7 +2542,12 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         var skillTools = skills == null
                 ? java.util.stream.Stream.<io.github.liumaishenjian.ccjava.core.AgentTool>empty()
                 : skills.activationTools().stream();
-        var base = java.util.stream.Stream.concat(java.util.stream.Stream.concat(workspaceBootstrap.tools().stream(), webSearchTool.stream()), skillTools)
+        var base = java.util.stream.Stream.concat(
+                        java.util.stream.Stream.concat(
+                                java.util.stream.Stream.concat(
+                                        workspaceBootstrap.tools().stream(), webSearchTool.stream()),
+                                taskTools.stream()),
+                        skillTools)
                 .filter(tool -> tool.definition().source() == ToolSource.BUILT_IN);
         return new ToolRegistry(agentSupervisor == null ? base.toList()
                 : java.util.stream.Stream.concat(base,
@@ -2551,7 +2575,8 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                 extensions.hooks(),
                 () -> agentSupervisor,
                 options.executionBackend(),
-                options.executionShell());
+                options.executionShell(),
+                request -> childTaskBoardAccess(request));
         var total = new io.github.liumaishenjian.ccjava.domain.subagent.ChildBudget(
                 Math.max(AgentLimits.DEFAULT.maxModelTurns() * 4, 1),
                 Math.max(AgentLimits.DEFAULT.maxToolCalls() * 4, 0), 1_000_000L, 262_144,
@@ -2582,7 +2607,9 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                 Optional.of(options.model()), options.permissionMode(), options.startupPermissionRules(),
                 java.util.stream.Stream.concat(
                                 java.util.stream.Stream.concat(
-                                        workspaceBootstrap.tools().stream(), webSearchTool.stream()),
+                                        java.util.stream.Stream.concat(
+                                                workspaceBootstrap.tools().stream(), webSearchTool.stream()),
+                                        taskTools.stream()),
                                 skills == null
                                         ? java.util.stream.Stream.<io.github.liumaishenjian.ccjava.core.AgentTool>empty()
                                         : skills.activationTools().stream())
@@ -2633,14 +2660,70 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                 plugins.runHooks());
     }
 
+    private RuntimeConfiguration withTaskTools(RuntimeConfiguration current) {
+        java.util.LinkedHashSet<String> enabled = new java.util.LinkedHashSet<>(current.enabledBuiltinTools());
+        taskTools.stream().map(tool -> tool.definition().name()).forEach(enabled::add);
+        return new RuntimeConfiguration(current.modelName(), current.permissionMode(), current.approvalReviewer(),
+                current.permissionRules(), List.copyOf(enabled), current.toolConfigurations(),
+                current.compactAnchors(), current.diagnosticsVerbosity());
+    }
+
+    private void initializeTaskBoard() {
+        io.github.liumaishenjian.ccjava.core.task.TaskListService board = sessions.taskBoard(session.id())
+                .orElseThrow(() -> new IllegalStateException("durable Task Board 不可用"));
+        java.util.function.Function<io.github.liumaishenjian.ccjava.core.ToolInvocation,
+                io.github.liumaishenjian.ccjava.domain.task.TaskBoardCapability> capabilities = invocation -> {
+            if (!session.id().equals(invocation.sessionId())) {
+                throw new SecurityException("root Task capability Session 不匹配");
+            }
+            return io.github.liumaishenjian.ccjava.core.task.TaskBoardCapabilityFactory.root(
+                    board.snapshot().boardId(), session.id(), invocation.runId());
+        };
+        io.github.liumaishenjian.ccjava.domain.task.TaskActorId rootActor =
+                new io.github.liumaishenjian.ccjava.domain.task.TaskActorId("root:" + session.id().value());
+        taskTools = List.of(
+                new io.github.liumaishenjian.ccjava.core.task.TaskCreateTool(board, capabilities),
+                new io.github.liumaishenjian.ccjava.core.task.TaskUpdateTool(board, capabilities,
+                        candidate -> candidate.equals(rootActor)),
+                new io.github.liumaishenjian.ccjava.core.task.TaskListTool(board, capabilities),
+                new io.github.liumaishenjian.ccjava.core.task.TaskGetTool(board, capabilities));
+    }
+
+    /**
+     * 把一次顶层委托中的 Task ID 提议收窄为不可扩大的 parent Board capability。
+     *
+     * <p>模型不提交 Board、owner Session、actor Session 或 Run identity；这些身份均由宿主在
+     * child scope 创建时注入。嵌套委托不继承 parent Board，防止 child 通过再次委托扩大范围。</p>
+     */
+    private Optional<io.github.liumaishenjian.ccjava.core.task.ChildTaskBoardAccess> childTaskBoardAccess(
+            io.github.liumaishenjian.ccjava.domain.subagent.ChildTaskRequest request) {
+        if (request.depth() != 1 || request.taskScope().isEmpty()) return Optional.empty();
+        io.github.liumaishenjian.ccjava.core.task.TaskListService board = sessions.taskBoard(session.id())
+                .orElseThrow(() -> new IllegalStateException("durable Task Board 不可用"));
+        var snapshot = board.snapshot();
+        if (!snapshot.tasks().keySet().containsAll(request.taskScope())) {
+            throw new IllegalArgumentException("委托 Task scope 含不存在或已删除任务");
+        }
+        io.github.liumaishenjian.ccjava.domain.task.TaskActorId childActor =
+                new io.github.liumaishenjian.ccjava.domain.task.TaskActorId(
+                        "child:" + request.delegationId().value());
+        io.github.liumaishenjian.ccjava.domain.task.TaskActorId rootActor =
+                new io.github.liumaishenjian.ccjava.domain.task.TaskActorId("root:" + session.id().value());
+        return Optional.of(new io.github.liumaishenjian.ccjava.core.task.ChildTaskBoardAccess(
+                board, childActor, request.taskScope(),
+                candidate -> candidate.equals(rootActor) || candidate.equals(childActor)));
+    }
+
     private List<io.github.liumaishenjian.ccjava.core.AgentTool> registeredTools() {
         var skillTools = skills == null ? java.util.stream.Stream.<io.github.liumaishenjian.ccjava.core.AgentTool>empty()
                 : skills.activationTools().stream();
         var external = java.util.stream.Stream.concat(
                 java.util.stream.Stream.concat(extensions.mcpTools().stream(), plugins.tools().stream()),
                 skillTools);
-        var base = java.util.stream.Stream.concat(
-                java.util.stream.Stream.concat(workspaceBootstrap.tools().stream(), webSearchTool.stream()), external);
+        var builtins = java.util.stream.Stream.concat(
+                java.util.stream.Stream.concat(workspaceBootstrap.tools().stream(), webSearchTool.stream()),
+                taskTools.stream());
+        var base = java.util.stream.Stream.concat(builtins, external);
         return agentSupervisor == null ? base.toList()
                 : java.util.stream.Stream.concat(base,
                         java.util.stream.Stream.of(new io.github.liumaishenjian.ccjava.core.subagent.DelegateAgentTool(

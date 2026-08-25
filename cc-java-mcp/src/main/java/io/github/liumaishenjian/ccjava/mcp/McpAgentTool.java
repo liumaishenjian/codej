@@ -64,7 +64,7 @@ public final class McpAgentTool implements AgentTool {
                 Thread.ofVirtual().name("cc-java-mcp-tool-", 0).factory());
         var future = executor.submit(() -> client.callTool(
                 remoteName,
-                invocation.call().arguments().values(),
+                invocation.call().arguments().jsonValues(),
                 definition.defaultTimeout(),
                 invocation.cancellationToken()));
         try (io.github.liumaishenjian.ccjava.core.CancellationToken.Registration registration =

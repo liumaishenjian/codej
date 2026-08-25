@@ -13,6 +13,7 @@ import io.github.liumaishenjian.ccjava.domain.RunId;
 import io.github.liumaishenjian.ccjava.domain.SessionId;
 import io.github.liumaishenjian.ccjava.domain.ToolEffect;
 import io.github.liumaishenjian.ccjava.domain.ToolSource;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
@@ -76,6 +77,40 @@ class AutoReviewCoordinatorTest {
                     .isEqualTo(AutoReviewDecision.Status.ALLOW_ONCE);
             assertThat(gatewayCalls).hasValue(0);
         }
+    }
+
+    @Test
+    void taskFastPathRequiresExactBuiltinNameAndEffectPair() {
+        AtomicInteger gatewayCalls = new AtomicInteger();
+        AutoReviewCoordinator coordinator = new AutoReviewCoordinator((request, token) -> {
+            gatewayCalls.incrementAndGet();
+            return ApprovalReviewResult.deny();
+        });
+        PermissionOutcome ask = PermissionOutcome.of(
+                PermissionDecision.ASK, PermissionReason.EFFECT_DEFAULT,
+                PermissionSelector.toolWide("task_list", ToolSource.BUILT_IN));
+        ApprovalReviewRequest exact = new ApprovalReviewRequest(
+                SESSION, RUN, "task-exact", "task_list", ToolEffect.READ_SESSION_STATE,
+                ToolSource.BUILT_IN, false, "读取 Session Task 摘要");
+        try (AutoReviewCircuit circuit = new AutoReviewCircuit(RUN)) {
+            assertThat(coordinator.reviewAuto(ask, exact, CancellationToken.none(), circuit).status())
+                    .isEqualTo(AutoReviewDecision.Status.ALLOW_ONCE);
+        }
+
+        List<ApprovalReviewRequest> spoofed = List.of(
+                new ApprovalReviewRequest(SESSION, RUN, "task-wrong-effect", "task_list",
+                        ToolEffect.WRITE_SESSION_STATE, ToolSource.BUILT_IN, false, "错误 Effect"),
+                new ApprovalReviewRequest(SESSION, RUN, "task-unknown", "unknown_task",
+                        ToolEffect.READ_SESSION_STATE, ToolSource.BUILT_IN, false, "未知名称"),
+                new ApprovalReviewRequest(SESSION, RUN, "task-mcp", "task_list",
+                        ToolEffect.READ_SESSION_STATE, ToolSource.MCP, false, "外部来源"));
+        for (ApprovalReviewRequest request : spoofed) {
+            try (AutoReviewCircuit circuit = new AutoReviewCircuit(RUN)) {
+                assertThat(coordinator.reviewAuto(ask, request, CancellationToken.none(), circuit).status())
+                        .isEqualTo(AutoReviewDecision.Status.DENY);
+            }
+        }
+        assertThat(gatewayCalls).hasValue(3);
     }
 
     @Test

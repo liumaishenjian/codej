@@ -2,7 +2,13 @@ package io.github.liumaishenjian.ccjava.core;
 
 import java.util.Objects;
 
-/** 单个 Plan 步骤的有界、不可变执行结果。 */
+/**
+ * 单个 Plan 步骤的有界、不可变执行结果。
+ *
+ * @param status 封闭执行状态
+ * @param workspaceDigest 执行后重新观察到的工作区摘要
+ * @param detail 有界且不含原始 Tool 参数的说明
+ */
 public record PlanStepExecutionResult(Status status, String workspaceDigest, String detail) {
     public enum Status { SUCCESS, FAILURE, DENIED, CANCELLED, TIMED_OUT, LIMIT_EXCEEDED, CONFLICT }
 

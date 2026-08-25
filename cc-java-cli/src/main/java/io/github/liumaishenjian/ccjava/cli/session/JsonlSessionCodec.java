@@ -40,6 +40,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Objects;
 import java.util.Set;
 import tools.jackson.core.StreamReadFeature;
 import tools.jackson.databind.JsonNode;
@@ -74,6 +75,7 @@ final class JsonlSessionCodec {
     private final ObjectMapper mapper = JsonMapper.builder()
             .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
             .build();
+    private final TaskJournalJson taskJson = new TaskJournalJson(mapper);
 
     ObjectNode record(long sequence, String type) {
         ObjectNode root = mapper.createObjectNode();
@@ -154,7 +156,7 @@ final class JsonlSessionCodec {
             ObjectNode callNode = mapper.createObjectNode();
             callNode.put("id", checkedIdentifier(call.id(), "callId"));
             callNode.put("name", checkedIdentifier(call.name(), "toolName"));
-            JsonNode arguments = mapper.valueToTree(call.arguments().values());
+            JsonNode arguments = mapper.valueToTree(call.arguments().jsonValues());
             validateJsonShape(arguments);
             callNode.set("arguments", arguments);
             calls.add(callNode);
@@ -240,6 +242,18 @@ final class JsonlSessionCodec {
         root.put("runId", runId.value());
         root.put("stopReason", checkedIdentifier(stopReason, "stopReason"));
         return root;
+    }
+
+    /** 编码一次 durable-before-visible Task mutation。 */
+    ObjectNode encodeTaskMutation(long sequence,
+            io.github.liumaishenjian.ccjava.core.task.TaskMutationEvent event) {
+        return taskJson.encodeMutation(sequence, event);
+    }
+
+    /** 编码 Fork 目标 Board 的 lineage seed。 */
+    ObjectNode encodeTaskBoardSeed(long sequence,
+            io.github.liumaishenjian.ccjava.core.task.TaskBoardSeed seed) {
+        return taskJson.encodeSeed(sequence, seed);
     }
 
     ObjectNode encodePlanArtifact(long sequence, PlanArtifact artifact) {
@@ -402,6 +416,7 @@ final class JsonlSessionCodec {
         Map<String, CheckpointRecordState> checkpoints = new LinkedHashMap<>();
         Optional<PlanRecoveryProjection> plan = Optional.empty();
         Optional<PlanArtifact> planArtifact = Optional.empty();
+        Optional<io.github.liumaishenjian.ccjava.domain.task.TaskBoardSnapshot> taskSnapshot = Optional.empty();
         Set<String> activeRuns = new HashSet<>();
         SessionId sessionId = null;
         SessionSpec spec = null;
@@ -666,6 +681,24 @@ final class JsonlSessionCodec {
                     }
                     checkpoint.undone = true;
                 }
+                case "task.mutation.succeeded" -> {
+                    try {
+                        var event = taskJson.decodeEvent(record, taskSnapshot);
+                        taskSnapshot = Optional.of(event.snapshot());
+                    }
+                    catch (RuntimeException invalidTask) {
+                        throw invalid("INVALID_RECORD", "Task mutation record 无效");
+                    }
+                }
+                case "task.board.forked" -> {
+                    try {
+                        if (taskSnapshot.isPresent()) throw new IllegalArgumentException("duplicate task seed");
+                        taskSnapshot = Optional.of(taskJson.decodeSeed(record).snapshot());
+                    }
+                    catch (RuntimeException invalidTask) {
+                        throw invalid("INVALID_RECORD", "Task fork record 无效");
+                    }
+                }
                 case "run.completed" -> {
                     String run = requiredText(record, "runId", MAX_IDENTIFIER_CHARS);
                     if (!activeRuns.remove(run)) {
@@ -709,6 +742,38 @@ final class JsonlSessionCodec {
                 skillRecords,
                 plan,
                 planArtifact);
+    }
+
+    /** 从已通过主 replay 的 canonical lines 重建 Task Board 事件投影。 */
+    TaskJournalProjection replayTaskBoard(List<String> lines) {
+        ArrayList<io.github.liumaishenjian.ccjava.core.task.TaskMutationEvent> events = new ArrayList<>();
+        Optional<io.github.liumaishenjian.ccjava.core.task.TaskBoardSeed> seed = Optional.empty();
+        Optional<io.github.liumaishenjian.ccjava.domain.task.TaskBoardSnapshot> snapshot = Optional.empty();
+        for (String line : lines) {
+            ObjectNode record = decode(line);
+            String type = requiredText(record, "recordType", MAX_IDENTIFIER_CHARS);
+            if ("task.board.forked".equals(type)) {
+                if (seed.isPresent() || !events.isEmpty()) throw invalid("INVALID_RECORD", "Task fork seed 顺序无效");
+                try {
+                    seed = Optional.of(taskJson.decodeSeed(record));
+                    snapshot = Optional.of(seed.orElseThrow().snapshot());
+                }
+                catch (RuntimeException failure) { throw invalid("INVALID_RECORD", "Task fork seed 无效"); }
+            } else if ("task.mutation.succeeded".equals(type)) {
+                try {
+                    var event = taskJson.decodeEvent(record, snapshot);
+                    events.add(event);
+                    snapshot = Optional.of(event.snapshot());
+                }
+                catch (RuntimeException failure) { throw invalid("INVALID_RECORD", "Task mutation 无效"); }
+            }
+        }
+        return new TaskJournalProjection(seed, events);
+    }
+
+    record TaskJournalProjection(Optional<io.github.liumaishenjian.ccjava.core.task.TaskBoardSeed> seed,
+            List<io.github.liumaishenjian.ccjava.core.task.TaskMutationEvent> events) {
+        TaskJournalProjection { seed = Objects.requireNonNull(seed); events = List.copyOf(events); }
     }
 
     private PlanRecoveryProjection decodePlanProjection(
@@ -814,7 +879,7 @@ final class JsonlSessionCodec {
             errorNode.put("category", error.category().name());
             errorNode.put("retryable", error.retryable());
             errorNode.put("message", checkedText(error.message(), "toolError.message"));
-            JsonNode details = mapper.valueToTree(error.details().values());
+            JsonNode details = mapper.valueToTree(error.details().jsonValues());
             validateJsonShape(details);
             errorNode.set("details", details);
             node.set("error", errorNode);
@@ -828,7 +893,7 @@ final class JsonlSessionCodec {
                 metadataNode.put("knownOriginalCharacters", value));
         metadataNode.put("returnedItems", metadata.returnedItems());
         metadataNode.put("filteredItems", metadata.filteredItems());
-        JsonNode continuation = mapper.valueToTree(metadata.continuation().values());
+        JsonNode continuation = mapper.valueToTree(metadata.continuation().jsonValues());
         validateJsonShape(continuation);
         metadataNode.set("continuation", continuation);
         node.set("metadata", metadataNode);

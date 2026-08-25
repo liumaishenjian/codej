@@ -28,12 +28,23 @@ public record AgentLimits(int maxModelTurns, int maxToolCalls, Duration maxDurat
     /** 普通交互的独立绝对 Tool ceiling。 */
     public static final int INTERACTIVE_ABSOLUTE_TOOL_CALLS = 256;
 
-    /** 使用默认五分钟创建显式硬预算。 */
+    /**
+     * 使用默认五分钟创建显式硬预算。
+     *
+     * @param maxModelTurns 模型回合硬上限
+     * @param maxToolCalls Tool Call 硬上限
+     */
     public AgentLimits(int maxModelTurns, int maxToolCalls) {
         this(maxModelTurns, maxToolCalls, DEFAULT.maxDuration);
     }
 
-    /** 创建显式硬预算。 */
+    /**
+     * 创建显式硬预算。
+     *
+     * @param maxModelTurns 模型回合硬上限
+     * @param maxToolCalls Tool Call 硬上限
+     * @param maxDuration Run 最大墙钟时间
+     */
     public AgentLimits(int maxModelTurns, int maxToolCalls, Duration maxDuration) {
         this(maxModelTurns, maxToolCalls, maxDuration, AgentBudgetPolicy.EXPLICIT_HARD,
                 maxModelTurns, maxToolCalls);

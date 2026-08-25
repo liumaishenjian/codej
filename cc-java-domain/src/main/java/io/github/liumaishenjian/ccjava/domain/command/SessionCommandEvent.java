@@ -34,9 +34,69 @@ public record SessionCommandEvent(SessionCommandKind kind, CommandId commandId, 
 
     /** 命令 Event 的封闭白名单 payload。 */
     public sealed interface SessionCommandPayload permits EmptyPayload, HelpPayload, ContextPayload, DoctorPayload,
-            PermissionsPayload, ResumePayload, PlanPayload { }
+            PermissionsPayload, ResumePayload, TaskListPayload, PlanPayload { }
 
-    /** 项目计划的有界状态投影；不包含工具参数或 Transcript。 */
+    /**
+     * TUI 使用的有界 Task Board 展示投影。
+     *
+     * <p>该 payload 不包含 description、metadata、claim Run 或时间戳；最多 50 项，避免把
+     * canonical Board 全量复制进 stdio 单行。{@code truncated} 明确表示仍有未展示任务。</p>
+     *
+     * @param boardRevision 当前 Board revision
+     * @param totalTasks 当前可见任务总数
+     * @param truncated 是否因展示上限省略任务
+     * @param tasks 稳定 TaskId 顺序的安全摘要
+     */
+    public record TaskListPayload(long boardRevision, int totalTasks, boolean truncated,
+                                  List<TaskView> tasks) implements SessionCommandPayload {
+        public TaskListPayload {
+            if (boardRevision < 0 || totalTasks < 0) throw new IllegalArgumentException("Task 计数无效");
+            tasks = List.copyOf(Objects.requireNonNull(tasks, "tasks 不能为空"));
+            if (tasks.size() > 50 || totalTasks < tasks.size()) throw new IllegalArgumentException("Task 投影上限无效");
+        }
+    }
+
+    /**
+     * 单个 Task 的 TUI 安全摘要。
+     *
+     * @param taskId Task 标识
+     * @param revision Task revision
+     * @param status 公开状态
+     * @param subject 用户可见摘要
+     * @param blocked 是否存在未完成依赖
+     * @param blockerIds 未完成依赖 ID
+     * @param owner 可选 owner
+     * @param activeForm 可选当前动作短语
+     * @param recoveryRequired 是否必须显式恢复 claim
+     */
+    public record TaskView(String taskId, long revision, String status, String subject,
+                           boolean blocked, List<String> blockerIds, String owner,
+                           String activeForm, boolean recoveryRequired) {
+        public TaskView {
+            taskId = boundedSafeId(taskId);
+            if (revision < 1) throw new IllegalArgumentException("Task revision 无效");
+            status = boundedEnum(status, "status");
+            subject = boundedText(subject, "subject", 200);
+            blockerIds = List.copyOf(Objects.requireNonNull(blockerIds, "blockerIds 不能为空"));
+            if (blockerIds.size() > 32) throw new IllegalArgumentException("Task blocker 过多");
+            blockerIds = blockerIds.stream().map(SessionCommandEvent::boundedSafeId).toList();
+            owner = owner == null ? null : boundedSafeId(owner);
+            activeForm = activeForm == null ? null : boundedText(activeForm, "activeForm", 200);
+        }
+    }
+
+    /**
+     * 项目计划的有界状态投影；不包含工具参数或 Transcript。
+     *
+     * @param planId Plan 标识
+     * @param status Plan 状态
+     * @param approvalGate 审批 Gate
+     * @param nextStep 下一步骤序号
+     * @param activeStep 活动步骤序号
+     * @param objective 规划目标
+     * @param steps 有界步骤投影
+     * @param workspaceDigest 工作区摘要
+     */
     public record PlanPayload(String planId, String status, String approvalGate, Integer nextStep,
                               Integer activeStep, String objective, List<PlanStepView> steps,
                               String workspaceDigest) implements SessionCommandPayload {
@@ -51,7 +111,14 @@ public record SessionCommandEvent(SessionCommandKind kind, CommandId commandId, 
         }
     }
 
-    /** 单个计划步骤的安全展示。 */
+    /**
+     * 单个计划步骤的安全展示。
+     *
+     * @param ordinal 步骤序号
+     * @param title 标题
+     * @param detail 有界详情
+     * @param expectedDigest 预期工作区摘要
+     */
     public record PlanStepView(int ordinal, String title, String detail, String expectedDigest) {
         public PlanStepView {
             if (ordinal < 1) throw new IllegalArgumentException("ordinal 非法");

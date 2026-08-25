@@ -17,7 +17,7 @@ public final class DelegateAgentTool implements AgentTool {
     private static final Set<String> FIELDS = Set.of(
             "definition", "prompt", "tools", "background", "worktree",
             "maxModelTurns", "maxToolCalls", "maxInputTokens", "maxOutputCharacters",
-            "timeoutSeconds");
+            "timeoutSeconds", "taskIds");
     private final AgentSupervisor supervisor;
     private final java.util.function.Supplier<DelegationId> delegationIds;
     private final int provenanceDepth;
@@ -105,14 +105,23 @@ public final class DelegateAgentTool implements AgentTool {
             if (!(element instanceof String name) || name.isBlank()) throw new IllegalArgumentException("Tool 名无效");
             return name;
         }).collect(java.util.stream.Collectors.toUnmodifiableSet());
+        Set<io.github.liumaishenjian.ccjava.domain.task.TaskId> taskScope = listValue(value,"taskIds").stream()
+                .map(DelegateAgentTool::taskId)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
         return new ChildTaskRequest(delegationIds.get(),new AgentDefinitionId(definition),prompt,tools,
-                new ChildBudget(turns,calls,tokens,output,Duration.ofSeconds(seconds)),background,provenanceDepth,worktree);
+                new ChildBudget(turns,calls,tokens,output,Duration.ofSeconds(seconds)),background,provenanceDepth,
+                worktree,taskScope);
     }
     private static String required(JsonObject value,String field){return value.string(field).filter(v->!v.isBlank()).orElseThrow();}
     private static boolean booleanValue(JsonObject value,String field,boolean fallback){Object v=value.values().get(field);if(v==null)return fallback;if(!(v instanceof Boolean checked))throw new IllegalArgumentException();return checked;}
     private static int intValue(JsonObject value,String field,int fallback){Object v=value.values().get(field);if(v==null)return fallback;if(!(v instanceof Number number)||number.longValue()!=number.doubleValue()||number.longValue()<Integer.MIN_VALUE||number.longValue()>Integer.MAX_VALUE)throw new IllegalArgumentException();return number.intValue();}
     private static long longValue(JsonObject value,String field,long fallback){Object v=value.values().get(field);if(v==null)return fallback;if(!(v instanceof Number number)||number.longValue()!=number.doubleValue())throw new IllegalArgumentException();return number.longValue();}
     private static List<?> listValue(JsonObject value,String field){Object v=value.values().get(field);if(v==null)return List.of();if(!(v instanceof List<?> list))throw new IllegalArgumentException();return list;}
+    private static io.github.liumaishenjian.ccjava.domain.task.TaskId taskId(Object value){
+        if (!(value instanceof String text) || !text.matches("task-[1-9][0-9]*")) throw new IllegalArgumentException();
+        try{return new io.github.liumaishenjian.ccjava.domain.task.TaskId(Long.parseLong(text.substring(5)));}
+        catch(NumberFormatException invalid){throw new IllegalArgumentException();}
+    }
     private static String render(ChildTaskReport report){return "taskId="+report.taskId().value()+"; status="+report.status().name().toLowerCase(Locale.ROOT)
             +"; failure="+report.failureCode().name().toLowerCase(Locale.ROOT)+"; modelTurns="+report.modelTurns()+"; toolCalls="+report.toolCalls()
             +"; verified="+report.verified()+"; summary="+report.summary()

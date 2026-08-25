@@ -1,6 +1,6 @@
 import {useEffect, useReducer, useRef, useState} from 'react';
 import {Box, Static, Text, useApp, useInput, usePaste, useWindowSize} from 'ink';
-import {initialTuiState, reduceTuiState} from './state.js';
+import {initialTuiState, orderedSessionTasks, reduceTuiState} from './state.js';
 import type {ProtocolEvent} from './protocol.js';
 import type {ProviderLoginRequest, ProviderLoginResult, RunHandshakeNotice} from './stdio-client.js';
 import type {
@@ -179,7 +179,7 @@ export interface AgentClient {
   cancelTask?(taskId: string): string;
   keepTaskWorktree?(taskId: string): string;
   removeTaskWorktree?(taskId: string): string;
-  sessionCommand?(commandId: string, intent: 'help' | 'clear' | 'compact' | 'context' | 'doctor' | 'model' | 'permissions' | 'resume' | 'plan-status' | 'plan' | 'plan-approve' | 'plan-reject' | 'plan-step-begin' | 'plan-step-complete' | 'plan-execute', arguments_: Readonly<Record<string, unknown>>): string;
+  sessionCommand?(commandId: string, intent: 'help' | 'clear' | 'compact' | 'context' | 'doctor' | 'model' | 'permissions' | 'resume' | 'tasks' | 'plan-status' | 'plan' | 'plan-approve' | 'plan-reject' | 'plan-step-begin' | 'plan-step-complete' | 'plan-execute', arguments_: Readonly<Record<string, unknown>>): string;
   providerControl?(controlId: string, intent: 'providers.configure' | 'providers.add' | 'auth.list' | 'auth.probe' | 'auth.logout' | 'models.list' | 'models.use' | 'models.add' | 'models.remove', arguments_: Readonly<Record<string, unknown>>): string;
   providerLogin?(request: ProviderLoginRequest): Promise<ProviderLoginResult>;
   cancelProviderLogin?(): void;
@@ -993,6 +993,13 @@ export function AgentTui({client}: AgentTuiProps) {
       }
       return;
     }
+    if (state.taskPanelOpen) {
+      if (key.escape) dispatch({type: 'task.panel.close'});
+      else if (key.upArrow) dispatch({type: 'task.panel.move', delta: -1});
+      else if (key.downArrow) dispatch({type: 'task.panel.move', delta: 1});
+      else if (key.return) dispatch({type: 'task.panel.toggle-detail'});
+      return;
+    }
     const currentPlanFeedback = planFeedbackInputRef.current;
     if (currentPlanFeedback !== undefined) {
       if (key.escape) {
@@ -1605,7 +1612,8 @@ export function AgentView({state, composer, input = '', columns, rows, composerL
   const viewportRows = rows === undefined
     ? undefined
     : Math.max(5, Math.floor(rows));
-  const overlayBlocksComposer = connectWizard !== undefined || permissionPicker !== undefined;
+  const overlayBlocksComposer = connectWizard !== undefined || permissionPicker !== undefined
+    || state.taskPanelOpen;
   if (connectWizard !== undefined && connectWizard.required) {
     return <Box flexDirection="column">
       <Text>
@@ -1694,6 +1702,7 @@ export function AgentView({state, composer, input = '', columns, rows, composerL
         questionPicker={questionPicker}
         spinnerGlyph={spinnerGlyph}
       />)}
+      <SessionTaskPanel state={state} />
       <ChildTaskPanel state={state} />
       <CheckpointPanel state={state} />
       {historicalToolDetailRun === undefined ? null : (
@@ -1896,6 +1905,59 @@ function ChildTaskPanel({state}: {readonly state: AgentViewProps['state']}) {
           {task.worktreeDisposition === undefined ? '' : ` · worktree ${task.worktreeDisposition}`}
         </Text>
       ))}
+    </Box>
+  );
+}
+
+function SessionTaskPanel({state}: {readonly state: AgentViewProps['state']}) {
+  if (!state.taskPanelOpen) return null;
+  const board = state.taskBoard;
+  const tasks = orderedSessionTasks(board?.tasks ?? []);
+  let previousGroup = '';
+  return (
+    <Box marginTop={1} flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1}>
+      <Text bold color="cyan">Task List{board === undefined ? '' : ` · rev ${board.boardRevision}`}</Text>
+      {board === undefined
+        ? <Text dimColor>正在读取 Task List…</Text>
+        : tasks.length === 0
+          ? <Text dimColor>当前 Session 还没有执行任务</Text>
+          : tasks.map(task => {
+            const group = task.status === 'IN_PROGRESS'
+              ? task.recoveryRequired ? '需要恢复' : '进行中'
+              : task.status === 'PENDING' ? task.blocked ? '已阻塞' : '待处理' : '最近完成';
+            const showGroup = group !== previousGroup;
+            previousGroup = group;
+            const selected = task.taskId === state.selectedTaskId;
+            const prefix = selected ? '❯' : ' ';
+            const symbol = task.status === 'COMPLETED' ? '✓'
+              : task.status === 'IN_PROGRESS' ? '—' : task.blocked ? '⊘' : '○';
+            return (
+              <Box key={task.taskId} flexDirection="column">
+                {showGroup ? <Text bold dimColor>{group}</Text> : null}
+                <Text
+                  {...(selected ? {color: 'cyanBright' as const}
+                    : task.recoveryRequired ? {color: 'yellow' as const} : {})}
+                  dimColor={task.status === 'COMPLETED'}
+                  strikethrough={task.status === 'COMPLETED'}
+                >
+                  {prefix} {symbol} {task.taskId} · {task.subject}
+                </Text>
+                {selected && state.taskDetailOpen ? (
+                  <Text dimColor>
+                    {'    '}状态 {task.status.toLowerCase()}
+                    {task.owner === undefined ? '' : ` · owner ${task.owner}`}
+                    {task.activeForm === undefined ? '' : ` · ${task.activeForm}`}
+                    {task.blockerIds.length === 0 ? '' : ` · blocked by ${task.blockerIds.join(', ')}`}
+                    {task.recoveryRequired ? ' · 需要显式恢复认领' : ''}
+                  </Text>
+                ) : null}
+              </Box>
+            );
+          })}
+      {board?.truncated === true
+        ? <Text dimColor>仅显示 {board.tasks.length}/{board.totalTasks} 项；使用模型 Task 工具分页查看其余任务</Text>
+        : null}
+      <Text dimColor>↑/↓ 选择　Enter 详情　Esc 关闭</Text>
     </Box>
   );
 }

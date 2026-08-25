@@ -1120,6 +1120,75 @@ Session 保存顺序为 generation prepare → 完整 `plan.artifact.saved`（�
 
 `PlanLifecyclePolicy` 是写前和 replay 共用的唯一状态链：首态限 `DRAFT/AWAITING_APPROVAL`，非终态同状态 Markdown revision 合法，终态无自环；重复 approve/reject 与 approved 后 reject 比较前后状态并跳过持久化。`AWAITING_APPROVAL -> DRAFT` 由 ADR-077 用于反馈后继续同一 planId/sessionId/revision chain。Core 的 `PlanRecoveryProjection`/`SessionRecoverySnapshot` 构造器交叉验证 document/state/artifact 的 planId、sessionId、status、digest、Gate 与游标，plan-only/artifact-only legacy 仍合法。旧 `plan.snapshot` 允许多次 append 并恢复最后一个合法状态；旧 Session 无 artifact 记录时按空值兼容。journal 比旧 manifest 快一版会 fast-forward。Fork 新 target 失败回滚只删除本次新建目录中的固定一级文件并最后删除 journal；若无法证明精确清理则保留可 Resume journal，不递归、不碰 source、不自动重放。严格 JSON proposal/parser 只作为旧内部 `PlanDocument` 兼容桥；TUI `/plan task` 只走持续 Markdown flow。artifact 不是执行步骤、Permission、Checkpoint 或 Sandbox，也绝不自动重放 Tool。
 
+### 17.3.1 S15 Session-local Task Board（ADR-088，Batch A-E）
+
+Task Board 与 `PlanArtifact`、S12 `ChildTaskReport` 和 `SUB-11` Team Board 是三个不同边界：
+
+```text
+root Session owns Task Board
+  → Core TaskListService serializes deterministic mutations
+  → canonical blockedBy + task/board revisions + tombstones
+  → derived blocks/blocked/recoveryRequired views
+  → Core Task adapters → one Tool Pipeline / Permission / PRE+POST hooks
+  → incremental Session journal + production composition / stable protocol / Ink
+
+independent child Session
+  → host-injected TaskBoardCapability
+  → parent-owned TaskListService
+  → child lifecycle remains in child Session
+```
+
+Batch A 在 `cc-java-domain` 新增框架无关的 Task identity/status/item/claim/capability/snapshot/diagnostic/result，
+在 `cc-java-core` 新增 mutation command 与同步 `TaskListService`。Core 只依赖 `Clock` 和“Run 是否终止”的纯查询
+Port，不依赖 JSON、Path、FileLock、Jackson、stdio 或 Ink。服务持有 Board high-water mark、当前 live tasks、
+tombstones、revision 与 actor/session/run/callId 幂等结果；Board 服务实例隐含 board identity。每次成功 mutation 形成一个不可分割的新快照，拒绝结果不推进 revision。成功 mutation 总预算和成功幂等索引均上限 4096；达到上限后先命中已存重试，再对新调用 Fail Closed。Session replay 从 canonical 成功事件重建计数与索引，不把内存缓存误当持久化。
+
+关键状态规则：
+
+- CLAIM 只允许未阻塞 PENDING；RESUME_CLAIM 只允许 Root 处理 recoveryRequired IN_PROGRESS；
+- IN_PROGRESS 的 EDIT/complete/release/reassign 必须校验当前 claim epoch；recoveryRequired 不能直接 EDIT/complete；
+- RELEASE 清 claim、保留 owner 并回到 PENDING；COMPLETED 只能显式 reopen 到 PENDING，且保留 owner；
+- blocked Task 不能 claim/complete；存在入边的 Task 不能删除；删除不级联；
+- canonical 只保存 blockedBy，blocks 反向扫描投影；边变更提交前在候选全图执行 DFS 环检查；
+- claim 保存 actor/run/epoch/claimedAt，CLAIM/RESUME_CLAIM 不接收命令侧 RunId，只使用宿主 capability.actorRunId；Run 终止只使 View 派生 recoveryRequired，不自动释放或重放；
+- Root capability 可管理整个 Board；Child capability 固定 actor/session/run/task scope，只能 self-claim/release 或修改授权且归属自己的 Task；
+- 所有外部 Map/Set 使用 natural order 冻结；subject/activeForm 拒绝 ISO control，description 只允许 LF/TAB；
+- 语义 no-op EDIT/DEPENDENCY 与 COMPLETED→PENDING 携带无关 claim epoch 均确定性拒绝，不产生 revision/event。
+
+Batch B 在 `cc-java-core.task` 增加恰好四个 BUILT_IN Adapter：`task_create`/`task_update` 使用
+`WRITE_SESSION_STATE`，`task_list`/`task_get` 使用 `READ_SESSION_STATE`。该放置直接适配 Core-owned
+`TaskListService`，不依赖文件系统、网络、OS、Jackson 或 Provider 类型，因而不属于 `cc-java-tools-local`；
+Domain 仍只保存框架无关协议。模型 schema 不暴露 Board/actor/Session/Run/owner/status，`task_update` 采用 flat
+schema 并由运行时按 operation 拒绝字段混用。ASSIGN/REASSIGN 的 `target_actor` 还必须通过宿主注入的
+`TaskActorDirectory`，默认只认可当前 capability actor，不能把任意格式合法字符串当成存在的 owner。
+`JsonNull.INSTANCE` 只在 schema 允许的位置区分显式 null 与字段缺失，`metadata_patch` 将 null 收敛为 removal；
+Context estimator 识别 sentinel，Provider/MCP/Session JSON 边界通过 `jsonValues()` 还原原生 null。
+
+List 按 TaskId 稳定排序，默认 25、最大 50，只返回 summary，并在 16KiB UTF-8 内语义分页、提供 continuation cursor；
+Get 在同一 Board 临界区捕获 boardRevision 与 detail，先生成完整合法 JSON，再执行 16KiB UTF-8 Gate，禁止通用字符
+截断破坏 JSON。所有 `TASK_*` diagnostic 映射为同名
+`ToolErrorCode`，错误详情只含安全 ID/revision/blocker，不回显正文或原始参数。
+
+Permission 在 DEFAULT/PLAN/ACCEPT_EDITS 中允许 Session Task state，但 Hard Denial 只放行四个精确
+name/effect/BUILT_IN 组合；显式 Deny 仍优先，MCP/Plugin spoof、错配 effect 和其他 Session-state Tool 均拒绝。
+Plan eligibility、AutoReview 与 workspace side-effect Gate 同步纳入该精确集合。四个 Tool 仍只走唯一
+`ToolExecutionPipeline`、Lifecycle/Journal seam 和 PRE_TOOL/POST_TOOL Hook，不存在平行 Task 执行机制。
+
+资源与错误严格遵循 ADR-088：live 256、依赖和单次边变更 32、文本/metadata UTF-8 上限、稳定 tombstone，
+以及封闭 `TASK_*` diagnostic。`FileSessionStore` 对成功 mutation append+force 单条增量事件，仅保存命令、可信 actor、
+revision/high-water/tombstone 与 changed Task；Resume 在线性 replay 中重建完整快照，Fork 只写一次完整 seed 并把
+IN_PROGRESS 重置为 PENDING。256 个 4 KiB description 的容量回归要求日志小于 4 MiB，防止全 Board 快照导致二次方膨胀。
+
+生产 composition 注册四个 Task Tool。Root 委托只接受最多 32 个 `taskIds` 候选，宿主重新验证存在性并以
+`child:<delegationId>` actor 注入不可伪造 scope；嵌套 child 不继承 parent Board。精确 BUILT_IN `delegate_agent` 在
+DEFAULT/ACCEPT_EDITS 中收敛为 ASK，PLAN、显式 Deny、名称/Effect 错配与其他 ToolSource 继续拒绝。
+
+stable v1 以 `task-list-v1` 协商只读 `task.snapshot`，提供 revision、TaskId cursor 和最大 50 条投影；mutation 不开放
+旁路协议。内部 stdio `/tasks` 返回活动项与最近五个完成项。Ink live region 按 recovery、in-progress、unblocked
+pending、blocked pending、recent completed 排序，支持 ↑/↓、Enter、Esc，COMPLETED 使用真实 strikethrough/dim。
+Run terminal 只追加 pending/recovery advisory，不改写 canonical final。Team shared、文件 watch/poll、peer message、
+offline owner reclaim、自动领取与 stable push subscription 保持 `SUB-11` L0。
+
 ### 17.4 File Checkpoint、Diff 与 Undo
 
 `FileCheckpointCoordinator` 通过统一 Tool Pipeline 在 `WRITE_WORKSPACE` 执行前接收 Tool 显式声明的
@@ -1954,6 +2023,7 @@ FixBug、Review 和 Test Generation 最早可在 S11 作为示例 Skill 或独�
 | [ADR-068](./adr/ADR-068-s15-controlled-web-search-contract.md) | Accepted | 固定 endpoint、BUILT_IN Network Tool、NetworkAccessPort、JDK HTTP、结果与隐私上限的独立契约 |
 | [ADR-076](./adr/ADR-076-s15-durable-markdown-plan-artifact.md) | Accepted | 部分取代 ADR-074 主体；固定 Session-owned Markdown artifact、revision/digest CAS、generation/manifest 单提交点、journal projection recovery、Fork 新 identity/重新审批与旧协议兼容 |
 | [ADR-084](./adr/ADR-084-s15-model-request-retry-hardening.md) | Accepted | 固定 production 同 Provider 11 total attempts、退避/jitter/Retry-After、deadline/cancel、stream fence、privacy-safe retry lifecycle 与 Plan failure 分流 |
+| [ADR-088](./adr/ADR-088-s15-session-task-board-contract.md) | Accepted | 固定 Session-local Task Board、四个统一 Pipeline Tool、增量 journal/Resume/Fork、root/child capability、stable task-list-v1 与 Ink `/tasks` 契约 |
 
 ## 26. 需求追踪
 
@@ -1966,6 +2036,7 @@ FixBug、Review 和 Test Generation 最早可在 S11 作为示例 Skill 或独�
 | FR-PERM-* | 13 |
 | FR-CTX-* | 16 |
 | FR-SESSION-* | 17 |
+| FR-TASK-* | 17.3.1 |
 | FR-EVENT-* | 18 |
 | NFR-001～006 | 2、3、6、11 |
 | NFR-010～015 | 13、14、15、21 |

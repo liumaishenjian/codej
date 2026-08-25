@@ -59,6 +59,17 @@ public interface AgentApplicationService extends AutoCloseable {
         return Optional.empty();
     }
 
+    /**
+     * 查询与本 Application 绑定的 canonical Session Task Board 快照。
+     *
+     * <p>基础 SDK 实现可以不支持；返回值不可用于绕过 Task Tool mutation、Permission 或 Pipeline。</p>
+     *
+     * @return 当前不可变 Board，未装配时为空
+     */
+    default Optional<io.github.liumaishenjian.ccjava.domain.task.TaskBoardSnapshot> taskBoardSnapshot() {
+        return Optional.empty();
+    }
+
     /** 进入 drain 并释放 Runtime、Session 和 Adapter 资源。 */
     @Override
     void close();

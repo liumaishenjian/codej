@@ -22,6 +22,24 @@ public enum ProtocolFeature {
     CHECKPOINT,
     /** 通过独立 stable daemon 进程承载协议。 */
     DAEMON,
+    /** 读取与 Run Tool 事件关联的 Session-local Task List v1 投影。 */
+    TASK_LIST_V1("task-list-v1"),
     /** 协商实验 Feature Gate 元数据，不改变 stable schema。 */
-    EXPERIMENTAL_FEATURE_GATES
+    EXPERIMENTAL_FEATURE_GATES;
+
+    private final String wireName;
+
+    ProtocolFeature() { this.wireName = name(); }
+    ProtocolFeature(String wireName) { this.wireName = wireName; }
+
+    /** 返回 initialize wire 上的稳定 capability 名称。 */
+    public String wireName() { return wireName; }
+
+    /** 按稳定 wire 名称解析，不把 Java enum 名泄漏为新协议。 */
+    public static ProtocolFeature fromWireName(String value) {
+        for (ProtocolFeature feature : values()) {
+            if (feature.wireName.equals(value)) return feature;
+        }
+        throw new IllegalArgumentException("未知 Protocol feature");
+    }
 }

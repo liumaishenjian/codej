@@ -362,7 +362,15 @@ public sealed interface LifecycleEvent extends AgentEvent
         }
     }
 
-    /** Runtime 对数量预算执行的一次隐私安全治理决定。 */
+    /**
+     * Runtime 对数量预算执行的一次隐私安全治理决定。
+     *
+     * @param reason 治理原因
+     * @param modelTurns 已消耗模型回合
+     * @param toolCalls 已消耗 Tool Call
+     * @param effectiveModelLimit 当前有效模型回合上限
+     * @param effectiveToolLimit 当前有效 Tool Call 上限
+     */
     record BudgetGoverned(BudgetGovernanceReason reason, int modelTurns, int toolCalls,
                            int effectiveModelLimit, int effectiveToolLimit) implements LifecycleEvent {
         /** 校验治理原因和计数。 */

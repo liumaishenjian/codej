@@ -15,7 +15,8 @@ import java.util.function.Predicate;
  * <p>System Effect 永久拒绝；Network Effect 默认也永久拒绝，仅允许已经由 Composition Root
  * 标记为 {@link ToolSource#MCP}、{@link ToolSource#PLUGIN} 的可信适配器，以及名称精确为
  * {@code web_search}、Source 为 {@link ToolSource#BUILT_IN} 的宿主内置搜索 Tool，继续进入后续
- * ASK/Rule 决策。该窄例外不适用于其他同名前缀、其他 Source 或其他 BUILT_IN Network Tool。
+ * ASK/Rule 决策。Session state effect 也只允许名称/effect 精确匹配 task_create/update/list/get 的
+ * BUILT_IN 定义；Plugin/MCP 或其他同名/同 effect 定义永久拒绝。该窄例外不适用于前缀匹配。
  * 文件写入 selector 必须具体且不得命中 Git 元数据、
  * Provider 本地配置或常见 Secret 文件。绝对路径、Traversal 与不可解释范围会被
  * selector resolver 收敛为 Tool-wide，并在写入/命令范围上拒绝。</p>
@@ -59,7 +60,17 @@ public final class DefaultHardDenialPolicy implements HardDenialPolicy {
         boolean controlledBuiltinWebSearch = effect == ToolEffect.NETWORK_OR_REMOTE
                 && definition.source() == ToolSource.BUILT_IN
                 && "web_search".equals(definition.name());
-        if (effect == ToolEffect.SYSTEM_OR_DESTRUCTIVE
+        boolean controlledBuiltinTask = definition.source() == ToolSource.BUILT_IN
+                && ((effect == ToolEffect.READ_SESSION_STATE
+                        && ("task_list".equals(definition.name()) || "task_get".equals(definition.name())))
+                    || (effect == ToolEffect.WRITE_SESSION_STATE
+                        && ("task_create".equals(definition.name()) || "task_update".equals(definition.name()))));
+        boolean controlledBuiltinDelegate = effect == ToolEffect.SYSTEM_OR_DESTRUCTIVE
+                && definition.source() == ToolSource.BUILT_IN
+                && "delegate_agent".equals(definition.name());
+        if ((effect == ToolEffect.SYSTEM_OR_DESTRUCTIVE && !controlledBuiltinDelegate)
+                || ((effect == ToolEffect.READ_SESSION_STATE || effect == ToolEffect.WRITE_SESSION_STATE)
+                    && !controlledBuiltinTask)
                 || (effect == ToolEffect.NETWORK_OR_REMOTE
                     && definition.source() != ToolSource.MCP
                     && definition.source() != ToolSource.PLUGIN

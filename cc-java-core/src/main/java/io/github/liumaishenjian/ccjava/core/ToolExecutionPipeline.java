@@ -510,7 +510,7 @@ public final class ToolExecutionPipeline {
                                     "Tool capability is unavailable while planning")),
                     ToolResolutionReason.PLAN_GATE_BLOCKED, cancellationToken);
         }
-        if (planMode != null && isPlanSideEffect(definition.effect()) && !planAllows()) {
+        if (planMode != null && isPlanSideEffect(definition) && !planAllows()) {
             return resolveWithoutExecution(session, runId, ordinal,
                     ToolResult.failure(call.id(), call.name(),
                             ToolError.of(ToolErrorCode.PLAN_GATE_BLOCKED,
@@ -709,8 +709,18 @@ public final class ToolExecutionPipeline {
                 new JsonObject(Map.of("reason", failure.code().name(), "action", "resume_session")));
     }
 
-    private static boolean isPlanSideEffect(io.github.liumaishenjian.ccjava.domain.ToolEffect effect) {
-        return effect != io.github.liumaishenjian.ccjava.domain.ToolEffect.READ_WORKSPACE;
+    private static boolean isPlanSideEffect(ToolDefinition definition) {
+        if (definition.effect() == io.github.liumaishenjian.ccjava.domain.ToolEffect.READ_WORKSPACE) return false;
+        if (definition.source() == io.github.liumaishenjian.ccjava.domain.ToolSource.BUILT_IN) {
+            return switch (definition.name()) {
+                case "task_list", "task_get" ->
+                        definition.effect() != io.github.liumaishenjian.ccjava.domain.ToolEffect.READ_SESSION_STATE;
+                case "task_create", "task_update" ->
+                        definition.effect() != io.github.liumaishenjian.ccjava.domain.ToolEffect.WRITE_SESSION_STATE;
+                default -> true;
+            };
+        }
+        return true;
     }
 
     private boolean planAllows() {

@@ -1991,6 +1991,40 @@ describe('TUI interaction polish', () => {
 });
 
 
+describe('Session Task List Ink surface', () => {
+  it('按执行优先级渲染分组、选择详情和完成项符号', () => {
+    const state: TuiState = {
+      phase: 'ready', sessionId: 'session-task', activeRunId: undefined, notice: undefined,
+      checkpoints: [], checkpointPanelOpen: false, selectedCheckpointId: undefined,
+      checkpointDiff: undefined, pendingUndoCheckpointId: undefined, checkpointUndo: undefined,
+      runs: [], taskPanelOpen: true, selectedTaskId: 'task-2',
+      taskDetailOpen: true,
+      taskBoard: {
+        boardRevision: 7, totalTasks: 4, truncated: false,
+        tasks: [
+          {taskId: 'task-4', revision: 2, subject: '已经完成', activeForm: undefined,
+            status: 'COMPLETED', owner: undefined, blocked: false, blockerIds: [], recoveryRequired: false},
+          {taskId: 'task-3', revision: 1, subject: '等待依赖', activeForm: undefined,
+            status: 'PENDING', owner: undefined, blocked: true,
+            blockerIds: ['task-2'], recoveryRequired: false},
+          {taskId: 'task-2', revision: 3, subject: '正在实现', activeForm: '编写测试',
+            status: 'IN_PROGRESS', owner: 'root', blocked: false, blockerIds: [], recoveryRequired: false},
+          {taskId: 'task-1', revision: 4, subject: '需要恢复', activeForm: undefined,
+            status: 'IN_PROGRESS', owner: undefined, blocked: false, blockerIds: [], recoveryRequired: true},
+        ],
+      },
+    };
+    const frame = render(<AgentView state={state} input="" columns={100} />).lastFrame() ?? '';
+    expect(frame).toContain('Task List · rev 7');
+    expect(frame.indexOf('需要恢复')).toBeLessThan(frame.indexOf('正在实现'));
+    expect(frame.indexOf('正在实现')).toBeLessThan(frame.indexOf('等待依赖'));
+    expect(frame).toContain('❯ — task-2 · 正在实现');
+    expect(frame).toContain('状态 in_progress · owner root · 编写测试');
+    expect(frame).toContain('✓ task-4 · 已经完成');
+    expect(frame).toContain('↑/↓ 选择　Enter 详情　Esc 关闭');
+  });
+});
+
 describe('continuous plan Ink interaction', () => {
   it('renders structured options and resumes the same active run with the selected option', async () => {
     const client = new FakeAgentClient();

@@ -33,6 +33,18 @@ class DeterministicContextReducerTest {
             new CodePointContextTokenEstimator();
 
     @Test
+    void estimatorTreatsExplicitJsonNullAsJsonNullInsteadOfUnsupportedType() {
+        java.util.LinkedHashMap<String, Object> patch = new java.util.LinkedHashMap<>();
+        patch.put("remove", null);
+        AssistantMessage message = AssistantMessage.tools(List.of(new ToolCall(
+                "call-null", "task_update", new JsonObject(java.util.Map.of("metadata_patch", patch)))));
+
+        var usage = ESTIMATOR.estimate(List.of(message), new ContextCapacity("fake", 1_000, 10, 10));
+
+        assertThat(usage.totalTokens()).isPositive();
+    }
+
+    @Test
     void estimatorClassifiesMemorySeparatelyAndIncludesItInTotal() {
         String body = "memory-body";
         MemoryContextMessage memory = new MemoryContextMessage(

@@ -1,5 +1,6 @@
 package io.github.liumaishenjian.ccjava.core;
 
+import io.github.liumaishenjian.ccjava.domain.JsonNull;
 import io.github.liumaishenjian.ccjava.domain.JsonObject;
 import io.github.liumaishenjian.ccjava.domain.ToolCall;
 import io.github.liumaishenjian.ccjava.domain.ToolError;
@@ -152,6 +153,7 @@ public final class ToolFailureFingerprintGovernance {
             for (Object item : list) out.append(canonical(item)).append(';');
             return out.append(']').toString();
         }
+        if (value == JsonNull.INSTANCE) return "null";
         if (value instanceof String text) return "s" + text.length() + ':' + text;
         if (value instanceof Boolean bool) return "b" + bool;
         if (value instanceof Number number) return "n" + new BigDecimal(number.toString()).stripTrailingZeros().toPlainString();

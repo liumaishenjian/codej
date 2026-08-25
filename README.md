@@ -66,6 +66,7 @@ codej models list --provider anthropic
 - **Coding Agent Loop**：流式响应、多轮 Tool Call、任务转向、取消、预算与明确终止状态。
 - **代码操作**：仓库搜索、文件读取、精确 Patch、新文件写入、Git Diff 和受控命令执行。
 - **Plan 工作流**：先规划、人工确认、持续执行，并用测试或检查证据决定任务是否完成。
+- **Task List**：Session 内独立维护待处理、进行中和已完成任务，支持依赖、恢复、子 Agent 授权和 `/tasks` 交互面板；它不等同于 Plan 审批文档。
 - **权限与审批**：`Plan`、`Ask for approval`、`Approve for me` 三种运行选择，以及 Allow Once、Session Grant、Deny 和 Hard Denial。
 - **会话与上下文**：Resume、Fork、Checkpoint、Diff/Undo、上下文压缩、文件记忆与项目 Instructions。
 - **扩展能力**：Hooks、MCP、Skills、Plugins、Subagent、Worktree 与后台任务统一接入运行时。

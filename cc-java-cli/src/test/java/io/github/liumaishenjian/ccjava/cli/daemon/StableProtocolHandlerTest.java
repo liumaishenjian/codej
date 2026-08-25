@@ -4,12 +4,20 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.github.liumaishenjian.ccjava.core.AgentEventSink;
+import io.github.liumaishenjian.ccjava.core.task.TaskListService;
+import io.github.liumaishenjian.ccjava.core.task.TaskMutation;
+import io.github.liumaishenjian.ccjava.core.task.TaskRunState;
+import io.github.liumaishenjian.ccjava.core.task.TaskBoardCapabilityFactory;
 import io.github.liumaishenjian.ccjava.domain.AgentEventEnvelope;
 import io.github.liumaishenjian.ccjava.domain.AgentRunRequest;
 import io.github.liumaishenjian.ccjava.domain.AgentRunResult;
 import io.github.liumaishenjian.ccjava.domain.LifecycleEvent;
 import io.github.liumaishenjian.ccjava.domain.RunId;
 import io.github.liumaishenjian.ccjava.domain.SessionId;
+import io.github.liumaishenjian.ccjava.domain.task.TaskBoardId;
+import io.github.liumaishenjian.ccjava.domain.task.TaskBoardSnapshot;
+import io.github.liumaishenjian.ccjava.domain.task.TaskCallId;
+import io.github.liumaishenjian.ccjava.domain.task.TaskMetadata;
 import io.github.liumaishenjian.ccjava.protocol.CapabilityToken;
 import io.github.liumaishenjian.ccjava.protocol.ProtocolCodecException;
 import io.github.liumaishenjian.ccjava.protocol.ProtocolEnvelope;
@@ -20,6 +28,8 @@ import io.github.liumaishenjian.ccjava.protocol.StableProtocolCodec;
 import io.github.liumaishenjian.ccjava.sdk.AgentApplicationService;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.Clock;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -138,6 +148,35 @@ class StableProtocolHandlerTest {
         assertThat(handler.takeOutput(Duration.ofMillis(10))).isEmpty();
     }
 
+    @Test
+    void taskListV1UsesWireCapabilityAndReturnsBoundedCanonicalSnapshot() throws Exception {
+        CapabilityToken token = CapabilityToken.generate();
+        TaskSnapshotApplication application = new TaskSnapshotApplication();
+        try (StableProtocolHandler handler = new StableProtocolHandler(
+                token, Set.of(ProtocolFeature.TASK_LIST_V1), application)) {
+            ObjectNode initialize = codec.objectNode().put("token", token.reveal()).put("version", "1.0");
+            initialize.putArray("features").add("task-list-v1");
+            handler.receive(encoded(request("initialize", "init-task", 1, Optional.empty(), initialize)));
+            ProtocolEnvelope initialized = next(handler);
+            assertThat(initialized.payload().path("features").toString()).contains("task-list-v1");
+
+            handler.receive(encoded(request("task.snapshot", "tasks", 2, Optional.of("task-page"),
+                    codec.objectNode().put("limit", 1))));
+            ProtocolEnvelope snapshot = next(handler);
+            assertThat(snapshot.type()).isEqualTo("task.snapshot");
+            assertThat(snapshot.payload().path("schema").asText()).isEqualTo("task-list-v1");
+            assertThat(snapshot.payload().path("tasks")).hasSize(1);
+            assertThat(snapshot.payload().path("tasks").get(0).path("taskId").asText()).isEqualTo("task-1");
+            assertThat(snapshot.payload().path("hasMore").asBoolean()).isTrue();
+            assertThat(snapshot.payload().path("nextCursor").asText()).isEqualTo("task-1");
+
+            handler.receive(encoded(request("task.snapshot", "tasks-2", 3, Optional.empty(),
+                    codec.objectNode().put("cursor", "task-1").put("limit", 25))));
+            assertThat(next(handler).payload().path("tasks").get(0).path("taskId").asText())
+                    .isEqualTo("task-2");
+        }
+    }
+
     private StableProtocolHandler handler(CapabilityToken token, AgentApplicationService application) {
         return new StableProtocolHandler(token,
                 Set.of(ProtocolFeature.RUN, ProtocolFeature.CANCEL), application);
@@ -223,6 +262,25 @@ class StableProtocolHandlerTest {
         @Override public boolean awaitTermination(Duration timeout) { return active == null; }
         @Override public Optional<RunId> activeRun() { return Optional.ofNullable(active); }
         @Override public void close() { beginDrain(); finish.countDown(); }
+    }
+
+    private static final class TaskSnapshotApplication extends FakeApplication {
+        private final TaskListService tasks;
+
+        private TaskSnapshotApplication() {
+            SessionId sessionId = new SessionId("session-1");
+            tasks = new TaskListService(new TaskBoardId("board-1"), sessionId,
+                    Clock.fixed(Instant.EPOCH, ZoneOffset.UTC), TaskRunState.noneTerminated());
+            var capability = TaskBoardCapabilityFactory.root(
+                    tasks.snapshot().boardId(), sessionId, new RunId("run-task"));
+            tasks.execute(capability, new TaskMutation.Create(new TaskCallId("create-1"), "first", "",
+                    Optional.empty(), TaskMetadata.EMPTY, List.of()));
+            tasks.execute(capability, new TaskMutation.Create(new TaskCallId("create-2"), "second", "",
+                    Optional.empty(), TaskMetadata.EMPTY, List.of()));
+        }
+
+        @Override
+        public Optional<TaskBoardSnapshot> taskBoardSnapshot() { return Optional.of(tasks.snapshot()); }
     }
 
     private static final class FloodApplication extends FakeApplication {

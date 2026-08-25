@@ -127,6 +127,12 @@ public final class HeadlessAgentApplicationService implements AgentApplicationSe
         return Optional.ofNullable(control);
     }
 
+    /** 返回同一 Headless Session 的 canonical Task Board 只读快照。 */
+    @Override
+    public Optional<io.github.liumaishenjian.ccjava.domain.task.TaskBoardSnapshot> taskBoardSnapshot() {
+        return session.taskBoardSnapshot();
+    }
+
     /**
      * 幂等且可重试地关闭；活动 Run 先 drain/cancel，再关闭 Session。
      *

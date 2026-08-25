@@ -144,6 +144,18 @@ describe('parseSlashCommand', () => {
     expect(parseSlashCommand('/bad_name').kind).toBe('invalid');
   });
 
+  it('把 /tasks 解析为无参数 Session 命令并保持 /task child 控制语义', () => {
+    expect(parseSlashCommand('/tasks')).toEqual({
+      kind: 'command', command: {intent: 'tasks', arguments: {}},
+    });
+    expect(parseSlashCommand('/tasks extra')).toEqual({
+      kind: 'invalid', message: '/tasks 不接受参数',
+    });
+    expect(parseSlashCommand('/task wait task-a')).toEqual({
+      kind: 'task', command: {action: 'wait', taskId: 'task-a', timeoutMillis: 30_000},
+    });
+  });
+
   it('renders fixed local status without server-provided text', () => {
     expect(renderSlashResult('compact', 'rejected', 'not_available'))
       .toBe('/compact 未执行：当前版本尚未提供');

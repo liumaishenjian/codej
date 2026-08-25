@@ -127,6 +127,42 @@ public enum ToolErrorCode {
     /** Plan 工件持久层损坏、不可用或无法安全收敛。 */
     PLAN_ARTIFACT_UNAVAILABLE,
 
+    /** Task identity 不存在。 */
+    TASK_NOT_FOUND,
+
+    /** Task identity 已被删除并保留 tombstone。 */
+    TASK_DELETED,
+
+    /** Task revision CAS 冲突。 */
+    TASK_REVISION_CONFLICT,
+
+    /** Task Board revision 或幂等参数冲突。 */
+    TASK_BOARD_CONFLICT,
+
+    /** Task 状态迁移或语义 no-op 无效。 */
+    TASK_INVALID_TRANSITION,
+
+    /** Task 仍被未完成依赖阻塞。 */
+    TASK_BLOCKED,
+
+    /** Task 依赖边无效。 */
+    TASK_DEPENDENCY_INVALID,
+
+    /** Task 依赖图形成环。 */
+    TASK_DEPENDENCY_CYCLE,
+
+    /** Task claim owner 或 epoch 冲突。 */
+    TASK_CLAIM_CONFLICT,
+
+    /** Task claim 所属 Run 已终止，必须显式恢复。 */
+    TASK_RECOVERY_REQUIRED,
+
+    /** Task Board capability、scope 或可信身份拒绝访问。 */
+    TASK_CAPABILITY_DENIED,
+
+    /** Task Board 资源预算已耗尽。 */
+    TASK_LIMIT_EXCEEDED,
+
     /** Runtime 阻止了没有策略变化的相同失败调用。 */
     REPEATED_FAILURE,
 

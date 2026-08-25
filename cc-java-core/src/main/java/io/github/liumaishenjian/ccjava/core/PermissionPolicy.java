@@ -88,7 +88,9 @@ public final class PermissionPolicy implements PermissionGate {
                 && definition.effect() != ToolEffect.READ_WORKSPACE
                 && definition.effect() != ToolEffect.NETWORK_OR_REMOTE
                 && definition.effect() != ToolEffect.PLAN_ARTIFACT_WRITE
-                && definition.effect() != ToolEffect.USER_INTERACTION) {
+                && definition.effect() != ToolEffect.USER_INTERACTION
+                && definition.effect() != ToolEffect.READ_SESSION_STATE
+                && definition.effect() != ToolEffect.WRITE_SESSION_STATE) {
             return PermissionOutcome.of(
                     PermissionDecision.DENY,
                     PermissionReason.PLAN_RESTRICTION,
@@ -136,7 +138,8 @@ public final class PermissionPolicy implements PermissionGate {
             ToolDefinition definition,
             PermissionSelector selector) {
         return switch (definition.effect()) {
-            case READ_WORKSPACE, PLAN_ARTIFACT_WRITE, USER_INTERACTION -> PermissionOutcome.of(
+            case READ_WORKSPACE, READ_SESSION_STATE, WRITE_SESSION_STATE,
+                    PLAN_ARTIFACT_WRITE, USER_INTERACTION -> PermissionOutcome.of(
                     PermissionDecision.ALLOW,
                     PermissionReason.EFFECT_DEFAULT,
                     selector);
@@ -158,10 +161,15 @@ public final class PermissionPolicy implements PermissionGate {
                         ask ? PermissionReason.EFFECT_DEFAULT : PermissionReason.HARD_DENIAL,
                         selector);
             }
-            case SYSTEM_OR_DESTRUCTIVE -> PermissionOutcome.of(
-                    PermissionDecision.DENY,
-                    PermissionReason.HARD_DENIAL,
-                    selector);
+            case SYSTEM_OR_DESTRUCTIVE -> {
+                boolean controlledBuiltinDelegate = definition.source()
+                        == io.github.liumaishenjian.ccjava.domain.ToolSource.BUILT_IN
+                        && "delegate_agent".equals(definition.name());
+                yield PermissionOutcome.of(
+                        controlledBuiltinDelegate ? PermissionDecision.ASK : PermissionDecision.DENY,
+                        controlledBuiltinDelegate ? PermissionReason.EFFECT_DEFAULT : PermissionReason.HARD_DENIAL,
+                        selector);
+            }
         };
     }
 }

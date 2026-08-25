@@ -16,6 +16,7 @@ import java.util.Objects;
 public sealed interface SessionCommandIntent permits SessionCommandIntent.Help, SessionCommandIntent.Clear,
         SessionCommandIntent.Compact, SessionCommandIntent.Context, SessionCommandIntent.Doctor,
         SessionCommandIntent.ModelChange, SessionCommandIntent.Permissions, SessionCommandIntent.Resume,
+        SessionCommandIntent.Tasks,
         SessionCommandIntent.PlanStatus, SessionCommandIntent.Plan, SessionCommandIntent.PlanApprove,
         SessionCommandIntent.PlanReject, SessionCommandIntent.PlanStepBegin, SessionCommandIntent.PlanStepComplete,
         SessionCommandIntent.PlanExecute {
@@ -110,7 +111,13 @@ public sealed interface SessionCommandIntent permits SessionCommandIntent.Help, 
         @Override public SessionCommandKind kind() { return SessionCommandKind.PLAN_STATUS; }
     }
 
-    /** 创建待审批项目计划；步骤只携带受限的意图描述。 */
+    /**
+     * 创建待审批项目计划；步骤只携带受限的意图描述。
+     *
+     * @param objective 规划目标
+     * @param steps 有界步骤输入
+     * @param workspaceDigest 创建时工作区摘要
+     */
     record Plan(String objective, List<PlanStepInput> steps, String workspaceDigest) implements SessionCommandIntent {
         public Plan {
             if (invalidText(objective) || steps == null || steps.isEmpty() || steps.size() > 128
@@ -153,13 +160,21 @@ public sealed interface SessionCommandIntent permits SessionCommandIntent.Help, 
         @Override public SessionCommandKind kind() { return SessionCommandKind.PLAN_REJECT; }
     }
 
-    /** 开始下一个已批准计划步骤，并重新校验有界工作区摘要。 */
+    /**
+     * 开始下一个已批准计划步骤，并重新校验有界工作区摘要。
+     *
+     * @param workspaceDigest 开始步骤前的工作区摘要
+     */
     record PlanStepBegin(String workspaceDigest) implements SessionCommandIntent {
         public PlanStepBegin { if (invalidText(workspaceDigest)) throw new IllegalArgumentException("workspaceDigest 非法"); }
         @Override public SessionCommandKind kind() { return SessionCommandKind.PLAN_STEP_BEGIN; }
     }
 
-    /** 完成当前唯一活动计划步骤，并携带完成后重新观察到的工作区摘要。 */
+    /**
+     * 完成当前唯一活动计划步骤，并携带完成后重新观察到的工作区摘要。
+     *
+     * @param workspaceDigest 完成步骤后的工作区摘要
+     */
     record PlanStepComplete(String workspaceDigest) implements SessionCommandIntent {
         public PlanStepComplete {
             if (invalidText(workspaceDigest)) throw new IllegalArgumentException("workspaceDigest 非法");
@@ -182,7 +197,14 @@ public sealed interface SessionCommandIntent permits SessionCommandIntent.Help, 
         @Override public SessionCommandKind kind() { return SessionCommandKind.PLAN_EXECUTE; }
     }
 
-    /** 计划步骤的安全输入投影。 */
+    /**
+     * 计划步骤的安全输入投影。
+     *
+     * @param ordinal 步骤序号
+     * @param title 标题
+     * @param detail 有界详情
+     * @param expectedDigest 预期工作区摘要
+     */
     record PlanStepInput(int ordinal, String title, String detail, String expectedDigest) {
         public PlanStepInput {
             if (ordinal < 1 || invalidText(title) || invalidText(detail) || invalidText(expectedDigest))
@@ -199,6 +221,11 @@ public sealed interface SessionCommandIntent permits SessionCommandIntent.Help, 
         public Resume { sessionId = Objects.requireNonNull(sessionId, "sessionId 不能为空"); }
         @Override public SessionCommandKind kind() { return SessionCommandKind.RESUME; }
         @Override public String toString() { return "Resume[sessionId=<redacted>]"; }
+    }
+
+    /** 查询当前 Session 的执行期 Task List；不读取或修改 Plan。 */
+    record Tasks() implements SessionCommandIntent {
+        @Override public SessionCommandKind kind() { return SessionCommandKind.TASKS; }
     }
 
     /** 不解析 selector、规则或 grant 的封闭权限动作。 */

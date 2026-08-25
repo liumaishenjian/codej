@@ -644,6 +644,7 @@ S15 的准确 Feature `MODEL-13` 不复用 Managed Policy 的 `CFG-07`。ADR-069
 - FR-TASK-014：root 委托只能通过 `delegate_agent.taskIds` 提出最多 32 个已存在 Task ID；宿主重新验证并注入 child capability，嵌套委托不继承 parent Board。精确 BUILT_IN `delegate_agent` 在 DEFAULT/ACCEPT_EDITS 中必须审批，PLAN 和伪造来源继续拒绝。
 - FR-TASK-015：stable v1 以 `task-list-v1` 协商只读 `task.snapshot`，支持 revision、TaskId cursor 与最大 50 条；模型 mutation 仍只能走四个 Tool。内部 stdio `/tasks` 返回活动项与最近五个完成项的有界投影。
 - FR-TASK-016：Ink Task 面板按 recovery、in-progress、可执行 pending、blocked pending、recent completed 排序，支持 ↑/↓、Enter、Esc；完成项必须真实使用删除线和 dim 样式。Run 结束时只追加 pending/recovery advisory，不能修改 canonical final。
+- FR-TASK-017：生产模型只在 durable Task Tool 已真实注册时接收复杂多步骤任务的 Task List 指导；批准 Plan 的执行 scope 必须保留四个 Task Tool，但 Task 仍是独立执行元数据。每次成功 `task_create/task_update` 必须在对应 `tool.completed` 之后通过同一 stdio writer 发布有 Session/Run 归属和单调 Board revision 的权威快照；TUI 自动显示但不抢 Composer、Steering、Approval、Question 或 Plan Review 焦点，手动 `/tasks` 才进入方向键交互。
 
 Team shared、peer messaging、跨进程 owner/lease/watch/poll、自动领取和 stable push subscription 继续延期 `SUB-11`；S15 其他 Stage Exit blocker 不因本切片完成而关闭。
 

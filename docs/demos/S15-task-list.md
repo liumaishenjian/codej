@@ -49,7 +49,24 @@ npm --prefix cc-java-tui run check
 - ↑/↓ 移动选择，Enter 显示详情，Esc 关闭；完成项显示 `✓` 并使用删除线/dim；
 - Run 的 canonical final 保持原文，只额外显示未完成/需恢复 advisory。
 
-2026-08-25 实际结果：Java PASS；TUI build PASS，17 files / 289 tests PASS。
+2026-08-25 corrective 实际结果：Java PASS；TUI build PASS，17 files / 293 tests PASS。
+
+## Demo 4：真实 Java stdio → Ink 实时闭环
+
+按 `cc-java-tui/README.md` 设置编译 classpath 后执行：
+
+```powershell
+npm --prefix cc-java-tui run test:real-java
+```
+
+预期观察：
+
+- 普通复杂任务无需输入 `/tasks`，在真实 `task_create → CLAIM → COMPLETED` 后自动显示 Task List；
+- 每个权威 snapshot 紧随对应 `tool.completed`，Board revision 为 1、2、3；
+- 批准 Plan 的 execution scope 同样可用四个 Task Tool，不出现 `unknown_tool`；
+- 自动面板不抢输入焦点，完成行显示 `✓`，完成态装饰策略为 `strikethrough/dim`。
+
+2026-08-25 实际结果：4/4 PASS。首次 corrective E2E 曾因 Plan execution scope 未保留 Task Tool 而失败并报告三个 `unknown_tool`；修复后复跑通过，该首次失败保留为可证伪证据。
 
 ## 负例与事实边界
 

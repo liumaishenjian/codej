@@ -138,7 +138,9 @@ Adapter 放在 `cc-java-core.task`，因为它直接适配 Core-owned `TaskListS
 
 Session JSONL 对每次成功 mutation 只保存命令、可信 actor identity、Board revision/high-water/tombstone 和 changed Task delta；replay 在线性扫描中重建完整快照与幂等索引。Fork seed 只写一次完整快照。该设计避免 256 个大 Task 的 4096 次 mutation 产生二次方日志膨胀；256 个 4 KiB description 的回归文件小于 4 MiB，并可 Resume 为 256 项。
 
-stable v1 通过 wire 名 `task-list-v1` 协商，只读 `task.snapshot` 支持 TaskId cursor、默认 25/最大 50 和 canonical revision；mutation 仍只通过模型 Tool/Pipeline。内部 stdio `/tasks` 返回活动任务与最近五个完成项的有界投影。Ink 面板按“需恢复、进行中、可执行 pending、blocked pending、最近完成”排序，支持 ↑/↓、Enter、Esc；COMPLETED 使用真实 `strikethrough + dimColor`。Run terminal 只附带 pending/recovery 计数并显示 advisory，不改写、不扣留 canonical final。
+stable v1 通过 wire 名 `task-list-v1` 协商，只读 `task.snapshot` 支持 TaskId cursor、默认 25/最大 50 和 canonical revision；mutation 仍只通过模型 Tool/Pipeline。内部 stdio `/tasks` 返回活动任务与最近五个完成项的有界投影。每次成功 `task_create/task_update` 必须先发布 `tool.completed`，再由同一 stdio writer 发布 Java 权威 `task.board.snapshot`；失败 mutation 不发布快照。事件绑定当前 Session/Run 且携带单调 Board revision，TUI 拒绝错归属和迟到/重复 revision。
+
+自动快照只打开非聚焦 Ink live region，不拦截 Composer、Steering、Approval、Question 或 Plan Review；显式 `/tasks` 才聚焦并启用 ↑/↓、Enter、Esc。面板按“需恢复、进行中、可执行 pending、blocked pending、最近完成”排序；COMPLETED 通过独立装饰策略映射到真实 `strikethrough + dimColor`。模型的复杂多步骤 Task 指导仅在 durable Task Tool 已注册时注入；批准 Plan 的 execution configuration 必须重新包含四个 Task Tool，但 Task 不从 Markdown 解析，也不构成审批或验证证据。Run terminal 只附带 pending/recovery 计数并显示 advisory，不改写、不扣留 canonical final。
 
 ## 8. 可证伪验证
 
@@ -161,11 +163,15 @@ Batch A-E 确定性测试覆盖：
 15. stable `task-list-v1` negotiate/snapshot/cursor/idempotency，stdio `/tasks` 与 terminal advisory；
 16. 真实 production `task_create → delegate_agent(taskIds) → 独立 child Session → task_list`，以及 PLAN/显式 Deny/Plugin spoof 负例；
 17. TUI `/tasks` parser、分组排序、选择/详情/关闭、completed 删除线代码路径及 final 文本不被 advisory 覆盖。
+18. 成功 mutation 的 `tool.completed → task.board.snapshot` 顺序、失败 mutation 不推送、错 Session/Run 与旧 revision 丢弃、自动面板不抢 Steering；
+19. 真实 Java stdio→Ink E2E 覆盖普通复杂任务与批准 Plan 执行的 `PENDING → IN_PROGRESS → COMPLETED`，并直接断言 COMPLETED 装饰策略为 `strikethrough=true/dimColor=true`。
 
 参考实现不是 Golden Output；测试只断言本 ADR 的独立状态机、Tool/Pipeline 与资源契约。
 
 ## 9. 结果与剩余边界
 
 Batch A-E 已完成并通过 G0-G6 capability 对账，`TASK-01..05` 提升到 L2。Task List 已成为 Session-local、可持久恢复、可由模型和 TUI 使用的生产能力；Plan 仍是独立审批工件，两者没有转换或审批耦合。
+
+2026-08-25 corrective review 发现初版只具备 `/tasks` 查询面板与分层组件测试，未把生产 mutation 实时推送到 Ink；首次真实 Plan E2E 又证伪 execution scope 丢失 Task Tool，出现 `unknown_tool`。Commit `0a7a4a1149371ab0e52c68838cf453cf37d2a8f1` 增加权威快照事件、非聚焦 live region、复杂任务指导、Plan execution tool 保留和跨层 E2E；该修正关闭交互证据缺口，不改变既有 L2 等级或 S15 Exit。
 
 以下不因本 ADR 提升：`SUB-11` Team Task Board、跨 root Session 共享、peer messaging、文件 watch/poll、跨进程订阅、离线 owner reclaim、时间 lease、自动领取和远程 worker；stable v1 目前提供协商与分页 snapshot，未提供跨连接 push subscription。S15 Stage Exit 仍由 PERM-05/PLAN-01/双 Provider/L4 A/B Eval 等既有 blocker 决定，保持 OPEN。

@@ -2,7 +2,7 @@
 
 ## 已达到
 
-`TASK-01..05` 达到 L2：Session-local 三态任务板、依赖 DAG、CAS/claim/recovery、四个生产 Tool、统一 Permission/Hook/Pipeline、增量 JSONL、Resume/Fork、root/child capability、stable snapshot、stdio `/tasks` 与 Ink 交互面板均已实现并通过离线全量回归。
+`TASK-01..05` 达到 L2：Session-local 三态任务板、依赖 DAG、CAS/claim/recovery、四个生产 Tool、统一 Permission/Hook/Pipeline、增量 JSONL、Resume/Fork、root/child capability、stable snapshot、stdio `/tasks`、mutation 后实时权威 snapshot 与非聚焦 Ink 面板均已实现。普通复杂任务和批准 Plan 执行均通过真实 Java stdio→Ink E2E；完成态直接映射删除线/dim。
 
 ## 仍未达到参考机制的部分
 

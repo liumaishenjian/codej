@@ -500,7 +500,7 @@ Stage 完成项。
 | TASK-02 | Task mutation 与认领 | CREATE/EDIT/TRANSITION/CLAIM/RESUME_CLAIM/RELEASE/ASSIGN/REASSIGN/DEPENDENCY/DELETE；claim epoch、CAS 与 actor/session/run/callId 幂等已由 Tool/Pipeline 和并发测试覆盖 | L2 | S15 | AUTH-01/ADR-088 |
 | TASK-03 | Task Session 持久化与恢复 | canonical 增量 Session journal、Resume 同 Board、Fork 新 Board、终止 Run recovery、损坏尾部完整前缀与容量回归 | L2 | S15 | AUTH-01/ADR-088 |
 | TASK-04 | Root/Child Task capability | 独立 child Session 经宿主验证 `taskIds` 并注入收窄 capability；生产 E2E 证明 child 可更新授权任务且不能扩大范围 | L2 | S15 | AUTH-01/ADR-088 |
-| TASK-05 | Task Tool、协议与 TUI | 四个 Model Tool 统一经过 Pipeline/Hook/Permission；stable `task-list-v1` snapshot、stdio `/tasks` 与可交互 Ink 面板已实现 | L2 | S15 | AUTH-01/ADR-088 |
+| TASK-05 | Task Tool、协议与 TUI | 四个 Model Tool 统一经过 Pipeline/Hook/Permission；stable `task-list-v1` snapshot、stdio `/tasks`、mutation 后权威 `task.board.snapshot` 实时推送及不抢输入焦点的 Ink 面板已由真实 Java→stdio→Ink E2E 验证；完成项直接映射 strikethrough/dim | L2 | S15 | AUTH-01/ADR-088 |
 
 `TASK-01..05` 与 `PLAN-01` 完全独立，也不等于 S12 `SUB-04` 的父子执行任务；Team shared、peer messaging、跨进程 owner/lease/watch/poll 继续只属于 `SUB-11`，本批不提升其等级。
 

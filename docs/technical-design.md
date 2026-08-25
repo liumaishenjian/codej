@@ -1184,8 +1184,12 @@ IN_PROGRESS 重置为 PENDING。256 个 4 KiB description 的容量回归要求�
 DEFAULT/ACCEPT_EDITS 中收敛为 ASK，PLAN、显式 Deny、名称/Effect 错配与其他 ToolSource 继续拒绝。
 
 stable v1 以 `task-list-v1` 协商只读 `task.snapshot`，提供 revision、TaskId cursor 和最大 50 条投影；mutation 不开放
-旁路协议。内部 stdio `/tasks` 返回活动项与最近五个完成项。Ink live region 按 recovery、in-progress、unblocked
-pending、blocked pending、recent completed 排序，支持 ↑/↓、Enter、Esc，COMPLETED 使用真实 strikethrough/dim。
+旁路协议。内部 stdio `/tasks` 返回活动项与最近五个完成项；成功 `task_create/task_update` 在 `tool.completed` 后由
+同一 writer 发布 `task.board.snapshot`，携带 Session/Run 归属与单调 Board revision。TUI 丢弃错 Session、错 Run 和
+旧 revision，只自动打开非聚焦 live region，不阻塞 Composer/Steering/Approval/Question/Plan Review；显式 `/tasks`
+才取得 ↑/↓、Enter、Esc 焦点。面板按 recovery、in-progress、unblocked pending、blocked pending、recent completed
+排序，COMPLETED 使用真实 strikethrough/dim。复杂多步骤任务的模型指导仅在 durable Task Tool 已注册时注入；批准
+Plan 的 execution configuration 显式重新包含四个 Task Tool，但 Task 仍不从 Markdown 解析，也不成为审批证据。
 Run terminal 只追加 pending/recovery advisory，不改写 canonical final。Team shared、文件 watch/poll、peer message、
 offline owner reclaim、自动领取与 stable push subscription 保持 `SUB-11` L0。
 

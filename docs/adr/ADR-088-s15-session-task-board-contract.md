@@ -11,7 +11,7 @@
 
 ## 1. 背景与批次边界
 
-现有 S12 `ChildTaskReport` 描述一次父子执行委托，`SUB-11` 描述跨 Session/团队共享任务和消息；两者都不是用户与模型在单个 Session 中持续维护的工作任务板。S15 需要一个与 `PlanArtifact` 完全独立的 Task Board：Plan 是需审批的 Markdown 规划工件，Task 是内部进度元数据；二者不互转、不互相审批，也不从 Plan Markdown 推导任务。
+现有 S12 `ChildTaskReport` 描述一次父子执行委托，`SUB-11` 描述跨 Session/团队共享任务和消息；两者都不是用户与模型在单个 Session 中持续维护的工作任务板。S15 需要一个状态、持久化和权限独立于 `PlanArtifact` 的 Task Board：Plan 是需审批的 Markdown 规划工件，Task 是执行进度元数据。批准后的 Plan 可在执行边界把唯一显式步骤 section 冻结成权威 Task，但 Task 状态不能反向审批 Plan，也不能替代 Evidence Gate。
 
 Batch A 实现框架无关的 Task 值对象、资源契约和 Core 确定性状态机；Batch B 增加四个内置 Tool Adapter 并验证统一 Pipeline、Permission、Hard Denial、Plan eligibility、AutoReview 与 PRE_TOOL/POST_TOOL Hook；Batch C-E 完成 canonical Session journal、Resume/Fork、root/child production capability、stable/stdin protocol 和 Ink TUI。Team board、跨进程订阅、peer message、lease 与自动领取仍明确延期 `SUB-11`，其等级保持 L0。
 
@@ -26,6 +26,7 @@ Batch A 实现框架无关的 Task 值对象、资源契约和 Core 确定性状
 | Observed | claim 必须在检查阻塞、完成和已有 owner 后原子收敛 | 采纳同步线性化、task/board revision 与 claim epoch |
 | Observed | 任务共享模式需要额外所有权、通知、文件观察和漏事件恢复 | 本切片只做 root-owned Session-local board；Team/跨进程机制延期 `SUB-11` |
 | Observed | 完成项、阻塞项与进行中项在 TUI 中采用不同优先级和有界展示 | 仅作为后续 Batch D/E 的 Surface 验收输入，不在 Batch A 实现 UI |
+| Observed | 紧凑列表采用无全宽边框行；进行中项强调、完成项删除线/弱化、阻塞项弱化，全部完成短暂可见后退出常驻展示 | 采纳行为层级；本项目以 Ink、自有中文文案、5 秒时长和 display-width 测试独立实现 |
 | Inferred | 恢复不能把中断中的任务解释成可安全重放副作用 | 公开状态仍为 IN_PROGRESS，`recoveryRequired` 由终止 run 与 claim 派生，必须显式续领、释放或重分配 |
 | Unknown | 准确版本、稳定外部协议、全部 Team/多进程一致性和公开兼容承诺 | 不把参考 schema、常量或文件格式作为本项目测试 Oracle |
 
@@ -140,7 +141,11 @@ Session JSONL 对每次成功 mutation 只保存命令、可信 actor identity�
 
 stable v1 通过 wire 名 `task-list-v1` 协商，只读 `task.snapshot` 支持 TaskId cursor、默认 25/最大 50 和 canonical revision；mutation 仍只通过模型 Tool/Pipeline。内部 stdio `/tasks` 返回活动任务与最近五个完成项的有界投影。每次成功 `task_create/task_update` 必须先发布 `tool.completed`，再由同一 stdio writer 发布 Java 权威 `task.board.snapshot`；失败 mutation 不发布快照。事件绑定当前 Session/Run 且携带单调 Board revision，TUI 拒绝错归属和迟到/重复 revision。
 
-自动快照只打开非聚焦 Ink live region，不拦截 Composer、Steering、Approval、Question 或 Plan Review；显式 `/tasks` 才聚焦并启用 ↑/↓、Enter、Esc。面板按“需恢复、进行中、可执行 pending、blocked pending、最近完成”排序；COMPLETED 通过独立装饰策略映射到真实 `strikethrough + dimColor`。模型的复杂多步骤 Task 指导仅在 durable Task Tool 已注册时注入；批准 Plan 的 execution configuration 必须重新包含四个 Task Tool，但 Task 不从 Markdown 解析，也不构成审批或验证证据。Run terminal 只附带 pending/recovery 计数并显示 advisory，不改写、不扣留 canonical final。
+自动快照只打开非聚焦 Ink live region，不拦截 Composer、Steering、Approval、Question 或 Plan Review；显式 `/tasks` 才聚焦并启用 ↑/↓、Enter、Esc。面板按“需恢复、进行中、可执行 pending、blocked pending、最近完成”排序；采用紧凑无边框行，隐藏 Task ID/revision/owner 和 Java/Ink 等实现词。IN_PROGRESS 加粗，COMPLETED 通过独立装饰策略映射到真实 `strikethrough + dimColor`；全部完成保留约 5 秒后只隐藏面板，Board 仍可 `/tasks` 重开。所有行按 terminal display width 预算缩进、符号、CJK、emoji、combining sequence 和依赖/恢复后缀。
+
+普通复杂 Run 在 durable Task Tool 已注册时获得四个 Tool 和 Task 指导。批准 Plan 则由 `ApprovedPlanTaskSeeder` 只读取唯一明确命名的 `拟定步骤/实施步骤/执行步骤` 或受控英文等价 heading 下的顶层有序列表；忽略其他编号列表、代码 fence 和嵌套 heading，零候选保持 legacy，多个候选 Fail Closed。应用在 Runtime 生成真实 RunId、canonical Run 已开始且取得 active ownership后、首个模型回合前幂等创建 Task；metadata 绑定 planId、content digest、稳定的 `ExecutionBrief.approvedRevision` 和 step ordinal。执行模型只获得 `task_list/task_get/task_update`，`task_create` 从 definitions 移除，因此不能另建英文标题、改序、合并或拆分批准步骤。初始 PENDING snapshot 在 `run.started` 后、首个模型 Tool 前由同一 stdio writer 发布。
+
+Plan controller 在每个模型请求前检查当前 Plan identity 的 Task 数量、顺序、正文、COMPLETED、blocked/recovery 及确定性 Evidence。全部满足后单向进入一次 final-only turn，移除所有 Tool definition；若模型仍发 Tool Call，Runtime 在执行前以 `INVALID_MODEL_RESPONSE` 终止。最终 `PlanStatus.COMPLETED` 同时要求权威 Task 和 Evidence；未满足时沿既有有界纠正路径处理，不合成成功。这样关闭“任务已全完成但模型继续 list/update，最终 `time_limit_reached`”缺口，同时保持 Task 不构成审批或 Evidence 本身。普通 Run 的 Task terminal advisory 语义不变。
 
 ## 8. 可证伪验证
 
@@ -165,13 +170,18 @@ Batch A-E 确定性测试覆盖：
 17. TUI `/tasks` parser、分组排序、选择/详情/关闭、completed 删除线代码路径及 final 文本不被 advisory 覆盖。
 18. 成功 mutation 的 `tool.completed → task.board.snapshot` 顺序、失败 mutation 不推送、错 Session/Run 与旧 revision 丢弃、自动面板不抢 Steering；
 19. 真实 Java stdio→Ink E2E 覆盖普通复杂任务与批准 Plan 执行的 `PENDING → IN_PROGRESS → COMPLETED`，并直接断言 COMPLETED 装饰策略为 `strikethrough=true/dimColor=true`。
+20. 中文批准步骤与 18 项城市编号列表并存时只 seed 步骤；英文受控 heading、零/多 section、代码 fence、嵌套 heading、部分 seed、旧 revision、unrelated Task 和 recovery 均有正负例；
+21. Runtime initializer 使用真实执行 RunId，失败产生配对 `INTERNAL_ERROR` 终态且释放 ownership；权威 Task+Evidence 满足后下一请求为零 Tool final-only，违规 Tool Call 不执行；
+22. 真实 Java→stdio→Ink E2E 断言中文标题、无 `task_create`、初始 snapshot 先于首个 Tool、两个步骤完整状态迁移、Run `completed` 与 durable Plan `COMPLETED`；20/24/240 列渲染覆盖 CJK/emoji/combining/依赖/恢复且相关整行不越界。
 
 参考实现不是 Golden Output；测试只断言本 ADR 的独立状态机、Tool/Pipeline 与资源契约。
 
 ## 9. 结果与剩余边界
 
-Batch A-E 已完成并通过 G0-G6 capability 对账，`TASK-01..05` 提升到 L2。Task List 已成为 Session-local、可持久恢复、可由模型和 TUI 使用的生产能力；Plan 仍是独立审批工件，两者没有转换或审批耦合。
+Batch A-E 已完成并通过 G0-G6 capability 对账，`TASK-01..05` 提升到 L2。Task List 已成为 Session-local、可持久恢复、可由模型和 TUI 使用的生产能力；Plan 仍是独立审批工件，唯一显式步骤 section 的单向 seed 不允许 Task 反向审批 Plan，也不替代 Evidence。
 
 2026-08-25 corrective review 发现初版只具备 `/tasks` 查询面板与分层组件测试，未把生产 mutation 实时推送到 Ink；首次真实 Plan E2E 又证伪 execution scope 丢失 Task Tool，出现 `unknown_tool`。Commit `0a7a4a1149371ab0e52c68838cf453cf37d2a8f1` 增加权威快照事件、非聚焦 live region、复杂任务指导、Plan execution tool 保留和跨层 E2E；该修正关闭交互证据缺口，不改变既有 L2 等级或 S15 Exit。
+
+同日第二次深度交互审查由用户真实运行证伪三个剩余假设：模型可重新创建英文 Task、全宽面板与技术词泄漏不符合紧凑交互、Task/Evidence 已完成后仍可能循环至 `time_limit_reached`。实现 Commit `dd1e8885555f0b538c535f63148068e9694f121d` 引入批准步骤的应用权威 seed、真实 Run initializer、Task+Evidence final-only Gate、紧凑宽度安全 Surface 与 5 秒完成态。该 corrective 细化 `TASK-05` 的 L2 行为，不提升 Capability Level，S15 Exit 仍 OPEN。
 
 以下不因本 ADR 提升：`SUB-11` Team Task Board、跨 root Session 共享、peer messaging、文件 watch/poll、跨进程订阅、离线 owner reclaim、时间 lease、自动领取和远程 worker；stable v1 目前提供协商与分页 snapshot，未提供跨连接 push subscription。S15 Stage Exit 仍由 PERM-05/PLAN-01/双 Provider/L4 A/B Eval 等既有 blocker 决定，保持 OPEN。

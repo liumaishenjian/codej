@@ -1184,13 +1184,25 @@ IN_PROGRESS 重置为 PENDING。256 个 4 KiB description 的容量回归要求�
 DEFAULT/ACCEPT_EDITS 中收敛为 ASK，PLAN、显式 Deny、名称/Effect 错配与其他 ToolSource 继续拒绝。
 
 stable v1 以 `task-list-v1` 协商只读 `task.snapshot`，提供 revision、TaskId cursor 和最大 50 条投影；mutation 不开放
-旁路协议。内部 stdio `/tasks` 返回活动项与最近五个完成项；成功 `task_create/task_update` 在 `tool.completed` 后由
-同一 writer 发布 `task.board.snapshot`，携带 Session/Run 归属与单调 Board revision。TUI 丢弃错 Session、错 Run 和
-旧 revision，只自动打开非聚焦 live region，不阻塞 Composer/Steering/Approval/Question/Plan Review；显式 `/tasks`
-才取得 ↑/↓、Enter、Esc 焦点。面板按 recovery、in-progress、unblocked pending、blocked pending、recent completed
-排序，COMPLETED 使用真实 strikethrough/dim。复杂多步骤任务的模型指导仅在 durable Task Tool 已注册时注入；批准
-Plan 的 execution configuration 显式重新包含四个 Task Tool，但 Task 仍不从 Markdown 解析，也不成为审批证据。
-Run terminal 只追加 pending/recovery advisory，不改写 canonical final。Team shared、文件 watch/poll、peer message、
+旁路协议。内部 stdio `/tasks` 返回活动项与最近五个完成项；成功模型 `task_create/task_update` 在 `tool.completed` 后由
+同一 writer 发布 `task.board.snapshot`，携带 Session/Run 归属与单调 Board revision。批准 Plan 则在 Runtime 生成真实
+RunId、写入 canonical Run 并取得 active ownership 后、首个模型回合前，由应用从唯一明确命名的步骤 section 幂等创建
+Task；只识别顶层有序步骤，保留原语言/顺序/正文，忽略城市清单、代码 fence、嵌套 heading，零 section 保持 legacy，
+多个候选 Fail Closed。Task metadata 绑定 planId、digest 和稳定的用户批准 revision，不绑定随状态推进的 artifact revision。
+批准 execution 从模型 Tool definitions 中移除 `task_create`，只保留 list/get/update；初始 PENDING snapshot 位于
+`run.started` 后、首个 model/tool 事件前。
+
+TUI 丢弃错 Session、错 Run 和旧 revision，只自动打开非聚焦 live region，不阻塞 Composer/Steering/Approval/Question/
+Plan Review；显式 `/tasks` 才取得 ↑/↓、Enter、Esc 焦点。面板按 recovery、in-progress、unblocked pending、blocked
+pending、recent completed 排序，采用无全宽边框的紧凑行并隐藏 ID/revision/owner/实现词；IN_PROGRESS 加粗，COMPLETED
+使用真实 strikethrough/dim。整行预算通过 grapheme segmentation 与 display width 同时计算缩进、符号、CJK/emoji/
+combining、依赖/恢复后缀和控制行；全部完成保留约 5 秒后只隐藏 Surface，durable Board 可由 `/tasks` 重开。
+
+每次模型请求前，批准 Plan controller 重新验证当前 Plan 的权威 Task 全部精确完成且无 blocked/recovery，并运行确定性
+Evidence Gate；两者满足后单向进入唯一 final-only turn，Tool definitions 为空，违规 Tool Call 在 Pipeline 前以
+`INVALID_MODEL_RESPONSE` 拒绝。最终 `PlanStatus.COMPLETED` 同时要求 Task 与 Evidence；未满足时只使用既有有界纠正，
+不会把模型 prose 合成为成功，也不会在全部完成后继续 list/update 到 `time_limit_reached`。Task 仍不是审批或证据本身。
+Team shared、文件 watch/poll、peer message、
 offline owner reclaim、自动领取与 stable push subscription 保持 `SUB-11` L0。
 
 ### 17.4 File Checkpoint、Diff 与 Undo

@@ -628,7 +628,7 @@ S15 的准确 Feature `MODEL-13` 不复用 Managed Policy 的 `CFG-07`。ADR-069
 
 `TASK-01..05` 已完成 Batch A-E 并达到 L2；以下需求同时约束 Core、生产 Tool、持久化、协议与 TUI，Plan 审批工件继续保持独立：
 
-- FR-TASK-001：每个 root Session 独占一个 Task Board；不同 Session 不因 Workspace 相同而共享。Task 与 Plan 完全独立，不互转、不互相审批，也不解析 Plan Markdown。
+- FR-TASK-001：每个 root Session 独占一个 Task Board；不同 Session 不因 Workspace 相同而共享。Task 的持久化、状态与权限边界仍独立于 Plan 审批工件；仅在 durable Plan 已批准并开始执行时，应用可从唯一明确命名的步骤 section 确定性冻结权威 Task，不得把任意编号列表、代码块或模型二次命名当作任务来源，也不得反向用 Task 状态批准 Plan。
 - FR-TASK-002：Task 公开状态仅为 `PENDING/IN_PROGRESS/COMPLETED`；`blocked`、反向 `blocks` 与 `recoveryRequired` 均为确定性投影。canonical 只保存单向 `blockedBy`，提交前拒绝自依赖、缺失节点、重复边和全图环。
 - FR-TASK-003：Task/Board revision 提供 CAS，ID 由 high-water mark 单调生成，删除形成 tombstone 且 ID 永不复用；同 actor 的 callId 只用于重试幂等，不能代替 Writer lock 或 CAS。
 - FR-TASK-004：Claim 绑定 actor、Run、epoch 与时间；blocked 任务不能 claim/complete。Run 终止后状态仍为 IN_PROGRESS，但投影 `recoveryRequired`，必须由 Root 显式续领、释放、重分配或完成，绝不自动重放副作用。
@@ -643,8 +643,9 @@ S15 的准确 Feature `MODEL-13` 不复用 Managed Policy 的 `CFG-07`。ADR-069
 - FR-TASK-013：每次成功 mutation 以 canonical 增量事件 append+force 到 Session JSONL；Resume 线性重建完整 Board 与幂等索引，Fork 只写一次重置 IN_PROGRESS 的完整 seed。日志不得按 mutation 重复保存整个 Board。
 - FR-TASK-014：root 委托只能通过 `delegate_agent.taskIds` 提出最多 32 个已存在 Task ID；宿主重新验证并注入 child capability，嵌套委托不继承 parent Board。精确 BUILT_IN `delegate_agent` 在 DEFAULT/ACCEPT_EDITS 中必须审批，PLAN 和伪造来源继续拒绝。
 - FR-TASK-015：stable v1 以 `task-list-v1` 协商只读 `task.snapshot`，支持 revision、TaskId cursor 与最大 50 条；模型 mutation 仍只能走四个 Tool。内部 stdio `/tasks` 返回活动项与最近五个完成项的有界投影。
-- FR-TASK-016：Ink Task 面板按 recovery、in-progress、可执行 pending、blocked pending、recent completed 排序，支持 ↑/↓、Enter、Esc；完成项必须真实使用删除线和 dim 样式。Run 结束时只追加 pending/recovery advisory，不能修改 canonical final。
-- FR-TASK-017：生产模型只在 durable Task Tool 已真实注册时接收复杂多步骤任务的 Task List 指导；批准 Plan 的执行 scope 必须保留四个 Task Tool，但 Task 仍是独立执行元数据。每次成功 `task_create/task_update` 必须在对应 `tool.completed` 之后通过同一 stdio writer 发布有 Session/Run 归属和单调 Board revision 的权威快照；TUI 自动显示但不抢 Composer、Steering、Approval、Question 或 Plan Review 焦点，手动 `/tasks` 才进入方向键交互。
+- FR-TASK-016：Ink Task 面板按 recovery、in-progress、可执行 pending、blocked pending、recent completed 排序，支持 ↑/↓、Enter、Esc；自动展示采用无全宽边框的紧凑列表，不暴露 Task ID、revision、owner 或实现语言。进行中项加粗，完成项必须真实使用删除线和 dim；全部完成保留约 5 秒后只隐藏面板，durable Board 不丢失且 `/tasks` 可重开。CJK、emoji、combining sequence、依赖和恢复后缀必须共同计入整行显示宽度。
+- FR-TASK-017：生产模型只在 durable Task Tool 已真实注册时接收复杂多步骤任务的 Task List 指导。普通 Run 可使用四个 Task Tool；批准 Plan 的执行 scope 由应用先创建权威步骤，模型只获得 `task_list/task_get/task_update`，不能调用 `task_create` 建立第二套清单。成功模型 mutation 必须在对应 `tool.completed` 之后通过同一 stdio writer 发布有 Session/Run 归属和单调 Board revision 的权威快照；批准 Plan 的初始 PENDING snapshot 必须位于 `run.started` 之后、首个模型 Tool 之前。TUI 自动显示但不抢 Composer、Steering、Approval、Question 或 Plan Review 焦点，手动 `/tasks` 才进入方向键交互。
+- FR-TASK-018：批准 Plan 只有在当前 Plan identity/digest/用户批准 revision 绑定的全部权威 Task 精确匹配且 COMPLETED、无 blocked/recovery，并且确定性 Evidence Gate 满足时，才进入一次不可逆的 final-only 回合。该回合移除全部 Tool definition；违规 Tool Call 以 `INVALID_MODEL_RESPONSE` 结束且不得执行。最终 Plan COMPLETED 同时要求 Task 与 Evidence，不得因模型继续 list/update 耗尽 deadline；缺失任务或证据仍保持有界纠正和失败语义。
 
 Team shared、peer messaging、跨进程 owner/lease/watch/poll、自动领取和 stable push subscription 继续延期 `SUB-11`；S15 其他 Stage Exit blocker 不因本切片完成而关闭。
 

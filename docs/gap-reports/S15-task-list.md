@@ -2,7 +2,7 @@
 
 ## 已达到
 
-`TASK-01..05` 达到 L2：Session-local 三态任务板、依赖 DAG、CAS/claim/recovery、四个生产 Tool、统一 Permission/Hook/Pipeline、增量 JSONL、Resume/Fork、root/child capability、stable snapshot、stdio `/tasks`、mutation 后实时权威 snapshot 与非聚焦 Ink 面板均已实现。普通复杂任务和批准 Plan 执行均通过真实 Java stdio→Ink E2E；完成态直接映射删除线/dim。
+`TASK-01..05` 达到 L2：Session-local 三态任务板、依赖 DAG、CAS/claim/recovery、四个普通 Run 生产 Tool、统一 Permission/Hook/Pipeline、增量 JSONL、Resume/Fork、root/child capability、stable snapshot 与 stdio `/tasks` 均已实现。批准 Plan 的唯一显式步骤 section 会按原语言/顺序应用预置 Task，模型无 `task_create`；Task+Evidence 完成后一次 final-only 收敛。普通复杂任务和批准 Plan 均通过真实 Java stdio→Ink E2E；紧凑面板不抢焦点，完成态删除线/dim 并在约 5 秒后只隐藏。
 
 ## 仍未达到参考机制的部分
 
@@ -10,7 +10,7 @@
 - 无 peer message、跨进程 watch/poll/push subscription、离线 owner reclaim、时间 lease 或自动领取。
 - stable v1 只提供协商后的分页 snapshot，不提供跨连接增量事件订阅。
 - child capability 只在一次本机生产委托中生效，不是远程 worker 凭证或授权协议。
-- Task Board 不自动从 Plan Markdown 生成，也不把完成 Task 当作 Plan 审批或执行证据。
+- 不支持从任意 Plan Markdown 自由推断任务：只接受唯一明确步骤 section 的顶层有序项；零 section 保持 legacy，多 section Fail Closed。完成 Task 仍不是 Plan 审批或 Evidence 本身。
 
 ## 风险与后续验证
 

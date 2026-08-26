@@ -487,7 +487,8 @@ describe('real Java stdio plan flow', () => {
             && event.requestId === executionRequest && event.payload.toolName === 'run_command').length === 3
             && events.filter(event => event.type === 'tool.completed'
               && event.requestId === executionRequest && event.payload.toolName === 'run_command').length === 2
-            && view.lastFrame()?.includes('正在执行长耗时质量检查') === true,
+            && view.lastFrame()?.includes('正在执行长耗时质量检查…') === true
+            && (view.lastFrame()?.match(/正在执行长耗时质量检查…/gu) ?? []).length === 1,
           () => `${diagnostic(events, failures, exit)}, lastFrame=${JSON.stringify(view.lastFrame())}`);
         }
       }

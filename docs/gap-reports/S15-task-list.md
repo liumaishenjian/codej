@@ -2,7 +2,7 @@
 
 ## 已达到
 
-`TASK-01..05` 达到 L2：Session-local 三态任务板、依赖 DAG、CAS/claim/recovery、四个生产 Tool、统一 Permission/Hook/Pipeline、增量 JSONL、Resume/Fork、root/child capability、stable snapshot 与 stdio `/tasks` 均已实现。Plan planning 与批准 execution 使用同一 Session Board 和同一组四个 Tool；批准边界不解析 Markdown、不重建 Task identity，公开 `task_update` 只接收简单业务字段，CAS/claim/phase mutation 由宿主管理。Session-local root 的 owner 标签由宿主规范化为当前 capability actor，避免要求模型猜测隐藏 ID；child 仍精确校验。真实 Java stdio→Ink E2E 通过真实审批选择器建立 Run correlation，验证五个中文 Task 在规划期创建，执行期沿用 task-1..5 逐项活动并完成划线，同时实际生成并重开校验 OpenXML XLSX。真实 Provider 冒烟另验证三项中文 Task 从规划、批准执行到 3/3 完成和真实文本产物。紧凑活动投影固定在 Tool 历史之前且不参与收缩；完整面板不抢焦点，进行中显示 bold 主行与 dim activity，完成态删除线/dim 并在约 5 秒后只隐藏。
+`TASK-01..05` 达到 L2：Session-local 三态任务板、依赖 DAG、CAS/claim/recovery、四个生产 Tool、统一 Permission/Hook/Pipeline、增量 JSONL、Resume/Fork、root/child capability、stable snapshot 与 stdio `/tasks` 均已实现。Plan planning 与批准 execution 使用同一 Session Board 和同一组四个 Tool；批准边界不解析 Markdown、不重建 Task identity，公开 `task_update` 只接收简单业务字段，CAS/claim/phase mutation 由宿主管理。Session-local root 的 owner 标签由宿主规范化为当前 capability actor，避免要求模型猜测隐藏 ID；child 仍精确校验。真实 Java stdio→Ink E2E 通过真实审批选择器建立 Run correlation，验证五个中文 Task 在规划期创建，执行期沿用 task-1..5 逐项活动并完成划线，同时实际生成并重开校验 OpenXML XLSX。真实 Provider 冒烟另验证三项中文 Task 从规划、批准执行到 3/3 完成和真实文本产物。当前 `active_form` 只进入黄色加载 spinner，慢 Tool 期间仍可见；完整面板不抢焦点且不复制活动子行，进行中显示黄色实心符号/bold 主行，完成态显示绿色勾选与删除线/dim，并在约 5 秒后只隐藏。
 
 ## 仍未达到参考机制的部分
 

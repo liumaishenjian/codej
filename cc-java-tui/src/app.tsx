@@ -1722,7 +1722,6 @@ export function AgentView({state, composer, input = '', columns, rows, composerL
         key={run.requestId}
         run={run}
         taskBoard={run.runId !== undefined && run.runId === state.activeRunId ? state.taskBoard : undefined}
-        columns={width}
         approvalPicker={approvalPicker}
         planReviewPicker={planReviewPicker}
         planFeedbackInput={planFeedbackInput}
@@ -1977,7 +1976,11 @@ function SessionTaskPanel({state, columns}: {
               <Box key={task.taskId} flexDirection="column">
                 <Text {...(selected ? {color: 'cyanBright' as const}
                   : task.recoveryRequired ? {color: 'yellow' as const} : {})}>
-                  {prefix} {symbol}{' '}
+                  {prefix}{' '}
+                  <Text {...(task.status === 'COMPLETED' ? {color: 'green' as const}
+                    : task.status === 'IN_PROGRESS' ? {color: 'yellow' as const} : {})}>
+                    {symbol}{' '}
+                  </Text>
                   <Text
                     bold={task.status === 'IN_PROGRESS'}
                     dimColor={task.blocked || sessionTaskTextDecoration(task.status).dimColor}
@@ -1987,16 +1990,10 @@ function SessionTaskPanel({state, columns}: {
                   </Text>
                   <Text dimColor={task.blocked || task.status === 'COMPLETED'}>{line.suffix}</Text>
                 </Text>
-                {task.status === 'IN_PROGRESS' ? (
-                  <Text dimColor>{projectTaskActivityLine(
-                    task.activeForm, task.subject, panelColumns,
-                  )}</Text>
-                ) : null}
                 {selected && state.taskDetailOpen ? (
                   <Text dimColor>
                     {'    '}{truncateTerminalText(`${task.status === 'COMPLETED' ? '已完成'
-                      : task.status === 'IN_PROGRESS' ? '进行中' : task.blocked ? '等待前置任务' : '待处理'}${
-                      task.activeForm === undefined ? '' : ` · ${task.activeForm}`}`,
+                      : task.status === 'IN_PROGRESS' ? '进行中' : task.blocked ? '等待前置任务' : '待处理'}`,
                     Math.max(1, panelColumns - 4))}
                   </Text>
                 ) : null}
@@ -2013,24 +2010,6 @@ function SessionTaskPanel({state, columns}: {
         : null}
     </Box>
   );
-}
-
-/**
- * 投影进行中 Task 的弱化 activity 子行，并把缩进与尾部省略号计入完整列宽预算。
- *
- * <p>activeForm 缺失时安全回退到 canonical subject；已有 Unicode 或三点省略号不会重复追加。</p>
- */
-export function projectTaskActivityLine(
-  activeForm: string | undefined,
-  subject: string,
-  availableWidth: number,
-): string {
-  const indent = '    ';
-  const source = (activeForm ?? subject).trimEnd();
-  const activity = /(?:…|\.{3})$/u.test(source) ? source : `${source}…`;
-  const width = Math.max(1, Math.floor(availableWidth));
-  if (width <= terminalDisplayWidth(indent)) return ' '.repeat(width);
-  return indent + truncateTerminalText(activity, width - terminalDisplayWidth(indent));
 }
 
 /**
@@ -2370,13 +2349,23 @@ export function formatModelFailure(summary: ModelFailureView): string {
   return base + status + attempts + action;
 }
 
-/** 展示确定性模型阶段与数值 Usage；不展示或伪造隐藏思维链。 */
-function ModelProgressLine({run, spinnerGlyph}: {readonly run: RunView; readonly spinnerGlyph: string}) {
+/**
+ * 展示当前 Run 的唯一加载行与数值 Usage；不展示或伪造隐藏思维链。
+ *
+ * <p>显式重试态优先于 Task 活动；其余执行期优先使用当前 Task 的 activeForm，
+ * 使加载动画与 Task List 共享一个状态源，且不在列表或详情中重复活动文案。</p>
+ */
+function ModelProgressLine({run, taskBoard, spinnerGlyph}: {
+  readonly run: RunView;
+  readonly taskBoard?: TaskBoardView | undefined;
+  readonly spinnerGlyph: string;
+}) {
   const progress = run.modelProgress;
   const activeTool = run.tools.some(tool => tool.status === 'started');
+  const activeTask = taskBoard?.tasks.find(task => task.status === 'IN_PROGRESS' && !task.recoveryRequired)
+    ?? taskBoard?.tasks.find(task => task.status === 'IN_PROGRESS');
   let status: string | undefined;
-  if (run.runId !== undefined
-    && (run.status === 'running' || run.status === 'retrying') && !activeTool) {
+  if (run.runId !== undefined && (run.status === 'running' || run.status === 'retrying')) {
     if (progress?.retryAttempt !== undefined && progress.retryMaxAttempts !== undefined
       && progress.retryWaitMillis !== undefined) {
       const wait = progress.retryWaitMillis >= 1000
@@ -2386,11 +2375,13 @@ function ModelProgressLine({run, spinnerGlyph}: {readonly run: RunView; readonly
     } else if (progress?.retryAttempt !== undefined && progress.retryAttempt > 1
       && progress.retryMaxAttempts !== undefined) {
       status = `正在进行第 ${progress.retryAttempt}/${progress.retryMaxAttempts} 次模型尝试`;
-    } else if (progress?.phase === 'thinking') {
+    } else if (activeTask !== undefined) {
+      status = activeTask.activeForm ?? activeTask.subject;
+    } else if (!activeTool && progress?.phase === 'thinking') {
       status = `正在分析 · 第 ${progress.turn} 回合`;
-    } else if (progress?.phase === 'preparing_tools') {
+    } else if (!activeTool && progress?.phase === 'preparing_tools') {
       status = '正在准备工具调用';
-    } else if (run.text.length === 0) {
+    } else if (!activeTool && run.text.length === 0) {
       status = '等待模型响应';
     }
   }
@@ -2405,7 +2396,9 @@ function ModelProgressLine({run, spinnerGlyph}: {readonly run: RunView; readonly
   }
   if (status === undefined && usage.length === 0) return null;
   return <Box marginLeft={2} flexDirection="column">
-    {status === undefined ? null : <Text color="yellow">{spinnerGlyph} {status}…</Text>}
+    {status === undefined ? null : <Text color="yellow">
+      {spinnerGlyph} {/(?:…|\.{3})$/u.test(status.trimEnd()) ? status.trimEnd() : `${status.trimEnd()}…`}
+    </Text>}
     {usage.length === 0 ? null : <Text dimColor>Token · {usage.join(' · ')}</Text>}
   </Box>;
 }
@@ -2431,7 +2424,6 @@ function isArchivedRun(run: RunView): boolean {
 function RunPresentation({
   run,
   taskBoard,
-  columns = 80,
   approvalPicker,
   planReviewPicker,
   planFeedbackInput,
@@ -2440,7 +2432,6 @@ function RunPresentation({
 }: {
   readonly run: RunView;
   readonly taskBoard?: TaskBoardView | undefined;
-  readonly columns?: number;
   readonly approvalPicker?: ApprovalPickerState | undefined;
   readonly planReviewPicker?: PlanReviewPickerState | undefined;
   readonly planFeedbackInput?: PlanFeedbackInputState | undefined;
@@ -2452,8 +2443,7 @@ function RunPresentation({
       <Text color="green" bold>❯ </Text>
       <Text bold>{run.prompt}</Text>
     </Box>
-    <ModelProgressLine run={run} spinnerGlyph={spinnerGlyph} />
-    <ActiveRunTaskProgress board={taskBoard} columns={columns} />
+    <ModelProgressLine run={run} taskBoard={taskBoard} spinnerGlyph={spinnerGlyph} />
     <ToolActivityGroup tools={run.tools} />
     <ToolDetail run={run} />
     {run.pendingApproval === undefined
@@ -2481,38 +2471,6 @@ function RunPresentation({
       <Box marginLeft={4}><Text color="red">{formatModelFailure(run.modelFailure)}</Text></Box>
     )}
   </Box>;
-}
-
-/**
- * 在 live Run 顶部投影最多两行的 canonical Task 进度，避免完整面板被 Tool/Approval 内容挤出视口。
- *
- * <p>本组件不提供 Task 交互，也不展示内部身份或 revision；完整列表和 {@code /tasks} 仍由
- * {@link SessionTaskPanel} 承担。</p>
- */
-export function ActiveRunTaskProgress({board, columns}: {
-  readonly board?: TaskBoardView | undefined;
-  readonly columns: number;
-}) {
-  if (board === undefined || board.totalTasks === 0) return null;
-  const tasks = orderedSessionTasks(board.tasks);
-  const completed = tasks.filter(task => task.status === 'COMPLETED').length;
-  const active = tasks.find(task => task.status === 'IN_PROGRESS');
-  const next = tasks.find(task => task.status === 'PENDING' && !task.blocked);
-  const allCompleted = completed >= board.totalTasks;
-  const availableWidth = Math.max(1, Math.floor(columns) - 2);
-  const title = truncateTerminalText(allCompleted
-    ? `✓ 任务 ${completed}/${board.totalTasks} 已完成`
-    : active === undefined
-      ? `任务 ${completed}/${board.totalTasks}${next === undefined ? ' · 等待可执行任务' : ` · 下一项 ${next.subject}`}`
-      : `任务 ${completed}/${board.totalTasks} · ${active.subject}`, availableWidth);
-  return (
-    <Box marginLeft={2} flexDirection="column" flexShrink={0}>
-      <Text bold color={allCompleted ? 'green' : 'cyan'}>{title}</Text>
-      {active === undefined ? null : (
-        <Text dimColor>{projectTaskActivityLine(active.activeForm, active.subject, availableWidth)}</Text>
-      )}
-    </Box>
-  );
 }
 
 function RunTerminal({run}: {readonly run: RunView}) {

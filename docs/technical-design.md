@@ -1196,13 +1196,10 @@ stable v1 以 `task-list-v1` 协商只读 `task.snapshot`，提供 revision、Ta
 没有创建 Task 或执行发现新拆分，模型仍可显式调用 `task_create`。
 
 TUI 丢弃错 Session、错 Run 和旧 revision，只自动打开非聚焦 live region，不阻塞 Composer/Steering/Approval/Question/
-Plan Review。当前 activeRunId 对应的 Board 还投影为 Model 状态之后、Tool 历史之前的最多两行紧凑进度，并设置为不可
-flex shrink；它只显示完成数、当前 subject 和 `activeForm`，不显示 Task/Board 内部标识。显式 `/tasks` 才取得 ↑/↓、Enter、Esc 焦点。完整面板按 recovery、in-progress、unblocked pending、blocked
-pending、recent completed 排序，采用无全宽边框的紧凑行并隐藏 ID/revision/owner/实现词；IN_PROGRESS 加粗，COMPLETED
+Plan Review。当前 activeRunId 对应 Board 的 IN_PROGRESS Task 会把 `activeForm`（缺失时回退 subject）提供给 Run 的唯一黄色加载行；显式重试状态优先。该行在 Tool 运行期仍保持动画，Task List 不再重复 `activeForm` 或添加第二份当前任务摘要。显式 `/tasks` 才取得 ↑/↓、Enter、Esc 焦点。完整面板按 recovery、in-progress、unblocked pending、blocked
+pending、recent completed 排序，采用无全宽边框的紧凑行并隐藏 ID/revision/owner/实现词；IN_PROGRESS 使用黄色实心符号并加粗，COMPLETED 使用绿色勾选且
 使用真实 strikethrough/dim。整行预算通过 grapheme segmentation 与 display width 同时计算缩进、符号、CJK/emoji/
 combining、依赖/恢复后缀和控制行；全部完成保留约 5 秒后只隐藏 Surface，durable Board 可由 `/tasks` 重开。
-IN_PROGRESS 主行使用实心符号与 bold subject，下一行以 dim 投影 `activeForm ?? subject` 并保证单一尾部省略号；
-COMPLETED 主行使用 dim/strikethrough 且移除活动子行。活动行的缩进和省略号也进入 display-width 预算。
 stdio strict codec、TypeScript Client 与 Java dispatcher 必须共享同一 `session.command` intent 集；`tasks` 只允许空 arguments，
 Run terminal 后仍可读取由 terminated Run 派生 `recoveryRequired` 的权威 snapshot。跨层验收不使用扩展名占位文本：测试通过
 真实 `run_command` 子进程生成/校验 OpenXML XLSX，并以另一个 timeout 子进程对账 Tool failure、Run advisory 和 Task recovery。
@@ -2175,7 +2172,7 @@ authority/child failure 才进入 `transport.failed`：未开始 submission 被�
 `transport_closed`，并显示真实连接失败。Resume/session switch/close 清空 pending correlation；Java recovery gate
 仍是副作用恢复权威。
 
-真实 Java 与安装版测试必须启动 `AgentTui` 并通过 reducer/render 断言 execution 行、Tool activity、最终文本、
+真实 Java 与安装版测试必须启动 `AgentTui` 并通过 reducer/render 断言唯一 Task spinner、Task 状态行、Tool activity、最终文本、
 verification 和终态；raw event 只作为诊断与精确协议补充。Plan 跨进程 Fixture 不得把项目仓库根直接作为
 被测 Runtime Workspace：每个 child 在系统临时父目录中创建并严格清理最小真实 Git Workspace，防止冷 Maven
 产物、大 dirty worktree、文件缓存或杀软把 Workspace digest/`git_status` 延迟混入 lifecycle 证据。真实 Tool

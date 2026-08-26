@@ -6,7 +6,6 @@ import {render} from 'ink-testing-library';
 import TestRenderer, {act} from 'react-test-renderer';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {
-  ActiveRunTaskProgress,
   AgentTui,
   AgentView,
   approvalDecision,
@@ -18,7 +17,6 @@ import {
   editInput,
   MAX_INPUT_CHARS,
   renderProviderControlResult,
-  projectTaskActivityLine,
   scheduleTaskPanelAutoHide,
   sessionTaskTextDecoration,
   TASK_COMPLETION_VISIBLE_MS,
@@ -2039,7 +2037,7 @@ describe('TUI interaction polish', () => {
 describe('Session Task List Ink surface', () => {
   afterEach(() => vi.useRealTimers());
 
-  it('三态帧只在进行中显示弱化 activity，并保留主行真实文本样式', async () => {
+  it('三态帧不在列表重复 activeForm，并保留主行真实文本样式', async () => {
     const task = {taskId: 'task-1', revision: 1, subject: '生成河南天气工作簿', activeForm: '正在组装126条天气记录',
       status: 'PENDING' as const, owner: undefined, blocked: false, blockerIds: [], recoveryRequired: false};
     const state = (status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED', activeForm: string | undefined): TuiState => ({
@@ -2066,25 +2064,23 @@ describe('Session Task List Ink surface', () => {
       <AgentView state={state('IN_PROGRESS', task.activeForm)} input="" columns={24} rows={30} />,
     ); });
     expect(textNode(renderer, task.subject)?.props).toMatchObject({bold: true, dimColor: false, strikethrough: false});
-    const activeLine = projectTaskActivityLine(task.activeForm, task.subject, 22);
-    expect(textNode(renderer, activeLine)?.props).toMatchObject({dimColor: true});
-    expect(terminalDisplayWidth(activeLine)).toBeLessThanOrEqual(22);
-    expect(activeLine).toContain('正在组装');
-    expect(activeLine.endsWith('…')).toBe(true);
+    expect(renderer.root.findAllByType(Text).some(node => nodeText(node.props.children).includes('正在组装'))).toBe(false);
+    const activeIcon = renderer.root.findAllByType(Text)
+      .find(node => nodeText(node.props.children) === '● ');
+    expect(activeIcon?.props).toMatchObject({color: 'yellow'});
 
     await act(async () => { renderer.update(
       <AgentView state={state('IN_PROGRESS', undefined)} input="" columns={20} rows={30} />,
     ); });
-    const fallback = projectTaskActivityLine(undefined, task.subject, 18);
-    expect(textNode(renderer, fallback)?.props).toMatchObject({dimColor: true});
-    expect(fallback).toContain('生成河南');
-    expect(fallback.endsWith('…')).toBe(true);
-    expect(projectTaskActivityLine('已有省略号…', task.subject, 22)).toBe('    已有省略号…');
+    expect(renderer.root.findAllByType(Text).some(node => nodeText(node.props.children).includes('正在组装'))).toBe(false);
 
     await act(async () => { renderer.update(
       <AgentView state={state('COMPLETED', task.activeForm)} input="" columns={24} rows={30} />,
     ); });
     expect(textNode(renderer, task.subject)?.props).toMatchObject({bold: false, dimColor: true, strikethrough: true});
+    const completedIcon = renderer.root.findAllByType(Text)
+      .find(node => nodeText(node.props.children) === '✓ ');
+    expect(completedIcon?.props).toMatchObject({color: 'green'});
     expect(renderer.root.findAllByType(Text).some(node => nodeText(node.props.children).includes('正在组装'))).toBe(false);
     renderer.unmount();
   });
@@ -2143,9 +2139,10 @@ describe('Session Task List Ink surface', () => {
     expect(frame.indexOf('需要恢复')).toBeLessThan(frame.indexOf('正在实现'));
     expect(frame.indexOf('正在实现')).toBeLessThan(frame.indexOf('等待依赖'));
     expect(frame).toContain('❯ ● 正在实现');
-    expect(frame).toContain('编写测试…');
-    expect(frame).toContain('需要恢复…');
-    expect(frame).toContain('进行中 · 编写测试');
+    expect(frame).not.toContain('编写测试…');
+    expect(frame).not.toContain('需要恢复…');
+    expect(frame).not.toContain('进行中 · 编写测试');
+    expect(frame).toContain('进行中');
     expect(frame).toContain('✓ 已经完成');
     expect(frame).toContain('等待 1 项前置任务');
     expect(frame).not.toContain('task-');
@@ -2266,7 +2263,7 @@ describe('Session Task List Ink surface', () => {
   });
 });
 
-describe('active Run Task progress projection', () => {
+describe('active Run Task spinner projection', () => {
   const task = (overrides: Partial<{
     taskId: string; revision: number; status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED';
     subject: string; blocked: boolean; blockerIds: string[]; owner: string | undefined;
@@ -2276,47 +2273,46 @@ describe('active Run Task progress projection', () => {
     blocked: false, blockerIds: [], owner: undefined, activeForm: undefined, recoveryRequired: false,
     ...overrides,
   });
-  const nodeText = (value: unknown): string => Array.isArray(value)
-    ? value.map(nodeText).join('') : typeof value === 'string' ? value : '';
-
-  it('active title 加粗且 activity 弱化，窄宽投影不泄漏内部字段', async () => {
-    const board = {boardRevision: 9, totalTasks: 3, truncated: false, tasks: [
-      task({status: 'COMPLETED'}),
+  it('活动文案只进入黄色 spinner 一次，工具运行时仍保持可见', async () => {
+    const board = {boardRevision: 9, totalTasks: 4, truncated: false, tasks: [
+      task({taskId: 'task-recovery', status: 'IN_PROGRESS', subject: '中断后待恢复任务。',
+        activeForm: '不应显示的旧活动', recoveryRequired: true}),
+      task({status: 'COMPLETED', subject: '已完成前置质量检查。'}),
       task({taskId: 'task-2', revision: 8, status: 'IN_PROGRESS', subject: '执行长耗时质量检查。',
         activeForm: '正在执行长耗时质量检查'}),
       task({taskId: 'task-3', revision: 1, subject: '汇总交付证据。'}),
     ]};
+    const state: TuiState = {
+      phase: 'running', sessionId: 'session-task-spinner', activeRunId: 'run-task-spinner', notice: undefined,
+      checkpoints: [], checkpointPanelOpen: false, selectedCheckpointId: undefined,
+      checkpointDiff: undefined, pendingUndoCheckpointId: undefined, checkpointUndo: undefined,
+      taskPanelOpen: true, taskPanelFocused: false, selectedTaskId: 'task-2', taskDetailOpen: false,
+      taskBoard: board,
+      runs: [{requestId: 'req-task-spinner', prompt: '执行计划', runId: 'run-task-spinner', text: '',
+        tools: [{ordinal: 1, name: 'run_command', mode: undefined, status: 'started',
+          returnedCharacters: undefined, returnedItems: undefined, filteredItems: undefined,
+          truncated: false, truncationReason: undefined, errorCode: undefined, failureCategory: undefined,
+          retryable: undefined, argumentChangeRequired: false, strategyChangeRequired: false,
+          exitCode: undefined, output: {lines: [], characters: 0, truncated: false}}],
+        status: 'running', stopReason: undefined, modelTurns: undefined, toolCalls: undefined}],
+    };
     let renderer!: TestRenderer.ReactTestRenderer;
     await act(async () => { renderer = TestRenderer.create(
-      <ActiveRunTaskProgress board={board} columns={42} />,
+      <AgentView state={state} input="" columns={80} rows={30} />,
     ); });
-    const textNodes = renderer.root.findAllByType(Text);
-    const title = textNodes.find(node => nodeText(node.props.children).includes('任务 1/3'));
-    const activity = textNodes.find(node => nodeText(node.props.children).includes('正在执行长耗时质量检查'));
-    expect(title?.props).toMatchObject({bold: true, color: 'cyan'});
-    expect(nodeText(title?.props.children)).toContain('执行长耗时质量检查。');
-    expect(activity?.props).toMatchObject({dimColor: true});
-
-    const narrow = render(<ActiveRunTaskProgress board={board} columns={14} />);
-    const frame = narrow.lastFrame() ?? '';
-    expect(frame.split('\n').every(line => terminalDisplayWidth(line) <= 14)).toBe(true);
-    expect(frame).not.toMatch(/task-|revision|Java/u);
-    narrow.unmount();
-    renderer.unmount();
-  });
-
-  it('全部完成时只显示紧凑完成摘要', async () => {
-    const board = {boardRevision: 4, totalTasks: 2, truncated: false, tasks: [
-      task({status: 'COMPLETED'}), task({taskId: 'task-2', status: 'COMPLETED'}),
-    ]};
-    let renderer!: TestRenderer.ReactTestRenderer;
-    await act(async () => { renderer = TestRenderer.create(
-      <ActiveRunTaskProgress board={board} columns={30} />,
-    ); });
-    const textNodes = renderer.root.findAllByType(Text);
-    expect(textNodes).toHaveLength(1);
-    expect(nodeText(textNodes[0]!.props.children)).toBe('✓ 任务 2/2 已完成');
-    expect(textNodes[0]!.props).toMatchObject({bold: true, color: 'green'});
+    const nodeText = (value: unknown): string => Array.isArray(value)
+      ? value.map(nodeText).join('') : typeof value === 'string' ? value : '';
+    const spinner = renderer.root.findAllByType(Text)
+      .find(node => nodeText(node.props.children).includes('正在执行长耗时质量检查…'));
+    expect(spinner?.props).toMatchObject({color: 'yellow'});
+    const view = render(<AgentView state={state} input="" columns={80} rows={30} />);
+    const frame = view.lastFrame() ?? '';
+    expect(frame.match(/正在执行长耗时质量检查…/gu)).toHaveLength(1);
+    expect(frame.match(/执行长耗时质量检查。/gu)).toHaveLength(1);
+    expect(frame).not.toContain('不应显示的旧活动');
+    expect(frame).toMatch(/[\u25cc◒◐◓◑] 正在执行长耗时质量检查…/u);
+    expect(frame).not.toContain('任务 1/4 · 执行长耗时质量检查。');
+    view.unmount();
     renderer.unmount();
   });
 });

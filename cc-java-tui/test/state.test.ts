@@ -230,7 +230,8 @@ describe('reduceTuiState', () => {
     });
     state = reduceTuiState(state, {
       type: 'event.received', event: event('plan.verification.correction', 3, {
-        attempt: 1, maxAttempts: 2, failures: [{requirementId: 'weather-xlsx', kind: 'deliverable',
+        attempt: 1, maxAttempts: 2, incompleteTaskCount: 1, incompleteTaskIds: ['task-1'],
+        failures: [{requirementId: 'weather-xlsx', kind: 'deliverable',
           locator: '河南各市7天天气.xlsx', reason: 'FILE_MISSING_OR_UNSAFE'}],
       }, 'req-plan', 'session-1', 'run-1'),
     });

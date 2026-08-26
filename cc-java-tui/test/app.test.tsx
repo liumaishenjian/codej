@@ -2037,14 +2037,17 @@ describe('TUI interaction polish', () => {
 describe('Session Task List Ink surface', () => {
   afterEach(() => vi.useRealTimers());
 
-  it('三态帧不在列表重复 activeForm，并保留主行真实文本样式', async () => {
+  it('三态帧只在唯一任务面板显示一次 activeForm，并保留主行真实文本样式', async () => {
     const task = {taskId: 'task-1', revision: 1, subject: '生成河南天气工作簿', activeForm: '正在组装126条天气记录',
       status: 'PENDING' as const, owner: undefined, blocked: false, blockerIds: [], recoveryRequired: false};
     const state = (status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED', activeForm: string | undefined): TuiState => ({
-      phase: 'ready', sessionId: 'session-style', activeRunId: undefined, notice: undefined,
+      phase: status === 'IN_PROGRESS' ? 'running' : 'ready', sessionId: 'session-style',
+      activeRunId: status === 'IN_PROGRESS' ? 'run-style' : undefined, notice: undefined,
       checkpoints: [], checkpointPanelOpen: false, selectedCheckpointId: undefined,
       checkpointDiff: undefined, pendingUndoCheckpointId: undefined, checkpointUndo: undefined,
-      runs: [], taskPanelOpen: true, taskPanelFocused: false, selectedTaskId: 'task-1', taskDetailOpen: false,
+      runs: status === 'IN_PROGRESS' ? [{requestId: 'request-style', prompt: '执行天气任务', runId: 'run-style',
+        text: '', tools: [], status: 'running', stopReason: undefined, modelTurns: 1, toolCalls: 0}] : [],
+      taskPanelOpen: true, taskPanelFocused: false, selectedTaskId: 'task-1', taskDetailOpen: false,
       taskBoard: {boardRevision: status === 'PENDING' ? 1 : status === 'IN_PROGRESS' ? 2 : 3,
         totalTasks: 1, truncated: false, tasks: [{...task, status, activeForm}]},
     });
@@ -2061,12 +2064,15 @@ describe('Session Task List Ink surface', () => {
     expect(renderer.root.findAllByType(Text).some(node => nodeText(node.props.children).includes('正在组装'))).toBe(false);
 
     await act(async () => { renderer.update(
-      <AgentView state={state('IN_PROGRESS', task.activeForm)} input="" columns={24} rows={30} />,
+      <AgentView state={state('IN_PROGRESS', task.activeForm)} input="" columns={80} rows={30} />,
     ); });
     expect(textNode(renderer, task.subject)?.props).toMatchObject({bold: true, dimColor: false, strikethrough: false});
-    expect(renderer.root.findAllByType(Text).some(node => nodeText(node.props.children).includes('正在组装'))).toBe(false);
+    expect(renderer.root.findAllByType(Text)
+      .filter(node => nodeText(node.props.children) === task.subject).length).toBe(1);
+    expect(renderer.root.findAllByType(Text)
+      .filter(node => nodeText(node.props.children).includes(task.activeForm)).length).toBe(1);
     const activeIcon = renderer.root.findAllByType(Text)
-      .find(node => nodeText(node.props.children) === '● ');
+      .find(node => nodeText(node.props.children) === '◌ ');
     expect(activeIcon?.props).toMatchObject({color: 'yellow'});
 
     await act(async () => { renderer.update(
@@ -2101,7 +2107,7 @@ describe('Session Task List Ink surface', () => {
         ],
       }}});
     await waitForFrame(() => view.lastFrame()?.includes('↑/↓ 选择　Enter 详情　Esc 关闭') === true);
-    expect(view.lastFrame()).toContain('❯ ● 第二项');
+    expect(view.lastFrame()).toMatch(/❯ [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] 第二项 · 执行第二项/u);
     view.stdin.write('[B');
     await waitForFrame(() => view.lastFrame()?.includes('❯ ○ 第一项') === true);
     view.stdin.write('\r');
@@ -2138,8 +2144,8 @@ describe('Session Task List Ink surface', () => {
     expect(frame).toContain('任务 1/4 完成 · 2 进行中 · 1 等待');
     expect(frame.indexOf('需要恢复')).toBeLessThan(frame.indexOf('正在实现'));
     expect(frame.indexOf('正在实现')).toBeLessThan(frame.indexOf('等待依赖'));
-    expect(frame).toContain('❯ ● 正在实现');
-    expect(frame).not.toContain('编写测试…');
+    expect(frame).toContain('❯ ◌ 正在实现 · 编写测试');
+    expect(frame.match(/编写测试/gu)).toHaveLength(1);
     expect(frame).not.toContain('需要恢复…');
     expect(frame).not.toContain('进行中 · 编写测试');
     expect(frame).toContain('进行中');
@@ -2273,7 +2279,7 @@ describe('active Run Task spinner projection', () => {
     blocked: false, blockerIds: [], owner: undefined, activeForm: undefined, recoveryRequired: false,
     ...overrides,
   });
-  it('活动文案只进入黄色 spinner 一次，工具运行时仍保持可见', async () => {
+  it('活动文案与黄色 spinner 只出现在唯一任务面板，工具运行时仍保持可见', async () => {
     const board = {boardRevision: 9, totalTasks: 4, truncated: false, tasks: [
       task({taskId: 'task-recovery', status: 'IN_PROGRESS', subject: '中断后待恢复任务。',
         activeForm: '不应显示的旧活动', recoveryRequired: true}),
@@ -2303,14 +2309,14 @@ describe('active Run Task spinner projection', () => {
     const nodeText = (value: unknown): string => Array.isArray(value)
       ? value.map(nodeText).join('') : typeof value === 'string' ? value : '';
     const spinner = renderer.root.findAllByType(Text)
-      .find(node => nodeText(node.props.children).includes('正在执行长耗时质量检查…'));
+      .find(node => nodeText(node.props.children) === '◌ ');
     expect(spinner?.props).toMatchObject({color: 'yellow'});
     const view = render(<AgentView state={state} input="" columns={80} rows={30} />);
     const frame = view.lastFrame() ?? '';
-    expect(frame.match(/正在执行长耗时质量检查…/gu)).toHaveLength(1);
+    expect(frame.match(/正在执行长耗时质量检查/gu)).toHaveLength(1);
     expect(frame.match(/执行长耗时质量检查。/gu)).toHaveLength(1);
     expect(frame).not.toContain('不应显示的旧活动');
-    expect(frame).toMatch(/[\u25cc◒◐◓◑] 正在执行长耗时质量检查…/u);
+    expect(frame).toMatch(/[\u25cc◒◐◓◑] 执行长耗时质量检查。 · 正在执行长耗时质量检查/u);
     expect(frame).not.toContain('任务 1/4 · 执行长耗时质量检查。');
     view.unmount();
     renderer.unmount();
@@ -2536,10 +2542,11 @@ describe('continuous plan Ink interaction', () => {
     client.emit({version: 0, type: 'run.started', requestId, sessionId: 'session-1',
       runId: 'run-correction', sequence: 2, payload: {}});
     client.emit({version: 0, type: 'plan.verification.correction', requestId, sessionId: 'session-1',
-      runId: 'run-correction', sequence: 3, payload: {attempt: 1, maxAttempts: 2, failures: [{
-        requirementId: 'weather-xlsx', kind: 'deliverable', locator: '河南各市7天天气.xlsx',
-        reason: 'FILE_MISSING_OR_UNSAFE',
-      }]}});
+      runId: 'run-correction', sequence: 3, payload: {attempt: 1, maxAttempts: 2,
+        incompleteTaskCount: 1, incompleteTaskIds: ['task-1'], failures: [{
+          requirementId: 'weather-xlsx', kind: 'deliverable', locator: '河南各市7天天气.xlsx',
+          reason: 'FILE_MISSING_OR_UNSAFE',
+        }]}});
     await waitForFrame(() => (view.lastFrame() ?? '').includes('同一 Run 内纠正（1/2）'));
     expect(view.lastFrame()).toContain('不会自动重放既有副作用');
     expect(view.lastFrame()).toContain('运行中');

@@ -143,11 +143,11 @@ Session JSONL 对每次成功 mutation 只保存命令、可信 actor identity�
 
 stable v1 通过 wire 名 `task-list-v1` 协商，只读 `task.snapshot` 支持 TaskId cursor、默认 25/最大 50 和 canonical revision；mutation 仍只通过模型 Tool/Pipeline。内部 stdio `/tasks` 返回活动任务与最近五个完成项的有界投影。每次成功 `task_create/task_update` 必须先发布 `tool.completed`，再由同一 stdio writer 发布 Java 权威 `task.board.snapshot`；失败 mutation 不发布快照。事件绑定当前 Session/Run 且携带单调 Board revision，TUI 拒绝错归属和迟到/重复 revision。
 
-自动快照只打开非聚焦 Ink live region，不拦截 Composer、Steering、Approval、Question 或 Plan Review；显式 `/tasks` 才聚焦并启用 ↑/↓、Enter、Esc。活动 Run 只保留一条加载行：显式重试状态优先，否则显示当前 Task 的 `active_form`（缺失时回退 subject），Tool 运行期仍使用黄色动画。完整面板不再复制 `active_form` 子行或第二份当前任务摘要，并按“需恢复、进行中、可执行 pending、blocked pending、最近完成”排序；采用紧凑无边框行，隐藏 Task ID/revision/owner 和 Java/Ink 等实现词。IN_PROGRESS 使用黄色实心符号与加粗标题；COMPLETED 使用绿色勾选，并通过独立装饰策略映射到真实 `strikethrough + dimColor`。全部完成保留约 5 秒后只隐藏完整面板，Board 仍可 `/tasks` 重开。所有行按 terminal display width 预算缩进、符号、CJK、emoji、combining sequence 和依赖/恢复后缀。
+自动快照只打开非聚焦 Ink live region，不拦截 Composer、Steering、Approval、Question 或 Plan Review；显式 `/tasks` 才聚焦并启用 ↑/↓、Enter、Esc。`SessionTaskPanel` 是 Task 状态、spinner 和活动文案的唯一 Surface：IN_PROGRESS 行使用黄色动画 spinner、加粗 subject，并在同一行最多显示一次 `active_form`；recovery-required 行不显示执行动画。`ModelProgressLine` 只显示模型请求、重试与 Usage，不读取 Board。面板按“需恢复、进行中、可执行 pending、blocked pending、最近完成”排序；采用紧凑无边框行，隐藏 Task ID/revision/owner 和 Java/Ink 等实现词。COMPLETED 使用绿色勾选，并通过独立装饰策略映射到真实 `strikethrough + dimColor`。全部完成保留约 5 秒后只隐藏完整面板，Board 仍可 `/tasks` 重开。所有行按 terminal display width 预算缩进、符号、CJK、emoji、combining sequence 和依赖/恢复后缀。
 
-普通复杂 Run、Plan planning Run 与批准后的 execution Run 在 durable Task Tool 已注册时都获得同一组四个 Tool 和 Task 指导。Board 由 root Session identity 定位，不随 Run 切换；批准 execution 首回合先 `task_list`/`task_get` 读取规划期已经创建的 Task ID、标题、顺序和依赖，再原位更新。`task_create` 继续可用，因为规划阶段可能没有创建任务，执行中也可能发现新的必要拆分；应用不得从 Markdown 标题推断 Task，也不得用标题匹配来合并两套 identity。
+普通复杂 Run、Plan planning Run 与批准后的 execution Run 在 durable Task Tool 已注册时都获得同一组四个 Tool 和 Task 指导。Board 由 root Session identity 定位，不随 Run 切换。宿主为 planning/execution 的 `task_create` 注入模型不可提交的 `codej.plan_id` metadata，ActiveRun 持有当前 Plan identity。每个模型回合的 reminder 与 `request_plan_review` 只观察当前 planId cohort，并要求至少一个 bound incomplete Task；同 Session 普通 Run 或旧 Plan 的 Task 保留在 Board 中，但既不能满足也不能阻断当前 Plan。成功 `WRITE_SESSION_STATE` mutation 只精确释放 readiness failure，使相同 review 参数可合法重试而不清除无关失败。批准 execution 先 `task_list`/`task_get` 并原位更新规划期 Task；`task_create` 只用于执行中真正发现的新可验证拆分，不能翻译、汇总或重建第二 identity。应用仍不得从 Markdown 标题或 Task 文案推断执行语义。
 
-Plan controller 只对批准工件和确定性 Evidence 负责，Task terminal state 保持 advisory；二者互不伪装成对方的完成条件。模型应逐项维护 Task 以提供真实交互进度，成功 mutation 后由同一 stdio writer 发布 snapshot。若模型没有维护 Task，Evidence Gate 仍不能因此伪造失败或成功，Surface 只能诚实显示残留任务；这避免用本项目自造的 final-only/Task gate 改变成熟参考机制的循环语义。
+Plan controller 同时读取确定性 Evidence 与当前 planId cohort 的 Task terminal state，但不混同二者：Task 不能批准 Plan或替代产物证据，Evidence 不能改写 Task identity。候选 final 只有在 Evidence 满足且当前 cohort 未完成 Task 为空时才接受；否则同一 Run 内以有界 transient correction 投影封闭 Evidence failure 和当前 cohort 未完成 Task ID，要求复用原 ID 继续 claim/complete，不自动重放既有副作用。历史普通 Run/旧 Plan Task 不参与当前终态判断。重复指纹或两次上限后，Evidence-only failure 可进入 `NEEDS_VERIFICATION`；当前 cohort 仍未完成则拒绝候选 final，不能伪造 Plan/Run 完成。成功 mutation 后由同一 stdio writer 发布 snapshot，取消或失败则保留真实 IN_PROGRESS/recoveryRequired。
 
 ## 8. 可证伪验证
 
@@ -173,22 +173,22 @@ Batch A-E 确定性测试覆盖：
 18. 成功 mutation 的 `tool.completed → task.board.snapshot` 顺序、失败 mutation 不推送、错 Session/Run 与旧 revision 丢弃、自动面板不抢 Steering；
 19. 真实 Java stdio→Ink E2E 覆盖规划期创建、批准执行复用同一 Task ID 的 `PENDING → IN_PROGRESS → COMPLETED`，并直接断言 COMPLETED 装饰策略为 `strikethrough=true/dimColor=true`。
 20. 规划模型用 `task_create` 建立五个中文任务和依赖链；批准 execution 的第一次 `task_list` 与后续五次 `task_get` 断言 ID、标题、顺序和依赖完全相同，且四个 Tool 仍全部可见；
-21. 批准边界不读取 Markdown 步骤创建 Task，不存在按标题匹配、第二 Board、第二 capability 或初始 seed snapshot；Plan/Evidence 完成判断不读取 Task terminal 状态；
-22. 真实 Java→stdio→Ink E2E 通过 Ink 审批选择器建立 execution Run correlation，断言规划面板已显示同一组中文 Task；执行时 `active_form` 只在黄色加载行出现一次，慢 Tool 运行期仍可见，Task List 不重复活动子行，并逐项显示黄色进行中符号、绿色完成勾选与删除线，Run `completed` 与 durable Plan `COMPLETED`；14/20/24/240 列渲染覆盖 CJK/emoji/combining/依赖/恢复且相关整行不越界。
+21. 批准边界不读取 Markdown 步骤创建 Task，不存在按标题匹配、第二 Board、第二 capability 或初始 seed snapshot；空 Board review 返回 `PLAN_GATE_BLOCKED`，Task mutation 后相同 review 参数可重试；批准 execution 的 final 在 Evidence 满足但 Task 未完成时仍被暂存并继续同一 Run correction；
+22. 真实 Java→stdio→Ink E2E 通过 Ink 审批选择器建立 execution Run correlation，断言规划面板已显示同一组中文 Task；执行时唯一 Task 面板的当前行使用黄色动画 spinner、subject 与一次 `active_form`，慢 Tool 运行期仍可见，模型进度行不重复活动，并逐项显示绿色完成勾选与删除线，Run `completed` 与 durable Plan `COMPLETED`；14/20/24/240 列渲染覆盖 CJK/emoji/combining/依赖/恢复且相关整行不越界。
 23. 五步中文批准 Plan 在真实隔离临时 Workspace 中先证明目标文件不存在，通过三个独立 `run_command` create-only 生成并重新打开校验最小 OpenXML XLSX 的 18×7=126 条数据；Headless options timeout 固定为 100ms，而独立 Tool timeout 为 20s、质量检查超过 1.2s，证明 approved-plan 不继承总 Run deadline。逐项观察 PENDING/IN_PROGRESS/COMPLETED，并由最终 `/tasks` Ink frame 显示五个 `✓ 中文标题`；另一个真实命令 timeout 场景验证单 Tool `operation_timed_out`、Run terminal pending/recovery 计数与 Ink 恢复提示一致。
-24. 所有 Run 的公开 `task_update` schema 不包含 operation/revision/claim/metadata；`active_form` 对 IN_PROGRESS 与 COMPLETED 均可选，`COMPLETED + active_form` 一次调用由宿主以稳定 phase ID 执行 Edit 与状态迁移，相同调用重放不漂移 revision。真实 Provider 提交系统角色名作为 owner 的回归断言 root 标签被规范化为 capability actor并成功进入 IN_PROGRESS，child 目录仍 Fail Closed；测试还覆盖依赖增删、delete、unknown task、dependency cycle。React 节点测试直接断言 IN_PROGRESS 黄色图标/bold、COMPLETED 绿色图标/dim/strikethrough，以及 activeForm 在 spinner 中唯一出现。
+24. 所有 Run 的公开 `task_update` schema 不包含 operation/revision/claim/metadata；`active_form` 对 IN_PROGRESS 与 COMPLETED 均可选，`COMPLETED + active_form` 一次调用由宿主以稳定 phase ID 执行 Edit 与状态迁移，相同调用重放不漂移 revision。真实 Provider 提交系统角色名作为 owner 的回归断言 root 标签被规范化为 capability actor并成功进入 IN_PROGRESS，child 目录仍 Fail Closed；测试还覆盖依赖增删、delete、unknown task、dependency cycle。React 节点测试直接断言唯一 Task 面板中的 IN_PROGRESS 黄色动画图标/bold、COMPLETED 绿色图标/dim/strikethrough，以及 activeForm 只出现一次。
 
 参考实现不是 Golden Output；测试只断言本 ADR 的独立状态机、Tool/Pipeline 与资源契约。
 
 ## 9. 结果与剩余边界
 
-Batch A-E 已完成并通过 G0-G6 capability 对账，`TASK-01..05` 提升到 L2。Task List 已成为 Session-local、可持久恢复、可由模型和 TUI 使用的生产能力；Plan 仍是独立审批工件，规划与执行共享同一 Board，但 Task 不反向审批 Plan，也不替代 Evidence。
+Batch A-E 已完成并通过 G0-G6 capability 对账，`TASK-01..05` 提升到 L2。Task List 已成为 Session-local、可持久恢复、可由模型和 TUI 使用的生产能力；Plan 仍是独立审批工件，规划与执行共享同一 Board。Task 不反向审批 Plan、也不替代 Evidence，但 review readiness 与最终交付必须确定性检查同一 Board 是否存在真实执行项并已全部完成。
 
 2026-08-25 corrective review 发现初版只具备 `/tasks` 查询面板与分层组件测试，未把生产 mutation 实时推送到 Ink；首次真实 Plan E2E 又证伪 execution scope 丢失 Task Tool，出现 `unknown_tool`。Commit `0a7a4a1149371ab0e52c68838cf453cf37d2a8f1` 增加权威快照事件、非聚焦 live region、复杂任务指导、Plan execution tool 保留和跨层 E2E；该修正关闭交互证据缺口，不改变既有 L2 等级或 S15 Exit。
 
 同日第二次深度交互审查由用户真实运行证伪三个剩余假设：模型可重新创建英文 Task、全宽面板与技术词泄漏不符合紧凑交互、Task/Evidence 已完成后仍可能循环至 `time_limit_reached`。实现 Commit `dd1e8885555f0b538c535f63148068e9694f121d` 引入批准步骤的应用权威 seed、真实 Run initializer、Task+Evidence final-only Gate、紧凑宽度安全 Surface 与 5 秒完成态。该 corrective 细化 `TASK-05` 的 L2 行为，不提升 Capability Level，S15 Exit 仍 OPEN。
 
-2026-08-26 第八次交互审查发现此前增加的“最多两行紧凑投影”与完整 Task List 同时渲染，导致当前任务和 `active_form` 各显示两次。重新受控研究 `AUTH-SRC-2026-07-29-A` 后确认：当前 Task 活动属于加载行的状态源，Task List 只投影状态图标、主标题、依赖和完成装饰。本 corrective 因此删除第二紧凑组件，使 `active_form` 在 Tool 运行期仍以黄色 spinner 唯一显示，并为进行中/完成图标增加黄色/绿色语义。该修正替代前述两行投影决策，`TASK-05` 仍为 L2，S15 Exit 仍 OPEN。
+2026-08-26 第八次交互审查发现此前增加的“最多两行紧凑投影”与完整 Task List 同时渲染，导致当前任务和 `active_form` 各显示两次。随后 2026-08-27 终态复审又发现 `ModelProgressLine` 与 `SessionTaskPanel` 仍各自消费同一 Board。最终 corrective 把 Task spinner、subject、一次 `active_form` 和完成装饰统一收口到唯一 `SessionTaskPanel`，`ModelProgressLine` 只保留模型请求、重试和 Usage；慢 Tool 期间黄色动画仍可见。该修正替代前述“active_form 只进入上方 Run spinner”的中间决策，`TASK-05` 仍为 L2，S15 Exit 仍 OPEN。
 
 第三次验收审查发现原跨层 `.xlsx` 证据只是扩展名文本，并且 TypeScript Client/Java dispatcher 已声明 `/tasks`，strict codec 却遗漏 `tasks` intent，导致 Run terminal 后恢复查询返回 `protocol.error`。本变更以测试 classpath 中独立 JDK 进程生成/校验真实 OpenXML ZIP package，增加长耗时成功路径与真实 command timeout；同时补齐 codec allowlist 与负参数边界。该修正关闭真实性和协议收敛缺口，`TASK-01..05` 仍维持 L2，S15 Exit 仍 OPEN。
 
@@ -196,7 +196,7 @@ Batch A-E 已完成并通过 G0-G6 capability 对账，`TASK-01..05` 提升到 L
 
 第五次真实 Provider 捕获进一步给出参数 `{task_id,status:COMPLETED,active_form}`：advertised schema 与 parser 自相矛盾；同时真实长任务证明 5m/30m 总 deadline 都只是延后失败。修正后 `AgentLimits` 以 optional presence 表达总 model/tool/deadline，普通 Interactive、Plan、approved-plan 三者均 absent，只有 Print/API/SDK 显式 hard limits精确执行；通用 `task_update` 接受简单业务字段并由宿主管理 CAS/claim。真实 XLSX E2E 把 options timeout 收窄到 100ms，仍完成 1.2s Tool、五项 Task 和重新打开的 126 行产物。
 
-第六次源码复核与真实 Provider 日志又证伪批准后 seeder：规划期中文 task-1..N 与执行期 seed 出现两套 identity/capability，导致 `TASK_CAPABILITY_DENIED`、`TASK_NOT_FOUND` 和 UI 长期 0/N。授权源码显示 Plan Mode 直接使用普通 TaskCreate/Update/List/Get，批准工件不重建任务；因此删除 `ApprovedPlanTaskSeeder`、`ApprovedPlanTaskUpdateTool` 和 Task final-only gate。规划/批准执行现共享同一 Session Board 与四个 Tool，模型公开更新契约统一为简单字段，宿主内部继续强 CAS。跨层 E2E 以同一 task-1..5 验证规划可见、执行活动、最终划线和真实 XLSX 产物。Capability Level 不变。
+第六次源码复核与真实 Provider 日志又证伪批准后 seeder：规划期中文 task-1..N 与执行期 seed 出现两套 identity/capability，导致 `TASK_CAPABILITY_DENIED`、`TASK_NOT_FOUND` 和 UI 长期 0/N。授权源码显示 Plan Mode 直接使用普通 TaskCreate/Update/List/Get，批准工件不重建任务；因此删除 `ApprovedPlanTaskSeeder`、`ApprovedPlanTaskUpdateTool` 以及与第二 identity 绑定的窄 Task gate。规划/批准执行现共享同一 Session Board 与四个 Tool，模型公开更新契约统一为简单字段，宿主内部继续强 CAS。跨层 E2E 以同一 task-1..5 验证规划可见、执行活动、最终划线和真实 XLSX 产物。Capability Level 不变。
 
 同日真实 Provider 冒烟进一步发现 root owner 的可寻址性矛盾：模型按公开 schema 提交
 `owner: "cc-java S04 learning agent"`，而旧 Adapter 只接受模型不可见的 `root:<session-id>`，造成同一 planning Run
@@ -204,5 +204,7 @@ Batch A-E 已完成并通过 G0-G6 capability 对账，`TASK-01..05` 提升到 L
 非空 owner 标签现只作为自分配意图并规范化为该 actor；child/未来协作目录仍保持精确校验。复跑同一真实 Provider
 Plan 创建三项中文任务，批准后逐项显示 `2/3 + 验证文件`、完成 3/3，最终 `/tasks` 三项勾选并真实生成/读取
 三行 `status.txt`。该第七次 corrective 不改变等级或 `SUB-11` 延期边界。
+
+2026-08-27 第九次完整生命周期审查又证伪“Task 只 advisory 即可”：真实用户可得到五步 Plan Markdown，却只留下规划元任务或空清单；批准后模型又可能创建翻译/汇总第二身份，并在原 Task 未完成时输出成功 prose。当前 corrective 不恢复 Markdown seeder，而是在同一 Session identity 上增加 readiness、每回合 reminder 和 Evidence+Task final 三道确定性闸门。后续高优先级复审进一步纠正其作用域：宿主为当前 Plan 创建的 Task 注入不可伪造 `codej.plan_id`，三道闸门只观察该 planId cohort；普通 Run 或旧 Plan 的 pending Task 继续保留在 Session Board，但既不能满足也不能阻断当前 Plan。基于中英文标题的 meta-task 正则被删除，因为它会误拒绝“开发规划模块”等合法任务，也不是授权源码机制。回归覆盖历史 pending + 当前 bound Task、reserved metadata 伪造拒绝、旧 Task 不进入 reminder/correction/final，以及当前 cohort 完成后 Plan 正常 COMPLETED。Task-only correction 通过 stdio/Ink 投影当前 cohort 未完成 ID，成功 Session mutation 只精确释放 `PLAN_GATE_BLOCKED`。真实 Provider复跑保留五个中文 task-1..5、批准后无新 identity、逐项完成并交付真实产物。等级保持 L2，`PLAN-01` 保持 L1。
 
 以下不因本 ADR 提升：`SUB-11` Team Task Board、跨 root Session 共享、peer messaging、文件 watch/poll、跨进程订阅、离线 owner reclaim、时间 lease、自动领取和远程 worker；stable v1 目前提供协商与分页 snapshot，未提供跨连接 push subscription。S15 Stage Exit 仍由 PERM-05/PLAN-01/双 Provider/L4 A/B Eval 等既有 blocker 决定，保持 OPEN。

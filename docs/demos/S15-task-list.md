@@ -46,8 +46,8 @@ npm --prefix cc-java-tui run check
 
 - stable v1 协商 `task-list-v1` 后，`task.snapshot` 返回 revision、最多 50 项和 continuation cursor；
 - `/tasks` 打开 Task List，按恢复、进行中、待处理、阻塞、最近完成排序；
-- 活动 Run 的唯一黄色加载行显示当前 `active_form`，即使 Tool 正在运行也持续动画；Task List 不再重复同一活动文案或当前任务摘要，且不展示 Task ID/revision/owner/实现语言；↑/↓ 移动选择，Enter 显示详情，Esc 关闭；
-- 进行中项使用黄色实心符号并加粗，完成项显示绿色 `✓` 并使用删除线/dim；全部完成约 5 秒后面板隐藏，`/tasks` 可重开；
+- 唯一 Task 面板的当前 IN_PROGRESS 行使用黄色动画 spinner、加粗 subject，并在同一行最多显示一次 `active_form`；模型进度行不再消费 Board，Task ID/revision/owner/实现语言保持隐藏；↑/↓ 移动选择，Enter 显示详情，Esc 关闭；
+- 完成项显示绿色 `✓` 并使用删除线/dim；全部完成约 5 秒后面板隐藏，`/tasks` 可重开；
 - 20/24/240 列宽度测试覆盖 CJK、emoji、combining sequence、依赖与恢复后缀，相关行不越界；
 - Run 的 canonical final 保持原文，只额外显示未完成/需恢复 advisory。
 
@@ -65,11 +65,11 @@ npm --prefix cc-java-tui run test:real-java
 
 - 普通复杂任务无需输入 `/tasks`，在真实 `task_create → IN_PROGRESS → COMPLETED` 后自动显示 Task List；
 - 每个权威 snapshot 紧随对应 `tool.completed`，Board revision 严格单调；
-- Plan planning 模型通过 `task_create` 建立中文任务；批准 execution 首先 list/get，并以同一 task-1..N 原位更新，不从 Markdown 预置第二套 Task；
-- Task snapshot 依次显示中文 PENDING/IN_PROGRESS/COMPLETED；Evidence 独立验证真实产物，Run 与 durable Plan 均完成而不是 `time_limit_reached`；
-- 自动面板不抢输入焦点；慢 Tool 期间 `active_form` 在 spinner 中只出现一次，列表中的当前任务只出现一次；完成行显示绿色 `✓`，完成态装饰策略为 `strikethrough/dim`。
+- Plan planning 模型通过 `task_create` 建立中文任务；宿主注入模型不可提交的当前 `planId` 绑定。无 bound incomplete Task 时 `request_plan_review` 返回 typed `PLAN_GATE_BLOCKED`，Task mutation 后相同 review 参数可重试；同 Session 历史普通/旧 Plan Task 保留但不进入当前 reminder 或 Gate。批准 execution 首先 list/get，并以同一 task-1..N 原位更新，不从 Markdown 预置第二套 Task；
+- Task snapshot 依次显示中文 PENDING/IN_PROGRESS/COMPLETED；模型提前输出 final 时，同一 Run correction 只携带当前 planId cohort 未完成 Task ID并要求原位完成；Evidence 独立验证真实产物，只有 Evidence 与当前 cohort 同时收敛时 Run 与 durable Plan 才完成；
+- 自动面板不抢输入焦点；慢 Tool 期间唯一 Task 行显示黄色动画、subject 和一次 `active_form`，模型进度行不重复；完成行显示绿色 `✓`，完成态装饰策略为 `strikethrough/dim`。
 
-2026-08-26 corrective E2E 覆盖 6 个场景。历史失败先后暴露 execution scope 缺 Task Tool、简单状态参数被旧 parser 拒绝、隐式 5m/30m 总 deadline，以及批准后 seeder 造成两套 Task identity/capability。当前实现三个总量维度为 optional，Interactive/Plan/approved-plan 均 absent；Plan 两阶段共享同一 Board 和四个 Tool，通用 `task_update` 由宿主管 CAS。XLSX fixture 的 options timeout 固定 100ms，仍通过独立 Tool timeout 完成 1.2s 检查；隔离 Workspace 从文件不存在开始生成，独立进程重新打开校验 18×7=126 行，最终 `/tasks` Ink frame 显示五个 `✓ 中文标题`。失败历史均保留为可证伪证据。
+2026-08-27 corrective E2E 继续覆盖 6 个场景。历史失败先后暴露 execution scope 缺 Task Tool、简单状态参数被旧 parser 拒绝、隐式 5m/30m 总 deadline、批准后 seeder 造成两套 Task identity/capability、Task 仅 advisory 导致 Plan/Run 可在清单未完成时成功，以及全 Board Gate 被历史 pending Task 卡死。当前实现三个总量维度为 optional，Interactive/Plan/approved-plan 均 absent；Plan 两阶段共享同一 Board和四个 Tool，宿主 planId cohort 让 review/reminder/final 只约束当前 Plan，通用 `task_update` 由宿主管 CAS。XLSX fixture 的 options timeout 固定 100ms，仍通过独立 Tool timeout 完成 1.2s 检查；隔离 Workspace 从文件不存在开始生成，独立进程重新打开校验 18×7=126 行，最终 `/tasks` Ink frame 显示五个 `✓ 中文标题`。回归还覆盖 reserved metadata 伪造拒绝和合法“开发规划模块”任务不被标题关键词误杀。失败历史均保留为可证伪证据。
 
 ## Demo 5：窄状态协议、样式节点与真实交付
 
@@ -86,6 +86,12 @@ npm --prefix cc-java-tui run test:real-java
 - React 节点属性直接显示 IN_PROGRESS 主标题 bold、活动行 dim、COMPLETED strikethrough/dim 且活动行消失；真实 E2E 最终 `/tasks` frame 逐条显示五个 `✓ 中文标题`；
 - 30m 只作为 Print/显式调用方 hard deadline 默认值；Interactive/Plan/approved-plan 不装配总 Run deadline；
 - 真实 Java E2E 在 100ms options timeout 下完成 1.2s Tool，从不存在开始生成 create-only XLSX，并由独立进程重开验证 126 行。
+
+## Demo 6：显式真实 Provider 生命周期冒烟
+
+该场景不是普通 CI 前提。使用已配置的用户级 Provider profile，在新建隔离 Workspace 启动 `codej`，提交一个明确要求五个中文可验证步骤、JSON/文本真实产物和独立重开校验的 `/plan`；规划期先观察 `/tasks` 为同语言 task-1..5，再在 Ink review picker 批准。执行中逐项观察黄色 active/loading、绿色完成勾与删除线，批准后不得出现 `task_create` 的翻译/汇总第二身份；最终在独立进程读取产物，并再次 `/tasks` 确认 5/5。Evidence 只保存 Task ID/subject/status、事件类型、数量和产物统计，不保存 Prompt 全文、模型 prose、endpoint、key、文件正文或物理临时路径。
+
+2026-08-27 本轮以生产 Java stdio/真实 Provider 启动该冒烟；最终结果与任何 Provider 波动按事实记录在 `docs/evidence/S15-task-list-2026-08-25.md`，不以 scripted Fake 替代。
 
 ## 负例与事实边界
 

@@ -53,6 +53,27 @@ class ToolFailureFingerprintGovernanceTest {
     }
 
     @Test
+    void sessionTaskMutationReleasesOnlyPlanReadinessFailure() {
+        ToolFailureFingerprintGovernance governance = new ToolFailureFingerprintGovernance();
+        ToolCall review = new ToolCall("review-first", "request_plan_review", JsonObject.empty());
+        ToolCall forbidden = call("forbidden", ordered("query", "same"));
+        governance.record(review, ToolError.of(ToolErrorCode.PLAN_GATE_BLOCKED, "tasks missing"));
+        governance.record(forbidden, ToolError.of(ToolErrorCode.WEB_SEARCH_FORBIDDEN, "forbidden"));
+
+        governance.recordSuccess(new ToolCall("other-session", "other_session_tool", JsonObject.empty()),
+                ToolEffect.WRITE_SESSION_STATE);
+        assertThat(governance.repeated(new ToolCall(
+                "review-still-blocked", "request_plan_review", JsonObject.empty()))).isTrue();
+
+        governance.recordSuccess(new ToolCall("create", "task_create",
+                new JsonObject(Map.of("subject", "执行任务"))), ToolEffect.WRITE_SESSION_STATE);
+
+        assertThat(governance.repeated(new ToolCall(
+                "review-retry", "request_plan_review", JsonObject.empty()))).isFalse();
+        assertThat(governance.repeated(call("web-retry", ordered("query", "same")))).isTrue();
+    }
+
+    @Test
     void validationCorrectionRecordIsAtomicAndDoesNotConflateDifferentShapes() throws Exception {
         ToolFailureFingerprintGovernance governance = new ToolFailureFingerprintGovernance();
         JsonObject conflict = new JsonObject(Map.of(

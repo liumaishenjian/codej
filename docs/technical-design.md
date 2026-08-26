@@ -1192,14 +1192,19 @@ stable v1 以 `task-list-v1` 协商只读 `task.snapshot`，提供 revision、Ta
 旁路协议。内部 stdio `/tasks` 返回活动项与最近五个完成项；成功模型 `task_create/task_update` 在 `tool.completed` 后由
 同一 writer 发布 `task.board.snapshot`，携带 Session/Run 归属与单调 Board revision。Plan planning 和批准 execution
 继续使用 root Session 对应的同一个 `TaskListService`；四个 Tool definitions 持续可用。批准边界不解析 Markdown、
-不创建初始 seed、不按标题匹配，也不创建第二个 capability。执行 prompt 要求先 list/get 并复用规划期 Task ID；若规划期
-没有创建 Task 或执行发现新拆分，模型仍可显式调用 `task_create`。
+不创建初始 seed、不按标题匹配，也不创建第二个 capability。宿主在当前 Plan Run 的 `task_create` 执行前注入
+模型不可提交的 `codej.plan_id` metadata，ActiveRun 持有 planning/execution 共用的 planId。Planning reminder、
+`request_plan_review` 和执行 correction 都只过滤该 planId cohort，并要求至少一个 bound incomplete Task；普通 Run 或旧 Plan
+留在同一 Board 的 Task 既不能满足也不能阻断当前 Plan。成功 Task mutation会精确释放 readiness 失败指纹，允许原参数重试。
+执行 prompt 要求先 list/get 并复用原 Task ID；只有执行确实发现新的可验证拆分时才可显式 `task_create`，不得翻译或汇总重建清单。
 
 TUI 丢弃错 Session、错 Run 和旧 revision，只自动打开非聚焦 live region，不阻塞 Composer/Steering/Approval/Question/
-Plan Review。当前 activeRunId 对应 Board 的 IN_PROGRESS Task 会把 `activeForm`（缺失时回退 subject）提供给 Run 的唯一黄色加载行；显式重试状态优先。该行在 Tool 运行期仍保持动画，Task List 不再重复 `activeForm` 或添加第二份当前任务摘要。显式 `/tasks` 才取得 ↑/↓、Enter、Esc 焦点。完整面板按 recovery、in-progress、unblocked pending、blocked
-pending、recent completed 排序，采用无全宽边框的紧凑行并隐藏 ID/revision/owner/实现词；IN_PROGRESS 使用黄色实心符号并加粗，COMPLETED 使用绿色勾选且
-使用真实 strikethrough/dim。整行预算通过 grapheme segmentation 与 display width 同时计算缩进、符号、CJK/emoji/
-combining、依赖/恢复后缀和控制行；全部完成保留约 5 秒后只隐藏 Surface，durable Board 可由 `/tasks` 重开。
+Plan Review。Session Task Panel 是 Task 状态的唯一 Surface：当前 IN_PROGRESS 行使用黄色动画 spinner 和加粗 subject，
+并在同一行最多显示一次 `activeForm`；recovery-required 行不显示正在执行动画。`ModelProgressLine` 只负责模型请求、重试和
+Usage，不读取 Task Board。显式 `/tasks` 才取得 ↑/↓、Enter、Esc 焦点。完整面板按 recovery、in-progress、unblocked pending、blocked
+pending、recent completed 排序，采用无全宽边框的紧凑行并隐藏 ID/revision/owner/实现词；COMPLETED 使用绿色勾选及真实
+strikethrough/dim。整行预算通过 grapheme segmentation 与 display width 同时计算缩进、符号、CJK/emoji/combining、
+依赖/恢复后缀和控制行；全部完成保留约 5 秒后只隐藏 Surface，durable Board 可由 `/tasks` 重开。
 stdio strict codec、TypeScript Client 与 Java dispatcher 必须共享同一 `session.command` intent 集；`tasks` 只允许空 arguments，
 Run terminal 后仍可读取由 terminated Run 派生 `recoveryRequired` 的权威 snapshot。跨层验收不使用扩展名占位文本：测试通过
 真实 `run_command` 子进程生成/校验 OpenXML XLSX，并以另一个 timeout 子进程对账 Tool failure、Run advisory 和 Task recovery。
@@ -1207,9 +1212,7 @@ Run terminal 后仍可读取由 terminated Run 派生 `recoveryRequired` 的权�
 所有 Run 使用同一个通用 `task_update` Adapter。Provider call ID 与内部多阶段 mutation ID 通过带阶段分隔的稳定摘要
 派生，避免合法长 Unicode ID 追加后超过内部上限，同时保持 partial retry 幂等；这些内部阶段不进入模型 schema。
 
-批准 Plan controller 只运行确定性 Evidence Gate，并保持原有四个 Tool definitions。Task terminal state 是独立的交互
-进度事实：不能批准 Plan、不能替代产物证据，也不作为应用删除 Tool 或强制 final-only 的依据。模型完成任务更新后，
-snapshot 自然驱动 Ink 勾选与删除线；未更新时 Surface 保留真实未完成状态。
+批准 Plan controller 同时读取确定性 Evidence 与当前 `planId` Task cohort，但两者职责不混同：Task 不能批准 Plan、不能替代产物证据，Evidence 也不能改写 Task。候选 final 只有在 Evidence 满足且当前 cohort 未完成 Task 为空时才 ACCEPT；否则同一 Run 内发布有界 correction，列出封闭 Evidence failure 与最多 256 个当前 cohort 未完成 Task ID，并要求复用原 ID 继续 claim/complete。普通 Run 或旧 Plan 的历史 Task 不参与本次终态判断。重复指纹或两次上限后，Evidence-only failure 进入 `NEEDS_VERIFICATION`；当前 cohort 仍未完成则 REJECT 候选 final，不能把未收敛清单伪装成成功。snapshot 自然驱动 Ink 勾选与删除线；取消/失败仍保留 IN_PROGRESS/recoveryRequired，且任何 correction 都不自动重放成功副作用。
 Team shared、文件 watch/poll、peer message、
 offline owner reclaim、自动领取与 stable push subscription 保持 `SUB-11` L0。
 

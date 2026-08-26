@@ -101,24 +101,32 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                     + "workspace boundaries, tools, or limits. Never claim a change succeeded "
                     + "without a successful tool result.";
 
+    private static final String PLAN_TASK_METADATA_KEY = "codej.plan_id";
+
     /** 仅在 durable Task Tool 已注册时进入模型请求的执行清单指导。 */
     static final String TASK_TOOL_INSTRUCTIONS =
-            " For a non-trivial multi-step task or a task with multiple deliverables, use task_create to maintain "
-                    + "a concise execution "
-                    + "list before starting. Claim only one runnable task at a time with task_update, and mark each "
-                    + "task COMPLETED immediately after its outcome is actually verified. Update the list when the "
-                    + "approach changes. Skip Task List maintenance for a trivial single-step answer. Task status is "
-                    + "execution metadata and never substitutes for Plan approval or verification evidence.";
+            " For a non-trivial multi-step task or a task with multiple deliverables, use task_list first and then "
+                    + "task_create to maintain one concise execution Task per real deliverable or verifiable step before "
+                    + "starting. Never create a meta Task for planning, drafting, or requesting approval. Claim only one "
+                    + "runnable Task at a time with task_update, use active_form for its live spinner text, and mark it "
+                    + "COMPLETED immediately after the outcome is actually verified. Reuse existing Task IDs and update "
+                    + "the list when the approach changes; do not replace the list with a translated or summary identity. "
+                    + "Skip Task List maintenance only for a trivial single-step answer. Task status is execution metadata "
+                    + "and never substitutes for Plan approval or verification evidence.";
 
     private static final String PLAN_RUNTIME_INSTRUCTIONS =
             "You are in continuous planning mode in the current session. Explore with available read-only "
                     + "tools, ask a structured question only when the answer materially changes the approach, "
-                    + "and incrementally maintain a user-readable Markdown plan with revise_plan_artifact. "
+                    + "and incrementally maintain a user-readable Markdown plan with revise_plan_artifact. Use the "
+                    + "ordinary Session Task tools during planning: list existing Tasks, then create or update one Task "
+                    + "for each real execution step in the same language and order as the plan. Never create a Task for "
+                    + "drafting or approving the plan itself. The review gate requires at least one incomplete execution "
+                    + "Task and keeps those identities on the same Board after approval; do not recreate or translate them. "
                     + "The runtime owns durable revision and content-digest concurrency control; provide only Markdown "
-                    + "when revising and no arguments when requesting review. When the plan is ready, call "
-                    + "request_plan_review. Do not return JSON, executable step "
-                    + "payloads, workspace digests, or hidden objective/title/detail triples. Workspace writes, "
-                    + "process execution, and undeclared extension tools are unavailable while planning.";
+                    + "when revising and no arguments when requesting review. When the plan and Task List agree, call "
+                    + "request_plan_review. Do not return JSON, executable step payloads, workspace digests, or hidden "
+                    + "objective/title/detail triples. Workspace writes, process execution, and undeclared extension "
+                    + "tools are unavailable while planning.";
 
 
     private final FileSessionStore sessions;
@@ -838,7 +846,7 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
             requireOpenLocked();
             if (activeRun != null) throw new IllegalStateException("Headless Session 已有活动 Run");
             PlanRunResources planning = preparePlanRun();
-            captured = new ActiveRun(createPlanRuntimeScope(planning), session.id());
+            captured = new ActiveRun(createPlanRuntimeScope(planning), session.id(), planning.planId());
             activeRun = captured;
             runEventSink = null;
         }
@@ -882,7 +890,7 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         var update = new io.github.liumaishenjian.ccjava.core.PlanArtifactUpdateTool(
                 store, session.id(), planId, java.time.Clock.systemUTC());
         var review = new io.github.liumaishenjian.ccjava.core.PlanReviewRequestTool(
-                store, session.id(), java.time.Clock.systemUTC());
+                store, session.id(), java.time.Clock.systemUTC(), this::planReviewTaskBlockReason);
         Set<String> trustedVerificationTools = registeredTools().stream()
                 .map(io.github.liumaishenjian.ccjava.core.AgentTool::definition)
                 .filter(definition -> definition.source() == ToolSource.BUILT_IN)
@@ -891,7 +899,7 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         var evidence = new io.github.liumaishenjian.ccjava.core.PlanEvidenceDeclarationTool(
                 store, session.id(), java.time.Clock.systemUTC(), trustedVerificationTools);
         var ask = new io.github.liumaishenjian.ccjava.core.PlanAskUserTool(userQuestionHandler);
-        return new PlanRunResources(store, current, update, review, evidence, ask);
+        return new PlanRunResources(store, current, planId, update, review, evidence, ask);
     }
 
     private HeadlessRuntimeScope createPlanRuntimeScope(PlanRunResources planning) {
@@ -919,7 +927,7 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                         List<io.github.liumaishenjian.ccjava.domain.AgentMessage> messages =
                                 new java.util.ArrayList<>(request.messages());
                         messages.add(1, new io.github.liumaishenjian.ccjava.domain.SystemMessage(
-                                PLAN_RUNTIME_INSTRUCTIONS));
+                                PLAN_RUNTIME_INSTRUCTIONS + taskBoardReminder(true)));
                         return new io.github.liumaishenjian.ccjava.domain.ModelRequest(
                                 request.sessionId(), request.runId(), request.turnNumber(), messages,
                                 request.toolDefinitions());
@@ -976,6 +984,7 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
     private record PlanRunResources(
             io.github.liumaishenjian.ccjava.core.PlanArtifactStore store,
             java.util.Optional<io.github.liumaishenjian.ccjava.domain.PlanArtifact> initial,
+            String planId,
             io.github.liumaishenjian.ccjava.core.PlanArtifactUpdateTool update,
             io.github.liumaishenjian.ccjava.core.PlanReviewRequestTool review,
             io.github.liumaishenjian.ccjava.core.PlanEvidenceDeclarationTool evidence,
@@ -1291,8 +1300,8 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
      * <p>方法返回时 APPROVED 已可靠进入 canonical journal，执行 Scope 已捕获且 Run 已被接受；
      * 调用方随后在其专属执行线程调用 {@link #runAcceptedPlan(PlanExecutionAcceptance)}。若入队失败，
      * 调用方必须调用 {@link #releaseAcceptedPlan(PlanExecutionAcceptance)}，工件保持 APPROVED 可显式恢复。
-     * 应用层只把 Markdown 的顶层有序步骤冻结为权威 Task 元数据，不把正文解析为命令或自动执行；
-     * 模型只能复用这些 Task，并仍把 Markdown 作为不可信自然语言执行上下文。</p>
+     * 应用层不解析 Markdown、不生成 Task，也不建立第二套执行 identity；review 前已由普通 Task Tool
+     * 写入同一 Session Board 的任务会原样复用，Markdown 仍只是不可信自然语言执行上下文。</p>
      *
      * @param planId Surface 展示的 Plan 身份
      * @param revision Surface 展示的 revision
@@ -1354,7 +1363,7 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                     java.time.Instant.now());
             var approved = artifact.approve(brief, brief.evidenceBindingDigest(), java.time.Instant.now());
             store.save(approved, artifact.revision(), artifact.contentDigest());
-            ActiveRun accepted = new ActiveRun(executionScope, session.id());
+            ActiveRun accepted = new ActiveRun(executionScope, session.id(), artifact.planId());
             activeRun = accepted;
             runEventSink = null;
             return new PlanExecutionAcceptance(brief, accepted, correction);
@@ -1364,6 +1373,82 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
     private Optional<RunId> planningRunLocator() {
         return session.events().stream().map(io.github.liumaishenjian.ccjava.domain.AgentEventEnvelope::runId)
                 .flatMap(Optional::stream).reduce((first, second) -> second);
+    }
+
+    /**
+     * 在 review 线性化点确认当前 Plan cohort 至少包含一个尚未完成的执行 Task。
+     *
+     * <p>宿主在 Plan Runtime 的 {@code task_create} 成功前注入不可由模型伪造的 plan identity metadata。
+     * Gate 只观察绑定到当前 {@code planId} 的 cohort：普通 Run 或旧 Plan 留在同一 Session Board 的 Task
+     * 既不能满足 readiness，也不能阻断当前 Plan。该契约不解析 Markdown，也不根据 Task 标题猜测语义。</p>
+     */
+    private Optional<String> planReviewTaskBlockReason() {
+        if (!durableTaskTools) return Optional.empty();
+        if (taskBoardSnapshot().isEmpty()) return Optional.of("TASK_BOARD_UNAVAILABLE");
+        return incompletePlanTasks().isEmpty()
+                ? Optional.of("EXECUTION_TASK_LIST_EMPTY")
+                : Optional.empty();
+    }
+
+    private static String planTaskIdentity(
+            io.github.liumaishenjian.ccjava.domain.task.TaskItemView task) {
+        Object value = task.metadata().values().get(PLAN_TASK_METADATA_KEY);
+        return value instanceof io.github.liumaishenjian.ccjava.domain.task.TaskMetadataValue.StringValue text
+                ? text.value() : "";
+    }
+
+    /** 返回当前 {@code planId} cohort 中尚未完成的 Task，供 review、终态与纠正 Gate 共用。 */
+    private java.util.List<io.github.liumaishenjian.ccjava.domain.task.TaskItemView> incompletePlanTasks() {
+        if (!durableTaskTools) return java.util.List.of();
+        Optional<String> planId = currentPlanTaskIdentity();
+        if (planId.isEmpty()) return java.util.List.of();
+        return taskBoardSnapshot().stream()
+                .flatMap(snapshot -> snapshot.tasks().values().stream())
+                .filter(task -> planId.orElseThrow().equals(planTaskIdentity(task)))
+                .filter(task -> task.status()
+                        != io.github.liumaishenjian.ccjava.domain.task.TaskStatus.COMPLETED)
+                .sorted(java.util.Comparator.comparing(io.github.liumaishenjian.ccjava.domain.task.TaskItemView::id))
+                .toList();
+    }
+
+    /**
+     * 把同一 Session Board 的有界权威状态投影到规划和执行模型回合。
+     *
+     * <p>投影只提醒模型复用 Task identity；不把 Task 转换为 Plan，也不携带 description、metadata、actor
+     * 或 revision。每次模型回合重新读取快照，使 tool prompt 之外仍有与授权机制一致的持续纠偏附件。</p>
+     */
+    private String taskBoardReminder(boolean planning) {
+        if (!durableTaskTools) return "";
+        var snapshot = taskBoardSnapshot();
+        if (snapshot.isEmpty()) return "\n\nSession Task List is unavailable; do not claim Plan review or completion.";
+        Optional<String> planId = currentPlanTaskIdentity();
+        var tasks = snapshot.orElseThrow().tasks().values().stream()
+                .filter(task -> planId.isPresent() && planId.orElseThrow().equals(planTaskIdentity(task)))
+                .sorted(java.util.Comparator.comparing(io.github.liumaishenjian.ccjava.domain.task.TaskItemView::id))
+                .toList();
+        StringBuilder reminder = new StringBuilder(512)
+                .append("\n\nCurrent authoritative Plan Task cohort (reuse these IDs; do not recreate or translate them):\n");
+        tasks.stream().limit(25).forEach(task -> reminder.append("- ")
+                .append(task.id().value()).append(" [").append(task.status().name()).append("] ")
+                .append(safeTaskProjection(task.subject()))
+                .append(task.blocked() ? " blocked" : "")
+                .append(task.recoveryRequired() ? " recovery-required" : "")
+                .append('\n'));
+        if (tasks.size() > 25) reminder.append("- ... ").append(tasks.size() - 25).append(" more Tasks omitted\n");
+        long incomplete = tasks.stream().filter(task -> task.status()
+                != io.github.liumaishenjian.ccjava.domain.task.TaskStatus.COMPLETED).count();
+        reminder.append("Board summary: ").append(tasks.size() - incomplete).append('/').append(tasks.size())
+                .append(" completed.");
+        if (planning) {
+            reminder.append(" Before review, ensure this list contains the real execution steps, not a planning meta-task.");
+        } else {
+            reminder.append(" A final response is accepted only after every Task is actually verified and COMPLETED.");
+        }
+        return reminder.toString();
+    }
+
+    private static String safeTaskProjection(String value) {
+        return value.replace('\t', ' ').replace('\r', ' ').replace('\n', ' ');
     }
 
     private void validatePlanBinding(String planId, long revision, String contentDigest, String workspaceDigest) {
@@ -1392,17 +1477,17 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                             messages.add(request.messages().getLast());
                         }
                         String taskInstructions = durableTaskTools
-                                ? " Continue using the same Session Task List that was available while planning. Plan Markdown "
-                                        + "and Task List are independent; never reconstruct Task identity from headings or titles. "
-                                        + "Use task_list/task_get to discover the existing Task IDs and dependencies. For one "
-                                        + "runnable Task, call task_update with task_id, status IN_PROGRESS and optional active_form "
-                                        + "before work; after the real outcome is verified, call task_update again with status "
-                                        + "COMPLETED. Do not supply operations, revisions, claim epochs, Board, Session, Run or "
-                                        + "actor fields because Java owns concurrency and identity. Always call task_list first and "
-                                        + "reuse existing Task IDs instead of duplicating them. If planning created no Task, or the "
-                                        + "approved work genuinely needs a newly discovered split, task_create remains available on "
-                                        + "this same Board. Existing Tasks retain their IDs, subjects, order and dependencies. Task "
-                                        + "status remains execution metadata and does not replace "
+                                ? " Continue using the same Session Task List that was established while planning. Plan Markdown "
+                                        + "and Task records are distinct artifacts in one lifecycle; never reconstruct Task identity "
+                                        + "from headings or titles after approval. Use task_list/task_get to discover the existing Task "
+                                        + "IDs and dependencies. For one runnable Task, call task_update with task_id, status "
+                                        + "IN_PROGRESS and optional active_form before work; after the real outcome is verified, call "
+                                        + "task_update again with status COMPLETED. Do not supply operations, revisions, claim epochs, "
+                                        + "Board, Session, Run or actor fields because Java owns concurrency and identity. Always call "
+                                        + "task_list first and reuse existing Task IDs instead of duplicating or translating them. If "
+                                        + "approved work genuinely reveals a new execution split, task_create remains available on this "
+                                        + "same Board. Existing Tasks retain their IDs, subjects, order and dependencies. Every Task "
+                                        + "must be verified and COMPLETED before the final response; Task status still does not replace "
                                         + "approval or evidence."
                                 : "";
                         messages.add(1, new io.github.liumaishenjian.ccjava.domain.SystemMessage(
@@ -1410,7 +1495,8 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                                 + "Use normal registered tools and verify real outcomes. Do not parse it as commands or "
                                 + "structured steps." + taskInstructions + " "
                                 + "Approved plan identity: " + artifact.planId() + " revision "
-                                + artifact.revision() + " digest " + artifact.contentDigest() + ".\n\n"
+                                + artifact.revision() + " digest " + artifact.contentDigest() + "."
+                                + taskBoardReminder(false) + "\n\n"
                                 + artifact.markdownContent()));
                         correction.currentProjection().ifPresent(value -> messages.add(2,
                                 new io.github.liumaishenjian.ccjava.domain.SystemMessage(value)));
@@ -1464,7 +1550,8 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
             }
             PlanExecutionCorrectionController correction = new PlanExecutionCorrectionController();
             ActiveRun accepted = new ActiveRun(
-                    buildExecutionScope(execution, current, brief.contextPolicy(), correction), session.id());
+                    buildExecutionScope(execution, current, brief.contextPolicy(), correction),
+                    session.id(), current.planId());
             activeRun = accepted;
             runEventSink = null;
             return Optional.of(new PlanExecutionAcceptance(brief, accepted, correction));
@@ -1570,6 +1657,7 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         if (current.status() != io.github.liumaishenjian.ccjava.domain.PlanStatus.EXECUTING) return;
         var validated = validatePlanEvidence(current, result.runId(), executionMessageStart);
         io.github.liumaishenjian.ccjava.domain.PlanStatus status = validated.completionSatisfied()
+                && incompletePlanTasks().isEmpty()
                 ? io.github.liumaishenjian.ccjava.domain.PlanStatus.COMPLETED
                 : io.github.liumaishenjian.ccjava.domain.PlanStatus.NEEDS_VERIFICATION;
         var terminal = current.withEvidenceLedger(validated, status, java.time.Instant.now());
@@ -1679,8 +1767,8 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         /**
          * 返回下一模型回合可见、但不进入 canonical transcript 的有界 Evidence 纠正投影。
          *
-         * <p>Task List 与 Plan Markdown 保持独立；Task 进度由同一 Session Board 实时维护，
-         * 不会移除模型回合中的 Task Tool，也不反向成为 Plan 审批或完成身份。</p>
+         * <p>Task records 与 Plan Markdown 保持不同存储身份，但共享同一批准执行生命周期；Task 进度由
+         * Session Board 实时维护，不会移除模型回合中的 Task Tool，也不会替代 Plan 审批或 Evidence。</p>
          */
         synchronized Optional<String> currentProjection() {
             return Optional.ofNullable(projection);
@@ -1722,26 +1810,34 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                         io.github.liumaishenjian.ccjava.domain.PlanStatus.EXECUTING, java.time.Instant.now());
                 current = store.save(revised, current.revision(), current.contentDigest());
             }
-            if (validated.completionSatisfied()) {
+            var incompleteTasks = incompletePlanTasks();
+            if (validated.completionSatisfied() && incompleteTasks.isEmpty()) {
                 return io.github.liumaishenjian.ccjava.core.FinalAssistantDecision.accept();
             }
             var failures = blockingFailures(validated);
-            if (failures.isEmpty()) {
+            if (failures.isEmpty() && incompleteTasks.isEmpty()) {
                 return io.github.liumaishenjian.ccjava.core.FinalAssistantDecision.accept();
             }
-            String fingerprint = failures.stream()
+            String evidenceFingerprint = failures.stream()
                     .map(item -> item.requirementId() + "|" + item.kind().name() + "|" + item.locator()
                             + "|" + item.reason())
                     .collect(java.util.stream.Collectors.joining("\n"));
+            String taskFingerprint = incompleteTasks.stream()
+                    .map(task -> task.id().value() + "|" + task.status().name() + "|" + task.recoveryRequired())
+                    .collect(java.util.stream.Collectors.joining("\n"));
+            String fingerprint = evidenceFingerprint + "\nTASKS\n" + taskFingerprint;
             if (corrections >= MAX_CORRECTIONS || fingerprint.equals(previousFingerprint)) {
-                return io.github.liumaishenjian.ccjava.core.FinalAssistantDecision.accept();
+                return incompleteTasks.isEmpty()
+                        ? io.github.liumaishenjian.ccjava.core.FinalAssistantDecision.accept()
+                        : io.github.liumaishenjian.ccjava.core.FinalAssistantDecision.reject();
             }
             corrections++;
             previousFingerprint = fingerprint;
-            projection = correctionProjection(failures, corrections);
+            projection = correctionProjection(failures, incompleteTasks, corrections);
             lifecycle.dispatch(session, runId,
                     new io.github.liumaishenjian.ccjava.domain.LifecycleEvent.PlanVerificationCorrectionRequested(
-                            corrections, MAX_CORRECTIONS, failures));
+                            corrections, MAX_CORRECTIONS, failures,
+                            incompleteTasks.stream().map(task -> task.id().value()).toList()));
             return io.github.liumaishenjian.ccjava.core.FinalAssistantDecision.continueRun();
         }
 
@@ -1770,20 +1866,28 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
 
         private String correctionProjection(
                 java.util.List<io.github.liumaishenjian.ccjava.domain.PlanEvidenceCorrectionFailure> failures,
+                java.util.List<io.github.liumaishenjian.ccjava.domain.task.TaskItemView> incompleteTasks,
                 int attempt) {
-            StringBuilder message = new StringBuilder(512)
-                    .append("The previous final response is withheld because deterministic Plan evidence validation failed. ")
-                    .append("Continue the same run and correct only the missing evidence. Do not repeat already successful ")
-                    .append("side effects. Correction attempt ").append(attempt).append('/')
-                    .append(MAX_CORRECTIONS).append(".\n");
+            StringBuilder message = new StringBuilder(768)
+                    .append("The previous final response is withheld because the approved Plan lifecycle is incomplete. ")
+                    .append("Continue the same run. Do not repeat already successful side effects. Correction attempt ")
+                    .append(attempt).append('/').append(MAX_CORRECTIONS).append(".\n");
             for (var failure : failures) {
-                message.append("- requirementId=").append(failure.requirementId())
+                message.append("- evidence requirementId=").append(failure.requirementId())
                         .append(" kind=").append(failure.kind().name())
                         .append(" locator=").append(safeProjectionValue(failure.locator()))
                         .append(" reason=").append(failure.reason()).append('\n');
             }
-            message.append("Use registered tools through the normal Permission/Approval/Pipeline and provide a new final ")
-                    .append("response only after the exact locator and verification requirements are satisfied.");
+            for (var task : incompleteTasks) {
+                message.append("- Task ").append(task.id().value())
+                        .append(" status=").append(task.status().name())
+                        .append(" subject=").append(safeProjectionValue(task.subject()))
+                        .append(task.recoveryRequired() ? " recovery-required" : "")
+                        .append('\n');
+            }
+            message.append("Use the registered tools through the normal Permission/Approval/Pipeline. Reuse the listed Task IDs, ")
+                    .append("claim one runnable Task at a time, verify its real outcome, and mark it COMPLETED. Provide a new final ")
+                    .append("response only after every Task and exact evidence requirement is satisfied.");
             return message.toString();
         }
 
@@ -2758,6 +2862,56 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                 current.compactAnchors(), current.diagnosticsVerbosity());
     }
 
+    private io.github.liumaishenjian.ccjava.core.AgentTool planBoundTaskCreateTool(
+            io.github.liumaishenjian.ccjava.core.AgentTool delegate) {
+        return new io.github.liumaishenjian.ccjava.core.AgentTool() {
+            @Override
+            public io.github.liumaishenjian.ccjava.domain.ToolDefinition definition() {
+                return delegate.definition();
+            }
+
+            @Override
+            public io.github.liumaishenjian.ccjava.core.ToolValidationResult validate(
+                    io.github.liumaishenjian.ccjava.domain.JsonObject arguments) {
+                Object raw = arguments.values().get("metadata");
+                if (raw instanceof java.util.Map<?, ?> metadata
+                        && metadata.keySet().stream().anyMatch(PLAN_TASK_METADATA_KEY::equals)) {
+                    return io.github.liumaishenjian.ccjava.core.ToolValidationResult.invalid(
+                            "task_create metadata contains a runtime-reserved key");
+                }
+                return delegate.validate(arguments);
+            }
+
+            @Override
+            public io.github.liumaishenjian.ccjava.core.ToolExecutionOutcome execute(
+                    io.github.liumaishenjian.ccjava.core.ToolInvocation invocation) throws Exception {
+                Optional<String> planId = currentPlanTaskIdentity();
+                if (planId.isEmpty()) return delegate.execute(invocation);
+                java.util.LinkedHashMap<String, Object> arguments =
+                        new java.util.LinkedHashMap<>(invocation.call().arguments().values());
+                java.util.LinkedHashMap<String, Object> metadata = new java.util.LinkedHashMap<>();
+                Object raw = arguments.get("metadata");
+                if (raw instanceof java.util.Map<?, ?> values) {
+                    values.forEach((key, value) -> metadata.put((String) key, value));
+                }
+                metadata.put(PLAN_TASK_METADATA_KEY, planId.orElseThrow());
+                arguments.put("metadata", java.util.Map.copyOf(metadata));
+                var call = new io.github.liumaishenjian.ccjava.domain.ToolCall(
+                        invocation.call().id(), invocation.call().name(),
+                        new io.github.liumaishenjian.ccjava.domain.JsonObject(arguments));
+                return delegate.execute(new io.github.liumaishenjian.ccjava.core.ToolInvocation(
+                        invocation.sessionId(), invocation.runId(), invocation.ordinal(), call,
+                        invocation.cancellationToken(), invocation.outputSink()));
+            }
+        };
+    }
+
+    private Optional<String> currentPlanTaskIdentity() {
+        synchronized (lifecycleMonitor) {
+            return activeRun == null ? Optional.empty() : Optional.ofNullable(activeRun.planId());
+        }
+    }
+
     private void initializeTaskBoard() {
         io.github.liumaishenjian.ccjava.core.task.TaskListService board = sessions.taskBoard(session.id())
                 .orElseThrow(() -> new IllegalStateException("durable Task Board 不可用"));
@@ -2767,7 +2921,8 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         io.github.liumaishenjian.ccjava.domain.task.TaskActorId rootActor =
                 new io.github.liumaishenjian.ccjava.domain.task.TaskActorId("root:" + session.id().value());
         taskTools = List.of(
-                new io.github.liumaishenjian.ccjava.core.task.TaskCreateTool(board, capabilities),
+                planBoundTaskCreateTool(
+                        new io.github.liumaishenjian.ccjava.core.task.TaskCreateTool(board, capabilities)),
                 new io.github.liumaishenjian.ccjava.core.task.TaskUpdateTool(board, capabilities,
                         candidate -> candidate.equals(rootActor)),
                 new io.github.liumaishenjian.ccjava.core.task.TaskListTool(board, capabilities),
@@ -3190,11 +3345,17 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
     private static final class ActiveRun {
         private final HeadlessRuntimeScope scope;
         private final SessionId sessionId;
+        private final String planId;
         private RunId runId;
 
         private ActiveRun(HeadlessRuntimeScope scope, SessionId sessionId) {
+            this(scope, sessionId, null);
+        }
+
+        private ActiveRun(HeadlessRuntimeScope scope, SessionId sessionId, String planId) {
             this.scope = scope;
             this.sessionId = sessionId;
+            this.planId = planId;
         }
 
         private HeadlessRuntimeScope scope() {
@@ -3203,6 +3364,10 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
 
         private SessionId sessionId() {
             return sessionId;
+        }
+
+        private String planId() {
+            return planId;
         }
 
         private RunId runId() {

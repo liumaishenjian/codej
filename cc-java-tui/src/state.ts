@@ -715,7 +715,7 @@ function applyEvent(state: TuiState, event: ProtocolEvent): TuiState {
     case 'plan.verification.correction':
       return {
         ...state,
-        notice: `计划证据校验失败，正在同一 Run 内纠正（${String(event.payload.attempt)}/${String(event.payload.maxAttempts)}）；不会自动重放既有副作用`,
+        notice: `计划任务或证据尚未收敛，正在同一 Run 内纠正（${String(event.payload.attempt)}/${String(event.payload.maxAttempts)}）；不会自动重放既有副作用`,
       };
     case 'plan.verification.required':
       return annotatePlanVerification(state, event,

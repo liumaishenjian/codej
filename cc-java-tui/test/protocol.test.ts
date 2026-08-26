@@ -73,15 +73,16 @@ describe('decodeEvent', () => {
     const correction = {
       version: 0, type: 'plan.verification.correction', requestId: 'req-plan',
       sessionId: 'session-1', runId: 'run-1', sequence: 4,
-      payload: {attempt: 1, maxAttempts: 2, failures: [{
-        requirementId: 'weather-xlsx', kind: 'deliverable', locator: '河南各市7天天气.xlsx',
-        reason: 'FILE_MISSING_OR_UNSAFE',
-      }]},
+      payload: {attempt: 1, maxAttempts: 2, incompleteTaskCount: 1,
+        incompleteTaskIds: ['task-1'], failures: [{
+          requirementId: 'weather-xlsx', kind: 'deliverable', locator: '河南各市7天天气.xlsx',
+          reason: 'FILE_MISSING_OR_UNSAFE',
+        }]},
     };
     expect(decodeEvent(JSON.stringify(correction), 4).payload.failures).toEqual(correction.payload.failures);
     expect(() => decodeEvent(JSON.stringify({...correction, payload: {
       ...correction.payload, prompt: 'PRIVATE_PROMPT',
-    }}), 4)).toThrowError(/plan verification correction/);
+    }}), 4)).toThrowError(/plan lifecycle correction/);
     expect(() => decodeEvent(JSON.stringify({...correction, payload: {
       attempt: 2, maxAttempts: 1, failures: correction.payload.failures,
     }}), 4)).toThrowError(/correction/);

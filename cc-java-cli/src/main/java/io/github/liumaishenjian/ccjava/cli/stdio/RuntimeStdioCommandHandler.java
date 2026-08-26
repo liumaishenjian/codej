@@ -1990,11 +1990,10 @@ public final class RuntimeStdioCommandHandler
 
     private void executeRun(ActiveRun run, io.github.liumaishenjian.ccjava.domain.UserMessage message) {
         try {
-            if (application.runtimeConfiguration().permissionMode() == PermissionMode.PLAN) {
-                application.runPlan(message.content());
-            } else {
-                application.run(message);
-            }
+            AgentRunResult result = application.runtimeConfiguration().permissionMode() == PermissionMode.PLAN
+                    ? application.runPlan(message.content())
+                    : application.run(message);
+            emitTerminal(run, result);
         } catch (RuntimeException exception) {
             emitUnexpectedFailure(run);
         }
@@ -2002,7 +2001,7 @@ public final class RuntimeStdioCommandHandler
 
     private void executePlanRun(ActiveRun run, String task) {
         try {
-            application.runPlan(task);
+            emitTerminal(run, application.runPlan(task));
         } catch (RuntimeException exception) {
             emitUnexpectedFailure(run);
         }
@@ -2202,6 +2201,9 @@ public final class RuntimeStdioCommandHandler
             ObjectNode payload = codec.objectNode();
             payload.put("attempt", correction.attempt());
             payload.put("maxAttempts", correction.maxAttempts());
+            payload.put("incompleteTaskCount", correction.incompleteTaskIds().size());
+            ArrayNode incompleteTaskIds = payload.putArray("incompleteTaskIds");
+            correction.incompleteTaskIds().forEach(incompleteTaskIds::add);
             ArrayNode failures = payload.putArray("failures");
             for (var failure : correction.failures()) {
                 ObjectNode item = failures.addObject();
@@ -2267,10 +2269,6 @@ public final class RuntimeStdioCommandHandler
             });
             payload.set("steps", steps);
             emit(run, "plan.proposed", payload);
-        } else if (envelope.event() instanceof LifecycleEvent.RunFinished finished) {
-            if (!run.approvedPlanExecution) {
-                emitTerminal(run, finished.result());
-            }
         }
     }
 

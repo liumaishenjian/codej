@@ -11,7 +11,6 @@ import type {
   ModelFailureView,
   RunView,
   SessionTaskStatus,
-  TaskBoardView,
   TuiAction,
 } from './state.js';
 import {AssistantMarkdown} from './assistant-markdown.js';
@@ -1721,14 +1720,13 @@ export function AgentView({state, composer, input = '', columns, rows, composerL
       {liveRuns.map(run => <RunPresentation
         key={run.requestId}
         run={run}
-        taskBoard={run.runId !== undefined && run.runId === state.activeRunId ? state.taskBoard : undefined}
         approvalPicker={approvalPicker}
         planReviewPicker={planReviewPicker}
         planFeedbackInput={planFeedbackInput}
         questionPicker={questionPicker}
         spinnerGlyph={spinnerGlyph}
       />)}
-      <SessionTaskPanel state={state} columns={width} />
+      <SessionTaskPanel state={state} columns={width} spinnerGlyph={spinnerGlyph} />
       <ChildTaskPanel state={state} />
       <CheckpointPanel state={state} />
       {historicalToolDetailRun === undefined ? null : (
@@ -1935,9 +1933,10 @@ function ChildTaskPanel({state}: {readonly state: AgentViewProps['state']}) {
   );
 }
 
-function SessionTaskPanel({state, columns}: {
+function SessionTaskPanel({state, columns, spinnerGlyph}: {
   readonly state: AgentViewProps['state'];
   readonly columns: number;
+  readonly spinnerGlyph: string;
 }) {
   if (!state.taskPanelOpen) return null;
   const board = state.taskBoard;
@@ -1964,14 +1963,19 @@ function SessionTaskPanel({state, columns}: {
           : tasks.map(task => {
             const selected = state.taskPanelFocused === true && task.taskId === state.selectedTaskId;
             const prefix = selected ? '❯' : ' ';
+            const live = task.status === 'IN_PROGRESS' && !task.recoveryRequired;
             const symbol = task.status === 'COMPLETED' ? '✓'
-              : task.status === 'IN_PROGRESS' ? '●' : task.blocked ? '◌' : '○';
+              : live ? spinnerGlyph : task.status === 'IN_PROGRESS' ? '●' : task.blocked ? '◌' : '○';
+            const activity = live && task.activeForm !== undefined && task.activeForm !== task.subject
+              ? ` · ${task.activeForm}` : '';
             const dependency = task.blockerIds.length === 0
               ? '' : ` · 等待 ${task.blockerIds.length} 项前置任务`;
             const recovery = task.recoveryRequired ? ' · 需要恢复' : '';
-            const compactSuffix = `${task.blockerIds.length === 0
+            const compactSuffix = `${activity}${task.blockerIds.length === 0
               ? '' : ` · 等待${task.blockerIds.length}项`}${task.recoveryRequired ? ' · 恢复' : ''}`;
-            const line = projectSessionTaskLine(task.subject, `${dependency}${recovery}`, compactSuffix, columns);
+            const line = projectSessionTaskLine(
+              task.subject, `${activity}${dependency}${recovery}`, compactSuffix, columns,
+            );
             return (
               <Box key={task.taskId} flexDirection="column">
                 <Text {...(selected ? {color: 'cyanBright' as const}
@@ -2352,18 +2356,15 @@ export function formatModelFailure(summary: ModelFailureView): string {
 /**
  * 展示当前 Run 的唯一加载行与数值 Usage；不展示或伪造隐藏思维链。
  *
- * <p>显式重试态优先于 Task 活动；其余执行期优先使用当前 Task 的 activeForm，
- * 使加载动画与 Task List 共享一个状态源，且不在列表或详情中重复活动文案。</p>
+ * <p>该行只展示模型请求、重试和 Usage，不投影 Session Task。Task 的加载图标、
+ * activeForm 与终态装饰统一由下方唯一 Task List 渲染，避免同一 Board 上下重复。</p>
  */
-function ModelProgressLine({run, taskBoard, spinnerGlyph}: {
+function ModelProgressLine({run, spinnerGlyph}: {
   readonly run: RunView;
-  readonly taskBoard?: TaskBoardView | undefined;
   readonly spinnerGlyph: string;
 }) {
   const progress = run.modelProgress;
   const activeTool = run.tools.some(tool => tool.status === 'started');
-  const activeTask = taskBoard?.tasks.find(task => task.status === 'IN_PROGRESS' && !task.recoveryRequired)
-    ?? taskBoard?.tasks.find(task => task.status === 'IN_PROGRESS');
   let status: string | undefined;
   if (run.runId !== undefined && (run.status === 'running' || run.status === 'retrying')) {
     if (progress?.retryAttempt !== undefined && progress.retryMaxAttempts !== undefined
@@ -2375,8 +2376,6 @@ function ModelProgressLine({run, taskBoard, spinnerGlyph}: {
     } else if (progress?.retryAttempt !== undefined && progress.retryAttempt > 1
       && progress.retryMaxAttempts !== undefined) {
       status = `正在进行第 ${progress.retryAttempt}/${progress.retryMaxAttempts} 次模型尝试`;
-    } else if (activeTask !== undefined) {
-      status = activeTask.activeForm ?? activeTask.subject;
     } else if (!activeTool && progress?.phase === 'thinking') {
       status = `正在分析 · 第 ${progress.turn} 回合`;
     } else if (!activeTool && progress?.phase === 'preparing_tools') {
@@ -2423,7 +2422,6 @@ function isArchivedRun(run: RunView): boolean {
 
 function RunPresentation({
   run,
-  taskBoard,
   approvalPicker,
   planReviewPicker,
   planFeedbackInput,
@@ -2431,7 +2429,6 @@ function RunPresentation({
   spinnerGlyph = '◌',
 }: {
   readonly run: RunView;
-  readonly taskBoard?: TaskBoardView | undefined;
   readonly approvalPicker?: ApprovalPickerState | undefined;
   readonly planReviewPicker?: PlanReviewPickerState | undefined;
   readonly planFeedbackInput?: PlanFeedbackInputState | undefined;
@@ -2443,7 +2440,7 @@ function RunPresentation({
       <Text color="green" bold>❯ </Text>
       <Text bold>{run.prompt}</Text>
     </Box>
-    <ModelProgressLine run={run} taskBoard={taskBoard} spinnerGlyph={spinnerGlyph} />
+    <ModelProgressLine run={run} spinnerGlyph={spinnerGlyph} />
     <ToolActivityGroup tools={run.tools} />
     <ToolDetail run={run} />
     {run.pendingApproval === undefined

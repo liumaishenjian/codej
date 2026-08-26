@@ -45,7 +45,7 @@ public final class ToolFailureFingerprintGovernance {
     public synchronized void record(ToolCall call, ToolError error) {
         Objects.requireNonNull(call, "call 不能为空");
         Objects.requireNonNull(error, "error 不能为空");
-        failed.add(new FailureFingerprint(call.name(), argumentsDigest(call), error.category()));
+        failed.add(new FailureFingerprint(call.name(), argumentsDigest(call), error.code(), error.category()));
     }
 
     /**
@@ -71,7 +71,7 @@ public final class ToolFailureFingerprintGovernance {
         String arguments = argumentsDigest(call);
         boolean exactRepeated = failed.stream().anyMatch(value ->
                 value.tool().equals(call.name()) && value.arguments().equals(arguments));
-        failed.add(new FailureFingerprint(call.name(), arguments, error.category()));
+        failed.add(new FailureFingerprint(call.name(), arguments, error.code(), error.category()));
 
         boolean shapeRepeated = false;
         if (!correctionSignature.values().isEmpty()) {
@@ -86,8 +86,9 @@ public final class ToolFailureFingerprintGovernance {
      * 记录真实成功，并按可证明的恢复范围清理失败窗口。
      *
      * <p>同一 Tool 变参成功证明其策略已经改变，因此清除该 Tool 的旧 fingerprint；成功写入
-     * Workspace 或改变系统状态只会释放可能由本地内容导致的进程失败。纯读取、PlanArtifact
-     * 写入、用户交互以及跨 Tool 的 HTTP/Permission 失败都没有得到恢复证明，仍须拦截。</p>
+     * Workspace 或改变系统状态只会释放可能由本地内容导致的进程失败。Session state mutation 还可
+     * 精确释放 {@code PLAN_GATE_BLOCKED}，因为 review readiness 就由同一 Board 的 Task mutation 改变。
+     * 纯读取、PlanArtifact 写入、用户交互以及其他跨 Tool 的 HTTP/Permission 失败仍须拦截。</p>
      *
      * @param call 已由 Adapter 真实执行成功的调用
      * @param effect Tool 声明的最高副作用等级
@@ -96,11 +97,17 @@ public final class ToolFailureFingerprintGovernance {
         Objects.requireNonNull(call, "call 不能为空");
         Objects.requireNonNull(effect, "effect 不能为空");
         failed.removeIf(value -> value.tool().equals(call.name())
-                || recoversCrossToolFailure(effect, value.category()));
+                || recoversCrossToolFailure(call.name(), effect, value));
     }
 
-    private static boolean recoversCrossToolFailure(ToolEffect effect, ToolFailureCategory category) {
-        return category == ToolFailureCategory.PROCESS_EXIT
+    private static boolean recoversCrossToolFailure(
+            String successfulTool,
+            ToolEffect effect,
+            FailureFingerprint failure) {
+        if (effect == ToolEffect.WRITE_SESSION_STATE
+                && (successfulTool.equals("task_create") || successfulTool.equals("task_update"))
+                && failure.code() == ToolErrorCode.PLAN_GATE_BLOCKED) return true;
+        return failure.category() == ToolFailureCategory.PROCESS_EXIT
                 && (effect == ToolEffect.WRITE_WORKSPACE
                         || effect == ToolEffect.SYSTEM_OR_DESTRUCTIVE);
     }
@@ -131,6 +138,7 @@ public final class ToolFailureFingerprintGovernance {
     private record FailureFingerprint(
             String tool,
             String arguments,
+            ToolErrorCode code,
             ToolFailureCategory category) {
     }
 

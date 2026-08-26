@@ -42,22 +42,14 @@ terminal 与 Surface delivery 的 authority 顺序错误。
    method 保持兼容。
 2. `CONTINUE` 不写入当前 Assistant、不产生 Run terminal、不执行 Tool，也不创建第二个 Run。Runtime 只进入下一
    Model Turn，继续复用同一 Run ID、预算、deadline、取消、Permission、Approval、Hook 与 Tool Pipeline。
-3. accepted Plan 使用私有 `PlanExecutionCorrectionController`。每次候选 final 到达时，它重新运行确定性 evidence
-   validation，并先把最新 Ledger 以 `EXECUTING` revision durable 保存。全部满足才接受 final。
-4. blocking failure 只由批准 requirement 与封闭 reason 构造：`requirementId/kind/locator/reason`。不得包含文件正文、
-   Tool 输出、异常文本、物理路径、Prompt、Markdown 或 Secret。该列表通过 transient System projection 反馈下一
-   Model Turn，不进入 canonical transcript。
-5. correction 有独立固定上限 2；相同 `requirementId + kind + locator + reason` 指纹再次出现时立即停止自动
-   continuation。达到任一边界后 Run 可正常停止，但 Plan 必须写 `NEEDS_VERIFICATION`，等待清晰用户决定；不得把
-   prose 当成 evidence。
+3. accepted Plan 使用私有 `PlanExecutionCorrectionController`。每次候选 final 到达时，它重新运行确定性 evidence validation，并读取绑定当前 `planId` cohort 的未完成 Task；同 Session 普通 Run 或旧 Plan Task 不参与本次判断。先把最新 Ledger 以 `EXECUTING` revision durable 保存；Evidence 全部满足且当前 cohort 未完成 Task 为空时才接受 final。
+4. blocking correction 由批准 requirement 的封闭 `requirementId/kind/locator/reason` 与当前 planId cohort 未完成 `task-N` ID 构造；两类至少存在一种。不得包含文件正文、Task description/metadata、Tool 输出、异常文本、物理路径、Prompt、Markdown 或 Secret。该有界列表通过 transient System projection 反馈下一 Model Turn，不进入 canonical transcript。
+5. correction 有独立固定上限 2；指纹同时覆盖 Evidence failure 与当前 cohort 未完成 Task ID。达到重复指纹或次数边界时，若只剩 Evidence failure，Run 可停止且 Plan 写 `NEEDS_VERIFICATION`；若当前 cohort 仍有未完成 Task，则拒绝候选 final 并由失败终态保持真实任务状态，不能把 prose、Task 或 Plan 伪装成完成。
 6. correction 不自动撤销、重复或重放任何成功 Tool。旧 ToolResult 保留在 canonical history，模型只能自行提出新的
    Tool intent，并再次经过统一 Pipeline。取消、模型错误、deadline、limit 与 incomplete stream 沿现有 Run terminal
    进入 durable Plan failure status。
-7. stdio 对 approved Plan 抑制全部模型 text delta，并暂不把 Runtime `RunFinished` 直接投影为 Surface terminal。
-   Java 先发布 `plan.verification.correction|required|completed`；只有 Plan `COMPLETED` 的 terminal 才包含最终
-   `finalText`。`NEEDS_VERIFICATION` terminal 不含第一份或边界耗尽后的模型完成声明。
-8. TUI 严格校验 `plan.verification.correction` exact schema；纠正时保持 running，并明确显示同一 Run、当前次数和
-   “不会自动重放既有副作用”。evidence required 后才回 ready，并显示 actionable 非完成状态。
+7. stdio 不在 lifecycle `RunFinished` listener 中直接发布 Surface terminal，而是等待 `application.run()/runPlan()` 返回；此时 Headless `finally` 已释放 active Run，客户端收到 `run.completed` 后立即批准不会命中 `STALE_PLAN_REVIEW`。approved Plan 仍抑制全部模型 text delta，并先发布 `plan.verification.correction|required|completed`；只有 Plan `COMPLETED` 的 terminal 才包含最终 `finalText`。`NEEDS_VERIFICATION` terminal 不含第一份或边界耗尽后的模型完成声明。
+8. TUI 严格校验 `plan.verification.correction` exact schema，包括 `incompleteTaskCount/incompleteTaskIds/failures` 数量一致性；纠正时保持 running，并明确显示“任务或证据尚未收敛”、同一 Run、当前次数和“不会自动重放既有副作用”。evidence required 或失败终态后才回 ready，并显示 actionable 非完成状态。
 9. deliverable 验证继续使用 WorkspaceGuard realpath、16 MiB 上限、读后重检与 SHA-256；verification 继续只接受
    当前 execution message slice 中同名 canonical `SUCCESS` ToolResult。模型 prose、文件名近似和失败 ToolResult
    永不构成证据。
@@ -66,14 +58,16 @@ terminal 与 Surface delivery 的 authority 顺序错误。
 
 ```text
 candidate final
-  -> deterministic evidence validation
-     -> all satisfied
+  -> deterministic evidence validation + authoritative current planId Task cohort
+     -> evidence satisfied and current cohort all COMPLETED
         -> accept final -> Plan COMPLETED -> verification.completed -> run.completed(finalText)
-     -> blocking failures, fresh fingerprint, below bound
+     -> blocking evidence/task failures, fresh fingerprint, below bound
         -> persist EXECUTING ledger -> correction event -> same Run next model turn
-     -> repeated fingerprint or bound exhausted
+     -> repeated fingerprint or bound exhausted, evidence-only failure
         -> accept Run stop only -> Plan NEEDS_VERIFICATION
         -> verification.required -> run.completed(no finalText)
+     -> repeated fingerprint or bound exhausted, incomplete Tasks remain
+        -> reject candidate final -> failed terminal(no finalText), preserve real Task states
 
 cancel/model error/deadline/limit/incomplete stream
   -> Plan failure terminal -> plan.execution.failed -> run terminal(no finalText)
@@ -87,8 +81,7 @@ cancel/model error/deadline/limit/incomplete stream
 - Verification Tool：失败/拒绝的 `write_file` 不构成证据；后续 canonical 成功 ToolResult 才使 requirement PASSED。
 - 失败终态：correction 中模型错误进入 `FAILED`；取消进入 `CANCELLED`，已成功写入的文件保持一次且精确 deliverable
   不会被自动创建。
-- stdio：correction payload exact、verification 先于 terminal、未验证 terminal 无 `finalText`、approved
-  `RunFinished` 不重复投影。
+- stdio：correction payload exact，包含数量匹配的未完成 Task ID 与可为空的 Evidence failures；verification 先于 terminal、未验证 terminal 无 `finalText`、approved `RunFinished` 不重复投影。
 - TUI：protocol 拒绝额外字段；reducer/Ink 保持 running、显示 no-replay notice、未展示 withheld prose，并在
   `NEEDS_VERIFICATION` 后显示非完成状态。
 - 真实 Java Plan E2E：真实 stdio child 经两次 `write_file` Approval，先生成错误中文文件名，再由同一 Run correction

@@ -2,7 +2,7 @@
 
 ## 已达到
 
-`TASK-01..05` 达到 L2：Session-local 三态任务板、依赖 DAG、CAS/claim/recovery、四个生产 Tool、统一 Permission/Hook/Pipeline、增量 JSONL、Resume/Fork、root/child capability、stable snapshot 与 stdio `/tasks` 均已实现。Plan planning 与批准 execution 使用同一 Session Board 和同一组四个 Tool；批准边界不解析 Markdown、不重建 Task identity，公开 `task_update` 只接收简单业务字段，CAS/claim/phase mutation 由宿主管理。Session-local root 的 owner 标签由宿主规范化为当前 capability actor，避免要求模型猜测隐藏 ID；child 仍精确校验。真实 Java stdio→Ink E2E 通过真实审批选择器建立 Run correlation，验证五个中文 Task 在规划期创建，执行期沿用 task-1..5 逐项活动并完成划线，同时实际生成并重开校验 OpenXML XLSX。真实 Provider 冒烟另验证三项中文 Task 从规划、批准执行到 3/3 完成和真实文本产物。当前 `active_form` 只进入黄色加载 spinner，慢 Tool 期间仍可见；完整面板不抢焦点且不复制活动子行，进行中显示黄色实心符号/bold 主行，完成态显示绿色勾选与删除线/dim，并在约 5 秒后只隐藏。
+`TASK-01..05` 达到 L2：Session-local 三态任务板、依赖 DAG、CAS/claim/recovery、四个生产 Tool、统一 Permission/Hook/Pipeline、增量 JSONL、Resume/Fork、root/child capability、stable snapshot 与 stdio `/tasks` 均已实现。Plan planning 与批准 execution 使用同一 Session Board 和同一组四个 Tool；批准边界不解析 Markdown、不重建 Task identity，宿主为当前 Plan 新 Task 注入模型不可提交的 `planId` 绑定。review/reminder/final correction 只观察该 cohort：普通 Run 或旧 Plan Task 保留在 Session Board，但既不能满足也不能阻断当前 Plan。公开 `task_update` 只接收简单业务字段，CAS/claim/phase mutation 由宿主管理。最终交付要求 Evidence 满足且当前 cohort 全部完成，未完成项通过同一 Run 的有界 correction 继续而不重放副作用。Session-local root 的 owner 标签由宿主规范化为当前 capability actor，避免要求模型猜测隐藏 ID；child 仍精确校验。真实 Java stdio→Ink E2E 通过真实审批选择器建立 Run correlation，验证五个中文 Task 在规划期创建，执行期沿用 task-1..5 逐项活动并完成划线，同时实际生成并重开校验 OpenXML XLSX。唯一 Task 面板的 IN_PROGRESS 行使用黄色动画 spinner、subject 和一次 `active_form`，模型进度行不再重复；完成态显示绿色勾选与删除线/dim，并在约 5 秒后只隐藏。
 
 ## 仍未达到参考机制的部分
 
@@ -10,7 +10,7 @@
 - 无 peer message、跨进程 watch/poll/push subscription、离线 owner reclaim、时间 lease 或自动领取。
 - stable v1 只提供协商后的分页 snapshot，不提供跨连接增量事件订阅。
 - child capability 只在一次本机生产委托中生效，不是远程 worker 凭证或授权协议。
-- 不从 Plan Markdown 推断任务；模型应通过 Task Tool 显式维护 Board。完成 Task 仍不是 Plan 审批或 Evidence 本身。
+- 不从 Plan Markdown 或 Task 标题推断任务语义；模型仍通过 Task Tool 显式维护 Board，review Gate 只证明当前 planId cohort 至少有一个未完成 Task，不证明 Markdown 每个列表项与 Task subject 逐字一一对应，也不使用中英文关键词正则排除所谓元任务。完成 Task 仍不是 Plan 审批或 Evidence 本身。
 
 ## 风险与后续验证
 

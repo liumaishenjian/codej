@@ -109,10 +109,16 @@ describe('real Java stdio plan flow', () => {
         && event.requestId === executionRequest), () => diagnostic(events, failures, exit));
       const correction = events.find(event => event.type === 'plan.verification.correction'
         && event.requestId === executionRequest)!;
-      expect(correction.payload).toEqual({attempt: 1, maxAttempts: 2, failures: [{
-        requirementId: 'weather-xlsx', kind: 'deliverable', locator: '河南各市7天天气.xlsx',
-        reason: 'FILE_MISSING_OR_UNSAFE',
-      }]});
+      expect(correction.payload).toEqual({
+        attempt: 1,
+        maxAttempts: 2,
+        incompleteTaskCount: 2,
+        incompleteTaskIds: ['task-1', 'task-2'],
+        failures: [{
+          requirementId: 'weather-xlsx', kind: 'deliverable', locator: '河南各市7天天气.xlsx',
+          reason: 'FILE_MISSING_OR_UNSAFE',
+        }],
+      });
       expect(events.some(event => JSON.stringify(event.payload).includes('FIRST_UNVERIFIED_FINAL'))).toBe(false);
       await waitFor(() => events.filter(event => event.type === 'approval.requested'
         && event.requestId === executionRequest).length === 2, () => diagnostic(events, failures, exit));
@@ -487,8 +493,8 @@ describe('real Java stdio plan flow', () => {
             && event.requestId === executionRequest && event.payload.toolName === 'run_command').length === 3
             && events.filter(event => event.type === 'tool.completed'
               && event.requestId === executionRequest && event.payload.toolName === 'run_command').length === 2
-            && view.lastFrame()?.includes('正在执行长耗时质量检查…') === true
-            && (view.lastFrame()?.match(/正在执行长耗时质量检查…/gu) ?? []).length === 1,
+            && view.lastFrame()?.includes('正在执行长耗时质量检查') === true
+            && (view.lastFrame()?.match(/正在执行长耗时质量检查/gu) ?? []).length === 1,
           () => `${diagnostic(events, failures, exit)}, lastFrame=${JSON.stringify(view.lastFrame())}`);
         }
       }
@@ -745,7 +751,8 @@ function diagnostic(
     .map(event => typeof event.runId === 'string' ? event.runId : 'missing').join(',');
   const exitMetadata = exit === undefined ? 'pending'
     : `code=${exit.code ?? 'null'}:signal=${safeSignal(exit.signal)}:stderrBytes=${Math.min(exit.stderrBytes, 999_999)}`;
-  return `等待真实 Java 事件超时；eventCount=${events.length}, eventTypes=[${eventCounts}], terminalReasons=[${terminalReasons}], startedTools=[${startedTools}], completedTools=[${completedTools}], failedTools=[${failedTools}], commandResults=[${commandResults}], protocolErrors=[${protocolErrors}], startedRunIds=[${startedRunIds}], failureCount=${failures.length}, exit=${exitMetadata}`;
+  const failureMessages = failures.slice(0, 3).map(message => message.replace(/[\r\n\t]+/gu, ' ').slice(0, 240)).join('|');
+  return `等待真实 Java 事件超时；eventCount=${events.length}, eventTypes=[${eventCounts}], terminalReasons=[${terminalReasons}], startedTools=[${startedTools}], completedTools=[${completedTools}], failedTools=[${failedTools}], commandResults=[${commandResults}], protocolErrors=[${protocolErrors}], startedRunIds=[${startedRunIds}], failureCount=${failures.length}, failures=[${failureMessages}], exit=${exitMetadata}`;
 }
 
 async function safeJournalLifecycle(journalPath: string): Promise<string> {

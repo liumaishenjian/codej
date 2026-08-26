@@ -388,25 +388,32 @@ public sealed interface LifecycleEvent extends AgentEvent
     }
 
     /**
-     * Plan 最终 prose 被暂存后，确定性 Evidence Gate 请求同一 Run 进行一次纠正 continuation。
+     * Plan 最终 prose 被暂存后，确定性生命周期 Gate 请求同一 Run 进行一次纠正 continuation。
      *
-     * <p>事件只用于观察：它不执行 Tool、不重新启动 Run，也不授予任何权限。失败列表来自已批准
-     * requirement 与封闭验证原因，Surface 不得把该事件解释为完成。</p>
+     * <p>事件只用于观察：它不执行 Tool、不重新启动 Run，也不授予任何权限。Evidence 失败来自已批准
+     * requirement；Task identity 来自同一 Session Board。两者至少存在一种，Surface 不得把事件解释为完成。</p>
      *
      * @param attempt 当前纠正次数，从 1 开始
      * @param maxAttempts 本次执行允许的纠正上限
-     * @param failures 当前阻止 Plan 完成的稳定失败列表
+     * @param failures 当前阻止 Plan 完成的稳定 Evidence 失败列表
+     * @param incompleteTaskIds 当前尚未完成的稳定 Task identity
      */
     record PlanVerificationCorrectionRequested(
             int attempt,
             int maxAttempts,
-            java.util.List<PlanEvidenceCorrectionFailure> failures) implements LifecycleEvent {
-        /** 校验计数与有界失败集合。 */
+            java.util.List<PlanEvidenceCorrectionFailure> failures,
+            java.util.List<String> incompleteTaskIds) implements LifecycleEvent {
+        /** 校验计数与有界失败、Task identity 集合。 */
         public PlanVerificationCorrectionRequested {
             failures = java.util.List.copyOf(Objects.requireNonNull(failures, "failures 不能为空"));
+            incompleteTaskIds = java.util.List.copyOf(
+                    Objects.requireNonNull(incompleteTaskIds, "incompleteTaskIds 不能为空"));
             if (attempt < 1 || maxAttempts < 1 || attempt > maxAttempts
-                    || failures.isEmpty() || failures.size() > PlanEvidenceLedger.MAX_REQUIREMENTS) {
-                throw new IllegalArgumentException("Plan verification correction 事件无效");
+                    || (failures.isEmpty() && incompleteTaskIds.isEmpty())
+                    || failures.size() > PlanEvidenceLedger.MAX_REQUIREMENTS
+                    || incompleteTaskIds.size() > 256
+                    || incompleteTaskIds.stream().anyMatch(id -> id == null || !id.matches("task-[1-9][0-9]*"))) {
+                throw new IllegalArgumentException("Plan lifecycle correction 事件无效");
             }
         }
     }

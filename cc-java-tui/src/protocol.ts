@@ -358,17 +358,26 @@ function validateEventShape(
     }
   }
   if (type === 'plan.verification.correction') {
-    if (!hasExactFields(payload, new Set(['attempt', 'maxAttempts', 'failures']))
+    if (!hasExactFields(payload, new Set([
+      'attempt', 'maxAttempts', 'incompleteTaskCount', 'incompleteTaskIds', 'failures',
+    ]))
       || !Number.isSafeInteger(payload.attempt) || (payload.attempt as number) < 1
       || !Number.isSafeInteger(payload.maxAttempts)
       || (payload.maxAttempts as number) < (payload.attempt as number)
-      || !Array.isArray(payload.failures) || payload.failures.length < 1 || payload.failures.length > 64
+      || !Number.isSafeInteger(payload.incompleteTaskCount)
+      || (payload.incompleteTaskCount as number) < 0 || (payload.incompleteTaskCount as number) > 256
+      || !Array.isArray(payload.incompleteTaskIds)
+      || payload.incompleteTaskIds.length !== payload.incompleteTaskCount
+      || payload.incompleteTaskIds.some(taskId => typeof taskId !== 'string'
+        || !/^task-[1-9][0-9]*$/u.test(taskId))
+      || !Array.isArray(payload.failures) || payload.failures.length > 64
+      || (payload.failures.length === 0 && payload.incompleteTaskIds.length === 0)
       || payload.failures.some(failure => !isRecord(failure)
         || !hasExactFields(failure, new Set(['requirementId', 'kind', 'locator', 'reason']))
         || typeof failure.requirementId !== 'string'
         || (failure.kind !== 'deliverable' && failure.kind !== 'verification')
         || typeof failure.locator !== 'string' || typeof failure.reason !== 'string')) {
-      throw new ProtocolViolation('plan verification correction 投影无效');
+      throw new ProtocolViolation('plan lifecycle correction 投影无效');
     }
   }
   if (type === 'plan.review.rejected') {

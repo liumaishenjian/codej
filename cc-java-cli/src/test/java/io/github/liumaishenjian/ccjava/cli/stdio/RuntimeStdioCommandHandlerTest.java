@@ -361,6 +361,7 @@ class RuntimeStdioCommandHandlerTest {
                     .reduce((first, second) -> second).orElseThrow();
 
             assertThat(correction.payload().toString()).isEqualTo("{\"attempt\":1,\"maxAttempts\":2,"
+                    + "\"incompleteTaskCount\":0,\"incompleteTaskIds\":[],"
                     + "\"failures\":[{\"requirementId\":\"exact-file\",\"kind\":\"deliverable\","
                     + "\"locator\":\"exact.txt\",\"reason\":\"FILE_MISSING_OR_UNSAFE\"}]}");
             assertThat(required.payload().toString()).contains("\"status\":\"needs_verification\"", "\"requiredEvidence\":1", "\"satisfiedEvidence\":0");

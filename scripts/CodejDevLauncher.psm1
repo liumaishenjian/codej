@@ -46,7 +46,7 @@ function ConvertFrom-CodejArguments {
         return [pscustomobject]@{
             Workspace = [IO.Path]::GetFullPath($InvocationDirectory)
             ProviderControlArguments = @($Arguments)
-            Model = $null; Timeout = '5m'; Print = $null; Continue = $false; Resume = $null; Fork = $null
+            Model = $null; Timeout = '30m'; Print = $null; Continue = $false; Resume = $null; Fork = $null
             ContextMaximumInputTokens = $script:DefaultContextMaximumInputTokens
             ContextReservedOutputTokens = $script:DefaultContextReservedOutputTokens
             ContextSafetyMarginTokens = $script:DefaultContextSafetyMarginTokens
@@ -177,7 +177,7 @@ function ConvertFrom-CodejArguments {
     return [pscustomobject]@{
         Workspace = $workspace
         Model = if ($values.ContainsKey('--model')) { $values['--model'] } else { $null }
-        Timeout = if ($values.ContainsKey('--timeout')) { $values['--timeout'] } else { '5m' }
+        Timeout = if ($values.ContainsKey('--timeout')) { $values['--timeout'] } else { '30m' }
         Print = if ($values.ContainsKey('--print')) { $values['--print'] } else { $null }
         Continue = $flags.ContainsKey('--continue')
         Resume = if ($values.ContainsKey('--resume')) { $values['--resume'] } else { $null }
@@ -223,6 +223,7 @@ codej - cc-java 源码开发启动器
 说明：
   未指定 --workspace 时，使用执行 codej 时的当前目录。
   --print 是一次性非交互 Run；不表示进入 TUI 后预填消息。
+  --timeout 默认 30m，作为 --print 的总 Run 硬限制；普通交互与 Plan 不装配总 Run deadline。
   --continue、--resume 和 --fork 选择同一 Workspace 下的持久 Session。
   默认启用 256000 Token Context 管线；可用 --context-maximum-input-tokens、
   --context-reserved-output-tokens 和 --context-safety-margin-tokens 显式覆盖。

@@ -2,6 +2,7 @@ package io.github.liumaishenjian.ccjava.domain;
 
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalInt;
 
 /**
  * 表示 Session、Run、Model Turn、Permission 和 Tool Pipeline 的内部生命周期点。
@@ -368,15 +369,19 @@ public sealed interface LifecycleEvent extends AgentEvent
      * @param reason 治理原因
      * @param modelTurns 已消耗模型回合
      * @param toolCalls 已消耗 Tool Call
-     * @param effectiveModelLimit 当前有效模型回合上限
-     * @param effectiveToolLimit 当前有效 Tool Call 上限
+     * @param totalModelTurns 调用方提供的总模型回合硬上限；空表示未提供
+     * @param totalToolCalls 调用方提供的总 Tool Call 硬上限；空表示未提供
      */
     record BudgetGoverned(BudgetGovernanceReason reason, int modelTurns, int toolCalls,
-                           int effectiveModelLimit, int effectiveToolLimit) implements LifecycleEvent {
+                           OptionalInt totalModelTurns, OptionalInt totalToolCalls) implements LifecycleEvent {
         /** 校验治理原因和计数。 */
         public BudgetGoverned {
             reason = Objects.requireNonNull(reason, "reason 不能为空");
-            if (modelTurns < 0 || toolCalls < 0 || effectiveModelLimit < 1 || effectiveToolLimit < 0) {
+            totalModelTurns = Objects.requireNonNull(totalModelTurns, "totalModelTurns 不能为空");
+            totalToolCalls = Objects.requireNonNull(totalToolCalls, "totalToolCalls 不能为空");
+            if (modelTurns < 0 || toolCalls < 0
+                    || totalModelTurns.stream().anyMatch(value -> value < 1)
+                    || totalToolCalls.stream().anyMatch(value -> value < 0)) {
                 throw new IllegalArgumentException("预算治理计数非法");
             }
         }

@@ -136,7 +136,7 @@ public final class RuntimeStdioCommandHandler
         this(
                 settings,
                 Path.of("").toAbsolutePath().normalize(),
-                io.github.liumaishenjian.ccjava.domain.AgentLimits.DEFAULT.maxDuration());
+                io.github.liumaishenjian.ccjava.domain.AgentLimits.DEFAULT.runDeadline().orElseThrow());
     }
 
     /**
@@ -376,7 +376,7 @@ public final class RuntimeStdioCommandHandler
                 new HeadlessRuntimeOptions(
                         Path.of("").toAbsolutePath().normalize(),
                         "fake-model",
-                        io.github.liumaishenjian.ccjava.domain.AgentLimits.DEFAULT.maxDuration()));
+                        io.github.liumaishenjian.ccjava.domain.AgentLimits.DEFAULT.runDeadline().orElseThrow()));
     }
 
     /**
@@ -2109,8 +2109,8 @@ public final class RuntimeStdioCommandHandler
             payload.put("promptChars", run.promptChars);
             emit(run, "run.started", payload);
             if (run.approvedPlanExecution) {
-                // 批准边界已创建权威 PENDING Task；在首个模型回合前通过同一 writer 投影，
-                // 避免 UI 要等到模型第一次 task_update 才看到计划步骤。
+                // 批准前后复用同一 Session Task Board；在首个执行模型回合前通过同一 writer 投影，
+                // 让 UI 立即看到规划期已有 TaskId、中文标题、依赖与状态。
                 emitTaskBoardSnapshot(run);
             }
         } else if (envelope.event() instanceof LifecycleEvent.ModelTurnStarted started) {
@@ -2216,8 +2216,8 @@ public final class RuntimeStdioCommandHandler
             payload.put("reason", budget.reason().name().toLowerCase(Locale.ROOT));
             payload.put("modelTurns", budget.modelTurns());
             payload.put("toolCalls", budget.toolCalls());
-            payload.put("effectiveModelLimit", budget.effectiveModelLimit());
-            payload.put("effectiveToolLimit", budget.effectiveToolLimit());
+            budget.totalModelTurns().ifPresent(value -> payload.put("totalModelTurns", value));
+            budget.totalToolCalls().ifPresent(value -> payload.put("totalToolCalls", value));
             emit(run, "run.budget.governed", payload);
         } else if (envelope.event() instanceof LifecycleEvent.ToolOutput output) {
             ObjectNode payload = codec.objectNode();

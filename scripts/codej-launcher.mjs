@@ -45,7 +45,7 @@ function main() {
 
 function parseAgentArguments(args) {
   let workspace = process.cwd();
-  let timeout = '5m';
+  let timeout = '30m';
   let prompt;
   const forwarded = [];
   const valueOptions = new Set(['--workspace', '--model', '--timeout', '--resume', '--fork',

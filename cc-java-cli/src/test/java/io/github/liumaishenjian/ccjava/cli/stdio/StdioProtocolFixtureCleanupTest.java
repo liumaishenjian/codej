@@ -61,7 +61,7 @@ class StdioProtocolFixtureCleanupTest {
                     + "\"sequence\":4,\"payload\":{\"approvalId\":\"%s\",\"decision\":\"allow_once\"}}")
                     .formatted(sessionId, executionStarted.runId().orElseThrow(),
                             firstApproval.payload().get("approvalId").stringValue())), emitter);
-            awaitEventCount(events, "tool.completed", "execute", 2);
+            awaitEventCount(events, "tool.completed", "execute", 3);
             awaitEvent(events, "plan.verification.correction", "execute");
             CapturedEvent secondApproval = awaitEventCount(events, "approval.requested", "execute", 2);
             plan.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"approval.resolve\","
@@ -69,21 +69,22 @@ class StdioProtocolFixtureCleanupTest {
                     + "\"sequence\":5,\"payload\":{\"approvalId\":\"%s\",\"decision\":\"allow_once\"}}")
                     .formatted(sessionId, executionStarted.runId().orElseThrow(),
                             secondApproval.payload().get("approvalId").stringValue())), emitter);
-            awaitEventCount(events, "tool.completed", "execute", 4);
+            awaitEventCount(events, "tool.completed", "execute", 5);
             awaitEvent(events, "plan.verification.completed", "execute");
             CapturedEvent terminal = awaitEvent(events, "run.completed", "execute");
 
             assertThat(events.stream().filter(event -> event.type().equals("tool.started")
                     && event.requestId().equals("execute"))
                     .map(event -> event.payload().get("toolName").stringValue()))
-                    .containsExactly("task_update", "write_file", "write_file", "task_update");
+                    .containsExactly("task_list", "task_update", "write_file", "write_file", "task_update");
             assertThat(events.stream().filter(event -> event.type().equals("tool.completed")
-                    && event.requestId().equals("execute"))).hasSize(4);
+                    && event.requestId().equals("execute"))).hasSize(5);
             assertThat(events.stream().filter(event -> event.type().equals("task.board.snapshot")
                     && event.requestId().equals("execute"))
                     .map(event -> event.payload().get("boardRevision").longValue()))
-                    // 初始 seed 为 1；窄 Adapter 在一次 IN_PROGRESS Tool 内先写 activeForm、再 claim，
-                    // 只在 Tool 完成后发布 revision 3；最终 COMPLETED 发布 revision 4。
+                    // Task 由 planning Run 真实创建为 revision 1，execution 不再运行确定性 seeder。
+                    // 带 activeForm 的 IN_PROGRESS update 在一次 Tool 内写入两个 revision，完成后投影 revision 3；
+                    // 最终 COMPLETED update 投影 revision 4。
                     .containsExactly(1L, 3L, 4L);
             assertThat(events.stream().filter(event -> event.requestId().equals("execute"))
                     .map(CapturedEvent::type)).containsSubsequence(

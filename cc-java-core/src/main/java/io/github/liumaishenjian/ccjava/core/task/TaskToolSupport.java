@@ -28,10 +28,6 @@ final class TaskToolSupport {
             "subject", "description", "active_form", "blocked_by", "metadata");
     static final Set<String> LIST_FIELDS = Set.of("status", "filter", "cursor", "limit");
     static final Set<String> GET_FIELDS = Set.of("task_id");
-    static final Set<String> UPDATE_FIELDS = Set.of(
-            "task_id", "operation", "expected_task_revision", "expected_board_revision",
-            "expected_claim_epoch", "subject", "description", "active_form", "metadata_patch",
-            "target_status", "target_actor", "add_blocked_by", "remove_blocked_by");
 
     private TaskToolSupport() { }
 
@@ -59,93 +55,6 @@ final class TaskToolSupport {
         TaskMetadata metadata = metadata(arguments.values().get("metadata"));
         return new TaskMutation.Create(new TaskCallId(callId), subject, description,
                 activeForm, metadata, blockedBy);
-    }
-
-    /** 从 update payload 构造 operation-specific mutation，并拒绝任意字段混用。 */
-    static TaskMutation updateMutation(JsonObject arguments, String callId) {
-        requireExactOrSubset(arguments, UPDATE_FIELDS,
-                Set.of("task_id", "operation", "expected_task_revision"));
-        TaskId taskId = taskId(string(arguments, "task_id", true));
-        String operation = string(arguments, "operation", true);
-        long expectedTaskRevision = positiveLong(arguments, "expected_task_revision", true);
-        TaskCallId trustedCallId = new TaskCallId(callId);
-        return switch (operation) {
-            case "EDIT" -> {
-                requireOperationFields(arguments, Set.of("task_id", "operation", "expected_task_revision"),
-                        Set.of("expected_claim_epoch", "subject", "description", "active_form", "metadata_patch"), true);
-                OptionalLong epoch = optionalPositiveLong(arguments, "expected_claim_epoch");
-                Optional<String> subject = optionalString(arguments, "subject")
-                        .map(value -> taskText(value, "subject", 200, true, -1, false));
-                Optional<String> description = optionalString(arguments, "description")
-                        .map(value -> taskText(value, "description", Integer.MAX_VALUE,
-                                false, 4_096, true));
-                boolean activeSpecified = arguments.values().containsKey("active_form");
-                Optional<String> activeForm = optionalNullableString(arguments, "active_form")
-                        .map(value -> taskText(value, "active_form", 200, true, -1, false));
-                TaskMetadataPatch patch = metadataPatch(arguments.values().get("metadata_patch"));
-                yield new TaskMutation.Edit(trustedCallId, taskId, expectedTaskRevision, epoch,
-                        subject, description, activeSpecified, activeForm, patch);
-            }
-            case "TRANSITION" -> {
-                requireOperationFields(arguments,
-                        Set.of("task_id", "operation", "expected_task_revision", "target_status"),
-                        Set.of("expected_claim_epoch"), false);
-                TaskStatus target = taskStatus(string(arguments, "target_status", true));
-                yield new TaskMutation.Transition(trustedCallId, taskId, expectedTaskRevision,
-                        target, optionalPositiveLong(arguments, "expected_claim_epoch"));
-            }
-            case "CLAIM" -> {
-                requireOperationFields(arguments,
-                        Set.of("task_id", "operation", "expected_task_revision"), Set.of(), false);
-                yield new TaskMutation.Claim(trustedCallId, taskId, expectedTaskRevision);
-            }
-            case "RESUME_CLAIM" -> {
-                requireOperationFields(arguments,
-                        Set.of("task_id", "operation", "expected_task_revision", "expected_claim_epoch"),
-                        Set.of(), false);
-                yield new TaskMutation.ResumeClaim(trustedCallId, taskId, expectedTaskRevision,
-                        positiveLong(arguments, "expected_claim_epoch", true));
-            }
-            case "RELEASE" -> {
-                requireOperationFields(arguments,
-                        Set.of("task_id", "operation", "expected_task_revision", "expected_claim_epoch"),
-                        Set.of(), false);
-                yield new TaskMutation.Release(trustedCallId, taskId, expectedTaskRevision,
-                        positiveLong(arguments, "expected_claim_epoch", true));
-            }
-            case "ASSIGN" -> {
-                requireOperationFields(arguments,
-                        Set.of("task_id", "operation", "expected_task_revision", "target_actor"),
-                        Set.of(), false);
-                yield new TaskMutation.Assign(trustedCallId, taskId, expectedTaskRevision,
-                        new TaskActorId(string(arguments, "target_actor", true)));
-            }
-            case "REASSIGN" -> {
-                requireOperationFields(arguments,
-                        Set.of("task_id", "operation", "expected_task_revision", "target_actor"),
-                        Set.of("expected_claim_epoch"), false);
-                yield new TaskMutation.Reassign(trustedCallId, taskId, expectedTaskRevision,
-                        new TaskActorId(string(arguments, "target_actor", true)),
-                        optionalPositiveLong(arguments, "expected_claim_epoch"));
-            }
-            case "DEPENDENCY" -> {
-                requireOperationFields(arguments,
-                        Set.of("task_id", "operation", "expected_task_revision", "expected_board_revision"),
-                        Set.of("add_blocked_by", "remove_blocked_by"), true);
-                yield new TaskMutation.Dependency(trustedCallId, taskId, expectedTaskRevision,
-                        nonNegativeLong(arguments, "expected_board_revision", true),
-                        taskIdList(arguments, "add_blocked_by", false),
-                        taskIdList(arguments, "remove_blocked_by", false));
-            }
-            case "DELETE" -> {
-                requireOperationFields(arguments,
-                        Set.of("task_id", "operation", "expected_task_revision", "expected_board_revision"),
-                        Set.of(), false);
-                yield new TaskMutation.Delete(trustedCallId, taskId, expectedTaskRevision,
-                        nonNegativeLong(arguments, "expected_board_revision", true));
-            }
-            default -> throw new IllegalArgumentException("operation 无效");
-        };
     }
 
     /** 解析 Task List 的稳定过滤与游标。 */
@@ -352,19 +261,6 @@ final class TaskToolSupport {
         return new TaskMetadata(values);
     }
 
-    private static TaskMetadataPatch metadataPatch(Object raw) {
-        if (raw == null) return TaskMetadataPatch.empty();
-        if (!(raw instanceof Map<?, ?> source)) throw new IllegalArgumentException("metadata_patch 必须为 object");
-        TreeMap<String, TaskMetadataValue> upserts = new TreeMap<>();
-        TreeSet<String> removals = new TreeSet<>();
-        for (var entry : source.entrySet()) {
-            if (!(entry.getKey() instanceof String key)) throw new IllegalArgumentException("metadata_patch key 无效");
-            if (entry.getValue() == JsonNull.INSTANCE) removals.add(key);
-            else upserts.put(key, metadataValue(entry.getValue()));
-        }
-        return new TaskMetadataPatch(upserts, removals);
-    }
-
     private static TaskMetadataValue metadataValue(Object value) {
         if (value instanceof Boolean booleanValue) return new TaskMetadataValue.BooleanValue(booleanValue);
         if (value instanceof String stringValue) return new TaskMetadataValue.StringValue(stringValue);
@@ -392,13 +288,6 @@ final class TaskToolSupport {
         Object value = arguments.values().get(name);
         if (value == null) return Optional.empty();
         if (!(value instanceof String text)) throw new IllegalArgumentException(name + " 必须为 string");
-        return Optional.of(text);
-    }
-
-    private static Optional<String> optionalNullableString(JsonObject arguments, String name) {
-        Object value = arguments.values().get(name);
-        if (value == null || value == JsonNull.INSTANCE) return Optional.empty();
-        if (!(value instanceof String text)) throw new IllegalArgumentException(name + " 必须为 string 或 null");
         return Optional.of(text);
     }
 
@@ -439,11 +328,6 @@ final class TaskToolSupport {
             }
         }
         return true;
-    }
-
-    private static OptionalLong optionalPositiveLong(JsonObject arguments, String name) {
-        if (!arguments.values().containsKey(name)) return OptionalLong.empty();
-        return OptionalLong.of(positiveLong(arguments, name, true));
     }
 
     private static long positiveLong(JsonObject arguments, String name, boolean required) {
@@ -489,16 +373,4 @@ final class TaskToolSupport {
         }
     }
 
-    private static void requireOperationFields(JsonObject arguments, Set<String> required,
-            Set<String> optional, boolean requireOptionalMutationField) {
-        HashSet<String> allowed = new HashSet<>(required);
-        allowed.addAll(optional);
-        Set<String> actual = arguments.values().keySet();
-        if (!allowed.containsAll(actual) || !actual.containsAll(required)) {
-            throw new IllegalArgumentException("operation 字段集合无效");
-        }
-        if (requireOptionalMutationField && optional.stream().noneMatch(actual::contains)) {
-            throw new IllegalArgumentException("operation 缺少 mutation 字段");
-        }
-    }
 }

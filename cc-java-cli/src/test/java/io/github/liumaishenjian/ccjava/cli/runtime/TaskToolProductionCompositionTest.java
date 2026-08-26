@@ -66,35 +66,36 @@ class TaskToolProductionCompositionTest {
     }
 
     @Test
-    void approvedPlanConvergesToSingleFinalOnlyTurnAfterTasksAndEvidenceComplete(@TempDir Path root)
+    void approvedPlanReusesTaskCreatedDuringPlanningAfterListAndGetDiscovery(@TempDir Path root)
             throws Exception {
-        Path workspace = Files.createDirectory(root.resolve("workspace-final-only"));
+        Path workspace = Files.createDirectory(root.resolve("workspace-discovery"));
         CopyOnWriteArrayList<ModelRequest> requests = new CopyOnWriteArrayList<>();
         java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
-        String markdown = "# 中文执行计划\n\n## 拟定步骤\n1. 完成中文任务并验证。\n";
+        String markdown = "# 中文执行计划\n\n## 拟定步骤\n1. 检查已有任务。\n";
         ModelGateway model = request -> {
             requests.add(request);
             return switch (calls.getAndIncrement()) {
-                case 0 -> ModelTurn.tools(List.of(new ToolCall("plan", "revise_plan_artifact",
+                case 0 -> ModelTurn.tools(List.of(new ToolCall("create", "task_create",
+                        new JsonObject(Map.of("subject", "检查已有任务。")))));
+                case 1 -> ModelTurn.tools(List.of(new ToolCall("plan", "revise_plan_artifact",
                         new JsonObject(Map.of("markdown", markdown)))));
-                case 1 -> ModelTurn.tools(List.of(new ToolCall("evidence", "declare_plan_evidence",
-                        new JsonObject(Map.of("requirementId", "task-transition", "kind", "VERIFICATION",
-                                "locator", "task_update", "label", "任务状态已验证", "required", true)))));
-                case 2 -> ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review", JsonObject.empty())));
-                case 3 -> ModelTurn.text("规划完成");
-                case 4 -> ModelTurn.tools(List.of(new ToolCall("claim", "task_update", new JsonObject(Map.of(
-                        "task_id", "task-1", "status", "IN_PROGRESS", "active_form", "正在执行中文任务")))));
-                case 5 -> ModelTurn.tools(List.of(new ToolCall("complete", "task_update", new JsonObject(Map.of(
-                        "task_id", "task-1", "status", "COMPLETED")))));
-                case 6 -> ModelTurn.text("中文任务与验证均已完成");
-                default -> throw new IllegalStateException("final-only 后不得继续模型循环");
+                case 2 -> ModelTurn.tools(List.of(new ToolCall("evidence", "declare_plan_evidence",
+                        new JsonObject(Map.of("requirementId", "task-read", "kind", "VERIFICATION",
+                                "locator", "task_get", "label", "已读取规划任务", "required", true)))));
+                case 3 -> ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review", JsonObject.empty())));
+                case 4 -> ModelTurn.text("规划完成");
+                case 5 -> ModelTurn.tools(List.of(new ToolCall("list", "task_list", JsonObject.empty())));
+                case 6 -> ModelTurn.tools(List.of(new ToolCall("get", "task_get",
+                        new JsonObject(Map.of("task_id", "task-1")))));
+                case 7 -> ModelTurn.text("已使用规划阶段创建的任务身份");
+                default -> throw new IllegalStateException("任务发现流程不得额外调用模型");
             };
         };
         HeadlessRuntimeOptions options = new HeadlessRuntimeOptions(
                 workspace, "fake-model", Duration.ofSeconds(10), PermissionMode.DEFAULT,
-                List.of(), SessionOpenRequest.create(), root.resolve("sessions-final-only"));
+                List.of(), SessionOpenRequest.create(), root.resolve("sessions-discovery"));
 
-        try (HeadlessRuntimeSession runtime = productionRuntime(root.resolve("home-final-only"), model, options)) {
+        try (HeadlessRuntimeSession runtime = productionRuntime(root.resolve("home-discovery"), model, options)) {
             runtime.open();
             runtime.runPlan("制定中文执行计划");
             var awaiting = runtime.planArtifact().orElseThrow();
@@ -104,56 +105,55 @@ class TaskToolProductionCompositionTest {
                     io.github.liumaishenjian.ccjava.domain.PlanContextPolicy.KEEP, "");
             var result = runtime.runAcceptedPlan(acceptance);
             assertThat(result.stopReason()).isEqualTo(io.github.liumaishenjian.ccjava.domain.StopReason.COMPLETED);
-            assertThat(result.finalText()).contains("中文任务与验证均已完成");
+            assertThat(result.finalText().orElseThrow()).contains("规划阶段创建的任务身份");
             assertThat(runtime.planArtifact().orElseThrow().status())
                     .isEqualTo(io.github.liumaishenjian.ccjava.domain.PlanStatus.COMPLETED);
         }
-        assertThat(calls).hasValue(7);
-        assertThat(requests.get(4).toolDefinitions())
-                .filteredOn(definition -> definition.name().equals("task_update"))
-                .singleElement()
-                .satisfies(definition -> assertThat(definition.inputSchemaJson())
-                        .contains("\"status\"", "IN_PROGRESS", "COMPLETED", "active_form")
-                        .doesNotContain("operation", "expected_task_revision", "expected_claim_epoch",
-                                "subject", "target_status"));
-        assertThat(requests.get(4).messages())
-                .filteredOn(io.github.liumaishenjian.ccjava.domain.SystemMessage.class::isInstance)
-                .extracting(message -> ((io.github.liumaishenjian.ccjava.domain.SystemMessage) message).content())
-                .anySatisfy(content -> assertThat(content)
-                        .contains("PENDING -> IN_PROGRESS -> COMPLETED", "Java injects and validates them"));
-        assertThat(requests.getLast().toolDefinitions()).isEmpty();
+        assertThat(calls).hasValue(8);
+        assertFourTaskToolsEveryTurn(requests);
+        assertThat(requests.get(6).messages()).filteredOn(ToolResultMessage.class::isInstance)
+                .anySatisfy(message -> assertThat(((ToolResultMessage) message).result().content())
+                        .contains("task-1", "检查已有任务。"));
+        assertThat(requests.get(7).messages()).filteredOn(ToolResultMessage.class::isInstance)
+                .anySatisfy(message -> assertThat(((ToolResultMessage) message).result().callId()).isEqualTo("get"));
     }
 
     @Test
-    void finalOnlyTurnRejectsModelToolCallWithoutExecutingIt(@TempDir Path root) throws Exception {
-        Path workspace = Files.createDirectory(root.resolve("workspace-final-only-reject"));
+    void completedTaskCanBeListedBeforeEvidenceValidFinalResponse(@TempDir Path root) throws Exception {
+        Path workspace = Files.createDirectory(root.resolve("workspace-post-completion-list"));
         CopyOnWriteArrayList<ModelRequest> requests = new CopyOnWriteArrayList<>();
         java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
         String markdown = "# 中文执行计划\n\n## 拟定步骤\n1. 完成唯一任务。\n";
         ModelGateway model = request -> {
             requests.add(request);
             return switch (calls.getAndIncrement()) {
-                case 0 -> ModelTurn.tools(List.of(new ToolCall("plan", "revise_plan_artifact",
+                case 0 -> ModelTurn.tools(List.of(new ToolCall("create", "task_create",
+                        new JsonObject(Map.of("subject", "完成唯一任务。")))));
+                case 1 -> ModelTurn.tools(List.of(new ToolCall("plan", "revise_plan_artifact",
                         new JsonObject(Map.of("markdown", markdown)))));
-                case 1 -> ModelTurn.tools(List.of(new ToolCall("evidence", "declare_plan_evidence",
+                case 2 -> ModelTurn.tools(List.of(new ToolCall("evidence", "declare_plan_evidence",
                         new JsonObject(Map.of("requirementId", "task-transition", "kind", "VERIFICATION",
                                 "locator", "task_update", "label", "任务状态已验证", "required", true)))));
-                case 2 -> ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review", JsonObject.empty())));
-                case 3 -> ModelTurn.text("规划完成");
-                case 4 -> ModelTurn.tools(List.of(new ToolCall("claim", "task_update", new JsonObject(Map.of(
+                case 3 -> ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review", JsonObject.empty())));
+                case 4 -> ModelTurn.text("规划完成");
+                case 5 -> ModelTurn.tools(List.of(new ToolCall("list-before", "task_list", JsonObject.empty())));
+                case 6 -> ModelTurn.tools(List.of(new ToolCall("get", "task_get",
+                        new JsonObject(Map.of("task_id", "task-1")))));
+                case 7 -> ModelTurn.tools(List.of(new ToolCall("claim", "task_update", new JsonObject(Map.of(
                         "task_id", "task-1", "status", "IN_PROGRESS", "active_form", "正在执行中文任务")))));
-                case 5 -> ModelTurn.tools(List.of(new ToolCall("complete", "task_update", new JsonObject(Map.of(
+                case 8 -> ModelTurn.tools(List.of(new ToolCall("complete", "task_update", new JsonObject(Map.of(
                         "task_id", "task-1", "status", "COMPLETED")))));
-                case 6 -> ModelTurn.tools(List.of(new ToolCall("forbidden-list", "task_list", JsonObject.empty())));
-                default -> throw new IllegalStateException("违反 final-only 后不得继续模型循环");
+                case 9 -> ModelTurn.tools(List.of(new ToolCall("list-after", "task_list", JsonObject.empty())));
+                case 10 -> ModelTurn.text("任务完成后仍可读取并正常结束");
+                default -> throw new IllegalStateException("完成后读取流程不得额外调用模型");
             };
         };
         HeadlessRuntimeOptions options = new HeadlessRuntimeOptions(
                 workspace, "fake-model", Duration.ofSeconds(10), PermissionMode.DEFAULT,
-                List.of(), SessionOpenRequest.create(), root.resolve("sessions-final-only-reject"));
+                List.of(), SessionOpenRequest.create(), root.resolve("sessions-post-completion-list"));
 
         try (HeadlessRuntimeSession runtime = productionRuntime(
-                root.resolve("home-final-only-reject"), model, options)) {
+                root.resolve("home-post-completion-list"), model, options)) {
             runtime.open();
             runtime.runPlan("制定中文执行计划");
             var awaiting = runtime.planArtifact().orElseThrow();
@@ -164,44 +164,53 @@ class TaskToolProductionCompositionTest {
 
             var result = runtime.runAcceptedPlan(acceptance);
 
-            assertThat(result.stopReason())
-                    .isEqualTo(io.github.liumaishenjian.ccjava.domain.StopReason.INVALID_MODEL_RESPONSE);
+            assertThat(result.stopReason()).isEqualTo(io.github.liumaishenjian.ccjava.domain.StopReason.COMPLETED);
+            assertThat(result.finalText().orElseThrow()).contains("完成后仍可读取");
             assertThat(runtime.planArtifact().orElseThrow().status())
-                    .isEqualTo(io.github.liumaishenjian.ccjava.domain.PlanStatus.FAILED);
-            assertThat(result.toolCalls()).isEqualTo(2);
+                    .isEqualTo(io.github.liumaishenjian.ccjava.domain.PlanStatus.COMPLETED);
         }
-        assertThat(calls).hasValue(7);
-        assertThat(requests.getLast().toolDefinitions()).isEmpty();
+        assertThat(calls).hasValue(11);
+        assertFourTaskToolsEveryTurn(requests);
+        assertThat(requests.get(10).messages()).filteredOn(ToolResultMessage.class::isInstance)
+                .anySatisfy(message -> {
+                    ToolResultMessage result = (ToolResultMessage) message;
+                    assertThat(result.result().callId()).isEqualTo("list-after");
+                    assertThat(result.result().content()).contains("task-1", "\"status\":\"completed\"");
+                });
     }
 
     @Test
-    void incompleteAuthoritativeTaskCannotBeClosedByRepeatedFinalText(@TempDir Path root) throws Exception {
-        Path workspace = Files.createDirectory(root.resolve("workspace-incomplete-task"));
+    void inProgressTaskIsAdvisoryAndDoesNotBlockEvidenceValidPlanCompletion(@TempDir Path root) throws Exception {
+        Path workspace = Files.createDirectory(root.resolve("workspace-advisory-task"));
         CopyOnWriteArrayList<ModelRequest> requests = new CopyOnWriteArrayList<>();
         java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
         String markdown = "# 中文执行计划\n\n## 拟定步骤\n1. 完成唯一任务。\n";
         ModelGateway model = request -> {
             requests.add(request);
             return switch (calls.getAndIncrement()) {
-                case 0 -> ModelTurn.tools(List.of(new ToolCall("plan", "revise_plan_artifact",
+                case 0 -> ModelTurn.tools(List.of(new ToolCall("create", "task_create",
+                        new JsonObject(Map.of("subject", "完成唯一任务。")))));
+                case 1 -> ModelTurn.tools(List.of(new ToolCall("plan", "revise_plan_artifact",
                         new JsonObject(Map.of("markdown", markdown)))));
-                case 1 -> ModelTurn.tools(List.of(new ToolCall("evidence", "declare_plan_evidence",
+                case 2 -> ModelTurn.tools(List.of(new ToolCall("evidence", "declare_plan_evidence",
                         new JsonObject(Map.of("requirementId", "task-transition", "kind", "VERIFICATION",
                                 "locator", "task_update", "label", "任务状态已验证", "required", true)))));
-                case 2 -> ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review", JsonObject.empty())));
-                case 3 -> ModelTurn.text("规划完成");
-                case 4 -> ModelTurn.tools(List.of(new ToolCall("claim", "task_update", new JsonObject(Map.of(
+                case 3 -> ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review", JsonObject.empty())));
+                case 4 -> ModelTurn.text("规划完成");
+                case 5 -> ModelTurn.tools(List.of(new ToolCall("list", "task_list", JsonObject.empty())));
+                case 6 -> ModelTurn.tools(List.of(new ToolCall("get", "task_get",
+                        new JsonObject(Map.of("task_id", "task-1")))));
+                case 7 -> ModelTurn.tools(List.of(new ToolCall("claim", "task_update", new JsonObject(Map.of(
                         "task_id", "task-1", "status", "IN_PROGRESS", "active_form", "正在执行中文任务")))));
-                case 5 -> ModelTurn.text("任务已经完成");
-                case 6 -> ModelTurn.text("再次声称任务已经完成");
-                default -> throw new IllegalStateException("未完成 Task 的纠正必须有界");
+                case 8 -> ModelTurn.text("证据有效，Task 进度仅作为协作投影");
+                default -> throw new IllegalStateException("协作 Task 不得触发额外纠正回合");
             };
         };
         HeadlessRuntimeOptions options = new HeadlessRuntimeOptions(
                 workspace, "fake-model", Duration.ofSeconds(10), PermissionMode.DEFAULT,
-                List.of(), SessionOpenRequest.create(), root.resolve("sessions-incomplete-task"));
+                List.of(), SessionOpenRequest.create(), root.resolve("sessions-advisory-task"));
 
-        try (HeadlessRuntimeSession runtime = productionRuntime(root.resolve("home-incomplete-task"), model, options)) {
+        try (HeadlessRuntimeSession runtime = productionRuntime(root.resolve("home-advisory-task"), model, options)) {
             runtime.open();
             runtime.runPlan("制定中文执行计划");
             var awaiting = runtime.planArtifact().orElseThrow();
@@ -212,17 +221,15 @@ class TaskToolProductionCompositionTest {
 
             var result = runtime.runAcceptedPlan(acceptance);
 
-            assertThat(result.stopReason())
-                    .isEqualTo(io.github.liumaishenjian.ccjava.domain.StopReason.INVALID_MODEL_RESPONSE);
+            assertThat(result.stopReason()).isEqualTo(io.github.liumaishenjian.ccjava.domain.StopReason.COMPLETED);
             assertThat(runtime.planArtifact().orElseThrow().status())
-                    .isEqualTo(io.github.liumaishenjian.ccjava.domain.PlanStatus.FAILED);
+                    .isEqualTo(io.github.liumaishenjian.ccjava.domain.PlanStatus.COMPLETED);
             assertThat(runtime.taskBoardSnapshot().orElseThrow().tasks().get(
                     new io.github.liumaishenjian.ccjava.domain.task.TaskId(1)).status())
                     .isEqualTo(io.github.liumaishenjian.ccjava.domain.task.TaskStatus.IN_PROGRESS);
         }
-        assertThat(calls).hasValue(7);
-        assertThat(requests.getLast().toolDefinitions())
-                .extracting(definition -> definition.name()).contains("task_update");
+        assertThat(calls).hasValue(9);
+        assertFourTaskToolsEveryTurn(requests);
     }
 
     @Test
@@ -345,6 +352,13 @@ class TaskToolProductionCompositionTest {
                 .filteredOn(ToolResultMessage.class::isInstance)
                 .anySatisfy(message -> assertThat(((ToolResultMessage) message).result().content())
                         .contains("task-1", "delegated work")));
+    }
+
+    private static void assertFourTaskToolsEveryTurn(List<ModelRequest> requests) {
+        assertThat(requests).allSatisfy(request -> assertThat(request.toolDefinitions())
+                .filteredOn(definition -> definition.name().startsWith("task_"))
+                .extracting(definition -> definition.name())
+                .containsExactlyInAnyOrderElementsOf(TASK_TOOLS));
     }
 
     private static HeadlessRuntimeSession productionRuntime(

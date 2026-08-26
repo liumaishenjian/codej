@@ -11,6 +11,7 @@ import type {
   ModelFailureView,
   RunView,
   SessionTaskStatus,
+  TaskBoardView,
   TuiAction,
 } from './state.js';
 import {AssistantMarkdown} from './assistant-markdown.js';
@@ -733,7 +734,7 @@ export function AgentTui({client}: AgentTuiProps) {
         planSessionRef.current = undefined;
         if (pending?.requestId === event.requestId) {
           pendingDurablePlanDecisionRef.current = undefined;
-          dispatch({type: 'slash.notice', message: '计划已批准并由 Java 接受执行，正在启动真实 Run'});
+          dispatch({type: 'slash.notice', message: '计划已批准，正在启动执行'});
         }
       }
       if (event.type === 'plan.execution.failed') {
@@ -1375,7 +1376,7 @@ export function AgentTui({client}: AgentTuiProps) {
       }
       if ([...pendingSubmissionsRef.current.values()]
         .some(pending => pending.status === 'awaiting_acceptance')) {
-        dispatch({type: 'slash.notice', message: '上一条输入仍在等待 Java 接受，当前草稿已保留'});
+        dispatch({type: 'slash.notice', message: '上一条输入仍在提交中，当前草稿已保留'});
         return;
       }
       const submission = applyComposer({type: 'Submit'});
@@ -1480,7 +1481,7 @@ export function AgentTui({client}: AgentTuiProps) {
             return;
           }
           if (pendingPlanEntryRef.current !== undefined || pendingPlanDecisionRef.current !== undefined) {
-            dispatch({type: 'slash.notice', message: 'Plan 状态迁移仍在进行，请等待 Java 确认'});
+            dispatch({type: 'slash.notice', message: 'Plan 状态迁移仍在进行，请等待确认'});
             return;
           }
           const queryId = `tui-plan-${nextCommandNumber.current++}-query`;
@@ -1493,7 +1494,7 @@ export function AgentTui({client}: AgentTuiProps) {
             client.sessionCommand(queryId, 'permissions', {});
           } catch {
             pendingPlanEntryRef.current = undefined;
-            dispatch({type: 'slash.notice', message: '当前权限选择未被 Java 接受'});
+            dispatch({type: 'slash.notice', message: '当前权限选择未被接受'});
             return;
           }
         } else {
@@ -1513,7 +1514,7 @@ export function AgentTui({client}: AgentTuiProps) {
           replaceComposer(beginPendingComposer(submission.state));
           dispatch({type: 'run.submitted', requestId, prompt: label});
         } catch {
-          dispatch({type: 'slash.notice', message: 'Skill 调用未被 Java 接受'});
+          dispatch({type: 'slash.notice', message: 'Skill 调用未被接受'});
           return;
         }
       } else if (slash.kind === 'invalid') {
@@ -1720,6 +1721,8 @@ export function AgentView({state, composer, input = '', columns, rows, composerL
       {liveRuns.map(run => <RunPresentation
         key={run.requestId}
         run={run}
+        taskBoard={run.runId !== undefined && run.runId === state.activeRunId ? state.taskBoard : undefined}
+        columns={width}
         approvalPicker={approvalPicker}
         planReviewPicker={planReviewPicker}
         planFeedbackInput={planFeedbackInput}
@@ -1802,7 +1805,7 @@ export function AgentView({state, composer, input = '', columns, rows, composerL
           : connectWizard !== undefined
           ? <Text dimColor>正在配置连接，请按上方提示操作</Text>
           : state.phase === 'submitting'
-          ? <Text dimColor>正在等待 Java 接受请求；拒绝或超时会恢复草稿</Text>
+          ? <Text dimColor>正在提交请求；拒绝或超时会恢复草稿</Text>
           : state.phase === 'accepted'
           ? <Text dimColor>Java 已接受请求，正在等待 Run 启动</Text>
           : state.phase === 'running'
@@ -2190,7 +2193,7 @@ function DurablePlanReviewPanel({review, picker, feedbackInput}: {
           </Text>
           <Text dimColor>←/→ 移动　Enter 提交非空反馈　Esc 返回四项审批</Text>
         </Box>
-      : picker.submitted ? <Text dimColor>决定已发送，等待 Java 核对 durable revision</Text>
+      : picker.submitted ? <Text dimColor>决定已发送，正在核对持久化版本</Text>
         : <><Box marginTop={1} flexDirection="column">
           {PLAN_REVIEW_PICKER_ITEMS.map((item, index) => <Text key={item.decision}
             color={index === picker.selectedIndex ? 'cyan' : 'white'}>
@@ -2238,7 +2241,7 @@ function PlanReviewPanel({proposal, picker}: {
         </Box>
       ))}
       {!active ? <Text dimColor>该计划已不再等待当前窗口决定</Text>
-        : picker.submitted ? <Text dimColor>批准已发送，等待 Java 核对 Plan 与工作区状态</Text>
+        : picker.submitted ? <Text dimColor>批准已发送，正在核对 Plan 与工作区状态</Text>
           : <>
             <Box marginTop={1} flexDirection="column">
               {[{decision: 'approve', label: '批准并执行'},
@@ -2304,7 +2307,7 @@ function ApprovalPrompt({approval, picker}: {
         </>
       )}
       {approval.submitted
-        ? <Text dimColor>决定已发送，等待 Java 确认</Text>
+        ? <Text dimColor>决定已发送，等待确认</Text>
         : <>
           {APPROVAL_PICKER_ITEMS.map((item, index) => (
             <Text key={item.decision} color={index === (picker?.selectedIndex ?? 0) ? 'cyan' : 'white'}>
@@ -2321,7 +2324,7 @@ function ApprovalPrompt({approval, picker}: {
  * 把 Java 权威终态投影为不包含 Provider 原文的稳定诊断摘要。
  */
 export function formatRunTerminal(run: RunView): string {
-  if (run.status === 'submitting') return '正在等待 Java 接受';
+  if (run.status === 'submitting') return '正在提交';
   if (run.status === 'accepted') return 'Java 已接受，等待 Run 启动';
   if (run.status === 'queued') return '已排队，等待前一 Run 终结';
   if (run.status === 'running' || run.status === 'retrying') return '正在运行';
@@ -2425,8 +2428,19 @@ function isArchivedRun(run: RunView): boolean {
     && run.awaitingPlanVerification !== true;
 }
 
-function RunPresentation({run, approvalPicker, planReviewPicker, planFeedbackInput, questionPicker, spinnerGlyph = '◌'}: {
+function RunPresentation({
+  run,
+  taskBoard,
+  columns = 80,
+  approvalPicker,
+  planReviewPicker,
+  planFeedbackInput,
+  questionPicker,
+  spinnerGlyph = '◌',
+}: {
   readonly run: RunView;
+  readonly taskBoard?: TaskBoardView | undefined;
+  readonly columns?: number;
   readonly approvalPicker?: ApprovalPickerState | undefined;
   readonly planReviewPicker?: PlanReviewPickerState | undefined;
   readonly planFeedbackInput?: PlanFeedbackInputState | undefined;
@@ -2439,6 +2453,7 @@ function RunPresentation({run, approvalPicker, planReviewPicker, planFeedbackInp
       <Text bold>{run.prompt}</Text>
     </Box>
     <ModelProgressLine run={run} spinnerGlyph={spinnerGlyph} />
+    <ActiveRunTaskProgress board={taskBoard} columns={columns} />
     <ToolActivityGroup tools={run.tools} />
     <ToolDetail run={run} />
     {run.pendingApproval === undefined
@@ -2466,6 +2481,38 @@ function RunPresentation({run, approvalPicker, planReviewPicker, planFeedbackInp
       <Box marginLeft={4}><Text color="red">{formatModelFailure(run.modelFailure)}</Text></Box>
     )}
   </Box>;
+}
+
+/**
+ * 在 live Run 顶部投影最多两行的 canonical Task 进度，避免完整面板被 Tool/Approval 内容挤出视口。
+ *
+ * <p>本组件不提供 Task 交互，也不展示内部身份或 revision；完整列表和 {@code /tasks} 仍由
+ * {@link SessionTaskPanel} 承担。</p>
+ */
+export function ActiveRunTaskProgress({board, columns}: {
+  readonly board?: TaskBoardView | undefined;
+  readonly columns: number;
+}) {
+  if (board === undefined || board.totalTasks === 0) return null;
+  const tasks = orderedSessionTasks(board.tasks);
+  const completed = tasks.filter(task => task.status === 'COMPLETED').length;
+  const active = tasks.find(task => task.status === 'IN_PROGRESS');
+  const next = tasks.find(task => task.status === 'PENDING' && !task.blocked);
+  const allCompleted = completed >= board.totalTasks;
+  const availableWidth = Math.max(1, Math.floor(columns) - 2);
+  const title = truncateTerminalText(allCompleted
+    ? `✓ 任务 ${completed}/${board.totalTasks} 已完成`
+    : active === undefined
+      ? `任务 ${completed}/${board.totalTasks}${next === undefined ? ' · 等待可执行任务' : ` · 下一项 ${next.subject}`}`
+      : `任务 ${completed}/${board.totalTasks} · ${active.subject}`, availableWidth);
+  return (
+    <Box marginLeft={2} flexDirection="column" flexShrink={0}>
+      <Text bold color={allCompleted ? 'green' : 'cyan'}>{title}</Text>
+      {active === undefined ? null : (
+        <Text dimColor>{projectTaskActivityLine(active.activeForm, active.subject, availableWidth)}</Text>
+      )}
+    </Box>
+  );
 }
 
 function RunTerminal({run}: {readonly run: RunView}) {

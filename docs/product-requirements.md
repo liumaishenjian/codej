@@ -299,10 +299,10 @@ S04 完成后，项目得到第一个可运行的 Mini Coding Agent CLI；随后
 - FR-AGENT-003：Runtime 负责完整 Tool Loop，Spring AI Adapter 不得自动执行工具。
 - FR-AGENT-004：同一模型回合的 Assistant Message 只能追加一次。
 - FR-AGENT-005：每个 Tool Result 必须与 Tool Call ID 一一对应。
-- FR-AGENT-006：调用方显式提供的模型轮次和 Tool 次数必须作为硬上限精确执行；普通
-  Interactive/Default/Auto/Plan/approved-plan Run 使用进展感知软检查点，成功 Tool 进展可以续租，
-  但仍受更高绝对 ceiling、墙钟、Token/Context/输出和取消限制。续租、无进展和绝对终止必须发布
-  类型化原因，不能静默移除全部安全界限。
+- FR-AGENT-006：总模型回合、总 Tool 次数与总 Run deadline 必须分别建模为可选调用方 hard limit；
+  present 时必须精确执行。普通 Interactive/Default/Auto/Plan/approved-plan 三个维度均 absent，禁止
+  软检查点、续租、absolute ceiling、placeholder 或默认 30 分钟总 deadline。用户取消、Provider/Tool
+  单次 timeout、Context/Token/输出上限和连续 repeated-failure 熔断必须继续独立生效。
 - FR-AGENT-007：S02 将取消传播到模型流；S04 将取消传播到正在运行的工具和子进程树。
 - FR-AGENT-008：运行以明确 Stop Reason 结束，不能无限循环。连续两批全部为 `REPEATED_FAILURE` 时，
   必须先完整配对并追加当前批次的全部 Tool Result，再以 `TOOL_ERROR` 有界终止；任一不同结果重置熔断计数。
@@ -628,7 +628,7 @@ S15 的准确 Feature `MODEL-13` 不复用 Managed Policy 的 `CFG-07`。ADR-069
 
 `TASK-01..05` 已完成 Batch A-E 并达到 L2；以下需求同时约束 Core、生产 Tool、持久化、协议与 TUI，Plan 审批工件继续保持独立：
 
-- FR-TASK-001：每个 root Session 独占一个 Task Board；不同 Session 不因 Workspace 相同而共享。Task 的持久化、状态与权限边界仍独立于 Plan 审批工件；仅在 durable Plan 已批准并开始执行时，应用可从唯一明确命名的步骤 section 确定性冻结权威 Task，不得把任意编号列表、代码块或模型二次命名当作任务来源，也不得反向用 Task 状态批准 Plan。
+- FR-TASK-001：每个 root Session 独占一个 Task Board；不同 Session 不因 Workspace 相同而共享。Task 的持久化、状态与权限边界仍独立于 Plan 审批工件；Plan planning 与批准 execution 必须复用同一 Board 和同一 Task identity。应用不得在批准边界解析 Markdown 步骤、按标题匹配或重建第二套任务，也不得反向用 Task 状态批准 Plan。
 - FR-TASK-002：Task 公开状态仅为 `PENDING/IN_PROGRESS/COMPLETED`；`blocked`、反向 `blocks` 与 `recoveryRequired` 均为确定性投影。canonical 只保存单向 `blockedBy`，提交前拒绝自依赖、缺失节点、重复边和全图环。
 - FR-TASK-003：Task/Board revision 提供 CAS，ID 由 high-water mark 单调生成，删除形成 tombstone 且 ID 永不复用；同 actor 的 callId 只用于重试幂等，不能代替 Writer lock 或 CAS。
 - FR-TASK-004：Claim 绑定 actor、Run、epoch 与时间；blocked 任务不能 claim/complete。Run 终止后状态仍为 IN_PROGRESS，但投影 `recoveryRequired`，必须由 Root 显式续领、释放、重分配或完成，绝不自动重放副作用。
@@ -636,17 +636,17 @@ S15 的准确 Feature `MODEL-13` 不复用 Managed Policy 的 `CFG-07`。ADR-069
 - FR-TASK-006：Core mutation 集为 CREATE、EDIT、TRANSITION、CLAIM、RESUME_CLAIM、RELEASE、ASSIGN/REASSIGN、DEPENDENCY、DELETE；`task_create/task_update/task_list/task_get` 四个 BUILT_IN Tool 必须经过统一 Pipeline/Hook/Permission，不能旁路。
 - FR-TASK-007：资源上限为 live 256、成功 mutation/幂等索引 4096、每任务依赖和单次边变更 32、subject/activeForm 200 code points、description 4096 UTF-8 bytes、metadata 16 keys/4096 bytes；达到上限在 mutation 前 Fail Closed，已存完全相同重试仍可返回。
 - FR-TASK-008：Resume 同 Board、Fork 新 Board；Team shared、peer messaging、跨进程 owner/lease/watch/poll 和自动领取继续延期 `SUB-11`。
-- FR-TASK-009：模型不能提交 Board/actor Session/actor Run/current owner/status 等可信字段；CLAIM/RESUME_CLAIM 的 Run 只能来自宿主 capability。`task_update` 必须按 operation 拒绝无关、缺失和混用字段；ASSIGN/REASSIGN 的目标 actor 必须由宿主 actor directory 确认存在且可分配。
+- FR-TASK-009：模型不能提交 Board/actor Session/actor Run/revision/claim epoch 等可信字段；CLAIM/RESUME_CLAIM 的 Run 只能来自宿主 capability。`task_update` 对模型只暴露 `task_id` 与可选 subject、description、active_form、status、owner、add/remove dependency；宿主读取当前 Task，并在同一服务临界区以强 CAS、claim 和稳定 phase call ID 执行领域 mutation。owner 必须由宿主 actor directory 确认存在且可分配。
 - FR-TASK-010：List 默认 25、最大 50，按 TaskId 稳定分页，只返回摘要；超过 16KiB UTF-8 时按完整条目语义分页并提供 cursor。Get 返回同一临界区内捕获的 Board revision 与 canonical/derived detail，完整 JSON 超过 16KiB 时整体失败，禁止切断 JSON。
 - FR-TASK-011：metadata 只允许 boolean、JSON-safe integer、string；metadata patch 的显式 JSON null 表示删除，字段缺失表示不修改；Context 与 Provider/MCP/Session JSON 边界必须保持 null 语义。
 - FR-TASK-012：Session state Effect 只对四个精确 BUILT_IN Task name/effect 组合开放；显式 Deny 优先，Plugin/MCP spoof、Registry collision、错配 Effect 与 Child 越权必须拒绝。
 - FR-TASK-013：每次成功 mutation 以 canonical 增量事件 append+force 到 Session JSONL；Resume 线性重建完整 Board 与幂等索引，Fork 只写一次重置 IN_PROGRESS 的完整 seed。日志不得按 mutation 重复保存整个 Board。
 - FR-TASK-014：root 委托只能通过 `delegate_agent.taskIds` 提出最多 32 个已存在 Task ID；宿主重新验证并注入 child capability，嵌套委托不继承 parent Board。精确 BUILT_IN `delegate_agent` 在 DEFAULT/ACCEPT_EDITS 中必须审批，PLAN 和伪造来源继续拒绝。
 - FR-TASK-015：stable v1 以 `task-list-v1` 协商只读 `task.snapshot`，支持 revision、TaskId cursor 与最大 50 条；模型 mutation 仍只能走四个 Tool。内部 stdio `/tasks` 返回活动项与最近五个完成项的有界投影。
-- FR-TASK-016：Ink Task 面板按 recovery、in-progress、可执行 pending、blocked pending、recent completed 排序，支持 ↑/↓、Enter、Esc；自动展示采用无全宽边框的紧凑列表，不暴露 Task ID、revision、owner 或实现语言。进行中项使用实心符号和加粗主标题，并在下一行以 dim 的 `activeForm`（缺失时回退 subject）和省略号表示当前活动；完成项必须真实使用删除线和 dim，且不再显示活动子行。全部完成保留约 5 秒后只隐藏面板，durable Board 不丢失且 `/tasks` 可重开。CJK、emoji、combining sequence、缩进、活动省略号、依赖和恢复后缀必须共同计入显示宽度。
-- FR-TASK-017：生产模型只在 durable Task Tool 已真实注册时接收复杂多步骤任务的 Task List 指导。普通 Run 可使用四个 Task Tool；批准 Plan 的执行 scope 由应用先创建权威步骤，模型只获得 `task_list/task_get/task_update`，不能调用 `task_create` 建立第二套清单。该 scope 的 `task_update` 只接受 `task_id`、`IN_PROGRESS|COMPLETED` 和 IN_PROGRESS 时可选的 `active_form`；Task/Board revision、claim epoch、Plan identity、Session、Run 和 actor capability 必须由 Java 从 canonical 状态注入并验证，模型不能编辑标题、描述、依赖、顺序或 metadata。成功模型 mutation 必须在对应 `tool.completed` 之后通过同一 stdio writer 发布有 Session/Run 归属和单调 Board revision 的权威快照；批准 Plan 的初始 PENDING snapshot 必须位于 `run.started` 之后、首个模型 Tool 之前。TUI 自动显示但不抢 Composer、Steering、Approval、Question 或 Plan Review 焦点，手动 `/tasks` 才进入方向键交互。
-- FR-TASK-018：批准 Plan 只有在当前 Plan identity/digest/用户批准 revision 绑定的全部权威 Task 精确匹配且 COMPLETED、无 blocked/recovery，并且确定性 Evidence Gate 满足时，才进入一次不可逆的 final-only 回合。该回合移除全部 Tool definition；违规 Tool Call 以 `INVALID_MODEL_RESPONSE` 结束且不得执行。最终 Plan COMPLETED 同时要求 Task 与 Evidence，不得因模型继续 list/update 耗尽 deadline；缺失任务或证据仍保持有界纠正和失败语义。
-- FR-TASK-019：stdio codec 与 Runtime dispatcher 必须接受同一组 `session.command` intent；`tasks` 只接受空 arguments，并在 Run 终止后仍可读取权威 Board。真实跨进程验收必须同时覆盖可解析的 OpenXML XLSX 交付、多个 `run_command` 成功和长耗时检查，以及命令 timeout 后 `tool.failed`、Run terminal 计数、Task `IN_PROGRESS + recoveryRequired` 与 Ink 恢复提示一致，不能以扩展名文本或纯 reducer snapshot 代替。
+- FR-TASK-016：Ink Task 面板按 recovery、in-progress、可执行 pending、blocked pending、recent completed 排序，支持 ↑/↓、Enter、Esc；自动展示采用无全宽边框的紧凑列表，不暴露 Task ID、revision、owner 或实现语言。活动 Run 必须在 Model 状态之后、Tool 历史之前固定显示最多两行完成数、当前 Task 与 `activeForm`，且不参与 flex shrink。进行中项使用实心符号和加粗主标题，并在下一行以 dim 的 `activeForm`（缺失时回退 subject）和省略号表示当前活动；完成项必须真实使用删除线和 dim，且不再显示活动子行。全部完成保留约 5 秒后只隐藏面板，durable Board 不丢失且 `/tasks` 可重开。CJK、emoji、combining sequence、缩进、活动省略号、依赖和恢复后缀必须共同计入显示宽度。
+- FR-TASK-017：生产模型只在 durable Task Tool 已真实注册时接收复杂多步骤任务的 Task List 指导。普通 Run、Plan planning 和批准 execution 都可使用 `task_create/task_update/task_list/task_get`；后两者必须共享 Session Board。批准 execution 应先 list/get 规划期任务并复用原 ID，不能由应用从 Markdown seed、按标题匹配或替换清单。Session-local root 只有当前 runtime actor 可分配，因此模型提交的任意非空 owner 标签必须由宿主规范化为 capability actor，不能要求模型猜测隐藏 actor ID；child/未来协作目录仍必须精确校验，不得借文本扩大 scope。成功模型 mutation 必须在对应 `tool.completed` 之后通过同一 stdio writer 发布有 Session/Run 归属和单调 Board revision 的权威快照。TUI 自动显示但不抢 Composer、Steering、Approval、Question 或 Plan Review 焦点，手动 `/tasks` 才进入方向键交互。
+- FR-TASK-018：Task List 与批准 Plan 的 Evidence Gate 独立。Task 状态不能替代批准或确定性产物验证，Evidence Gate 也不能重写 Task identity 或伪造完成；批准 execution 不继承隐式总次数或总 Run deadline，仍保留单次 Provider/Tool timeout、用户取消和重复失败熔断。若模型未维护任务，Surface 必须诚实保留未完成项，而不是用应用层 final-only 回合改变工具集合或合成状态。
+- FR-TASK-019：stdio codec 与 Runtime dispatcher 必须接受同一组 `session.command` intent；`tasks` 只接受空 arguments，并在 Run 终止后仍可读取权威 Board。真实跨进程验收必须在隔离临时 Workspace 中先证明目标 XLSX 不存在，生成器以 create-only 拒绝陈旧覆盖，再由独立进程重新打开并验证 18×7=126 条数据；同时覆盖规划期创建五个中文 Task、批准执行复用同一 ID/标题/依赖、逐项 PENDING→IN_PROGRESS activity→COMPLETED，以及命令单次 timeout 后 `tool.failed`、Run terminal 计数、Task `IN_PROGRESS + recoveryRequired` 与 Ink 恢复提示一致。产物成功只能由 Evidence 验证，Task 交互只能由真实 mutation/snapshot 验证，不能以陈旧文件、扩展名文本或纯 reducer snapshot 代替。
 
 Team shared、peer messaging、跨进程 owner/lease/watch/poll、自动领取和 stable push subscription 继续延期 `SUB-11`；S15 其他 Stage Exit blocker 不因本切片完成而关闭。
 

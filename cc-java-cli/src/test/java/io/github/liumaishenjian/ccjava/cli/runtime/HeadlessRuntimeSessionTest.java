@@ -141,20 +141,52 @@ class HeadlessRuntimeSessionTest {
     }
 
     @Test
-    void passesRunBudgetToRunScopedGatewayAndClosesItAfterDeadline() {
+    void ordinaryInteractiveOpensRunScopeWithoutTotalDeadline() {
+        RecordingRunScopedGateway gateway = new RecordingRunScopedGateway();
+
+        try (HeadlessRuntimeSession application = new HeadlessRuntimeSession(
+                gateway, AgentEventSink.noop(),
+                testOptions(temporaryWorkspace, Duration.ofMillis(80)))) {
+            application.open();
+            assertThat(application.run("interactive route").stopReason()).isEqualTo(StopReason.COMPLETED);
+        }
+
+        assertThat(gateway.lastRunBudget.get()).isEmpty();
+        assertThat(gateway.closes).hasValue(1);
+    }
+
+    @Test
+    void printKeepsConfiguredHardDeadlineWhileInteractiveDoesNot() {
+        RecordingRunScopedGateway gateway = new RecordingRunScopedGateway();
+
+        try (HeadlessRuntimeSession application = new HeadlessRuntimeSession(
+                gateway, AgentEventSink.noop(),
+                testOptions(temporaryWorkspace, Duration.ofSeconds(7)))) {
+            application.open();
+            assertThat(application.runPrint("print route").stopReason()).isEqualTo(StopReason.COMPLETED);
+        }
+
+        assertThat(gateway.lastRunBudget.get()).contains(Duration.ofSeconds(7));
+    }
+
+    @Test
+    void explicitRequestPassesRunDeadlineToScopeAndClosesAfterTimeout() {
         RecordingRunScopedGateway gateway = new RecordingRunScopedGateway();
         gateway.blockUntilInterrupted = true;
         CopyOnWriteArrayList<AgentEventEnvelope> events = new CopyOnWriteArrayList<>();
 
         try (HeadlessRuntimeSession application = new HeadlessRuntimeSession(
                 gateway, events::add,
-                testOptions(temporaryWorkspace, Duration.ofMillis(80)))) {
+                testOptions(temporaryWorkspace, Duration.ofSeconds(5)))) {
             application.open();
-            AgentRunResult result = application.run("deadline route");
+            AgentRunResult result = application.run(new io.github.liumaishenjian.ccjava.domain.AgentRunRequest(
+                    new io.github.liumaishenjian.ccjava.domain.UserMessage("deadline route"),
+                    new io.github.liumaishenjian.ccjava.domain.AgentLimits(16, 32, Duration.ofMillis(80)),
+                    Optional.empty()), null);
             assertThat(result.stopReason()).isEqualTo(StopReason.TIME_LIMIT_REACHED);
         }
 
-        assertThat(gateway.lastRunBudget).hasValue(Duration.ofMillis(80));
+        assertThat(gateway.lastRunBudget.get()).contains(Duration.ofMillis(80));
         assertThat(gateway.closes).hasValue(1);
         assertThat(events).filteredOn(envelope -> envelope.event() instanceof LifecycleEvent.RunFinished)
                 .hasSize(1);
@@ -2036,18 +2068,24 @@ class HeadlessRuntimeSessionTest {
         private volatile boolean failNext;
         private volatile boolean failCloseNext;
         private volatile boolean blockUntilInterrupted;
-        private final AtomicReference<Duration> lastRunBudget = new AtomicReference<>();
+        private final AtomicReference<Optional<Duration>> lastRunBudget =
+                new AtomicReference<>(Optional.empty());
         private final java.util.concurrent.atomic.AtomicBoolean runScopeOpen =
                 new java.util.concurrent.atomic.AtomicBoolean();
 
         @Override
         public RunScope openRun() {
-            return openRun(Duration.ofMinutes(30));
+            lastRunBudget.set(Optional.empty());
+            return openScope();
         }
 
         @Override
         public RunScope openRun(Duration runBudget) {
-            lastRunBudget.set(runBudget);
+            lastRunBudget.set(Optional.of(runBudget));
+            return openScope();
+        }
+
+        private RunScope openScope() {
             if (!runScopeOpen.compareAndSet(false, true)) {
                 throw new IllegalStateException("scope already open");
             }

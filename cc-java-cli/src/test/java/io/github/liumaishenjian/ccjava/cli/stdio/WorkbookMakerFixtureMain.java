@@ -3,6 +3,7 @@ package io.github.liumaishenjian.ccjava.cli.stdio;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -50,7 +51,8 @@ public final class WorkbookMakerFixtureMain {
     }
 
     private static void generate(Path target) throws Exception {
-        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(target))) {
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(
+                target, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE))) {
             for (var entry : ENTRIES.entrySet()) {
                 zip.putNextEntry(new ZipEntry(entry.getKey()));
                 zip.write(entry.getValue().getBytes(StandardCharsets.UTF_8));
@@ -83,6 +85,7 @@ public final class WorkbookMakerFixtureMain {
                 }
             }
         }
+        System.out.println("verified_rows=" + DATA_ROWS);
     }
 
     private static int occurrences(String text, String needle) {

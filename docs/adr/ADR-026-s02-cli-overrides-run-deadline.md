@@ -53,12 +53,12 @@ S04 Tool/子进程树传播和跨平台长期稳定性尚未完成。
 本 ADR 不证明限流重试、不完整流、输出长度恢复或 Windows TTY 全部负例，也不支持
 S02 Stage Exit。
 
-## 2026-08-26 修订：交互式复杂 Run 的默认值
+## 2026-08-26 修订：Print 默认值与交互 absence
 
-用户真实批准 Plan 执行证明，原默认 5m 会把首次命令失败后的读取、修补、再次执行与验证
-共同挤入同一个绝对 deadline；第二次 `run_command` 即使自身 timeout 尚未到期，也可能先被
-整个 Run 取消并最终得到 `TIME_LIMIT_REACHED`。这不是命令或交付物本身的失败语义。
+用户真实批准 Plan 执行先证明 5m 总 deadline 会错误取消合法长任务，随后又证伪“提升到 30m 即可”——
+这只延后同一语义缺陷。最终修正把总 Run deadline 建模为 optional：`--print` 与显式 API/SDK 请求继续
+把 `--timeout` 作为 hard deadline，默认值统一为 30m；普通 Interactive、Plan、approved-plan 不装配
+总 Run deadline。只有 deadline present 时 Core 才创建 Deadline 线程并产生 `TIME_LIMIT_REACHED`。
 
-因此默认值提升到既有上限 30m，不改变 10ms～30m 的安全边界、Deadline 线程、取消传播、
-唯一终态或显式覆盖语义，也不引入自动重放、动态 lease 或无限 Run。CLI Fake 固定默认/显式值，
-真实 Task List E2E 另外验证成功的长耗时命令与命令自身 timeout 后的 recovery 一致性。
+Provider 单请求 timeout、Tool 单次 timeout、用户取消、Context/Token/输出上限和重复失败熔断继续独立
+生效。launcher、开发 launcher、Spike 和 Java CLI 的 Print 默认统一为 30m，用户显式值原样保留。

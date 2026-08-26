@@ -42,64 +42,106 @@ class TaskToolBatchBTest {
                 .contains("\"required\":[\"subject\"]")
                 .doesNotContain("board_id", "actor_id", "session_id", "run_id", "owner", "status\"");
         assertThat(tools.get(1).definition().inputSchemaJson())
-                .contains("\"required\":[\"task_id\",\"operation\",\"expected_task_revision\"]")
-                .contains("\"RESUME_CLAIM\"", "\"expected_board_revision\"")
-                .doesNotContain("run_id", "board_id", "actor_run_id");
+                .contains("\"required\":[\"task_id\"]", "\"status\"", "\"active_form\"",
+                        "\"add_blocked_by\"", "\"remove_blocked_by\"", "\"DELETED\"")
+                .doesNotContain("operation", "expected_task_revision", "expected_board_revision",
+                        "expected_claim_epoch", "run_id", "board_id", "actor_run_id");
         assertThat(tools.get(2).definition().inputSchemaJson()).contains("\"maximum\":50");
         assertThat(tools.get(2).definition().maxOutputCharacters()).isEqualTo(16_384);
         assertThat(tools.get(3).definition().maxOutputCharacters()).isEqualTo(16_384);
     }
 
     @Test
-    void updateRejectsMissingOrMixedOperationFieldsAndNestedMetadata() {
+    void updateExposesOnlySimpleClosedFields() {
         Fixture fixture = fixture();
         TaskUpdateTool tool = fixture.update();
         assertThat(fixture.create().validate(json("subject", "task", "active_form", null)).valid())
                 .isFalse();
-        assertThat(tool.validate(json("task_id", "task-1", "operation", "CLAIM",
-                "expected_task_revision", 1, "target_actor", "forged")).valid()).isFalse();
-        assertThat(tool.validate(json("task_id", "task-1", "operation", "ASSIGN",
-                "expected_task_revision", 1, "target_actor", "forged")).valid()).isFalse();
-        TaskUpdateTool hostAuthorized = new TaskUpdateTool(fixture.service(), fixture.capability(),
-                actor -> actor.value().equals("known-child"));
-        assertThat(hostAuthorized.validate(json("task_id", "task-1", "operation", "ASSIGN",
-                "expected_task_revision", 1, "target_actor", "known-child")).valid()).isTrue();
-        assertThat(tool.validate(json("task_id", "task-1", "operation", "DEPENDENCY",
-                "expected_task_revision", 1, "add_blocked_by", List.of("task-2"))).valid()).isFalse();
-        assertThat(tool.validate(json("task_id", "task-1", "operation", "EDIT",
-                "expected_task_revision", 1)).valid()).isFalse();
-        assertThat(tool.validate(json("task_id", "task-1", "operation", "EDIT",
-                "expected_task_revision", 1, "metadata_patch", Map.of("nested", Map.of("x", 1)))).valid()).isFalse();
-        assertThat(tool.validate(json("task_id", "task-1", "operation", "RESUME_CLAIM",
-                "expected_task_revision", 1, "expected_claim_epoch", 1, "run_id", "forged")).valid()).isFalse();
-        assertThat(tool.validate(json("task_id", "task-01", "operation", "CLAIM",
-                "expected_task_revision", 1)).valid()).isFalse();
-        assertThat(tool.validate(json("task_id", "task-1", "operation", "claim",
-                "expected_task_revision", 1)).valid()).isFalse();
-        assertThat(tool.validate(json("task_id", "task-1", "operation", "TRANSITION",
-                "expected_task_revision", 1, "target_status", "completed")).valid()).isFalse();
+        assertThat(tool.validate(json("task_id", "task-1")).valid()).isFalse();
+        assertThat(tool.validate(json("task_id", "task-1", "status", "IN_PROGRESS")).valid()).isTrue();
+        assertThat(tool.validate(json("task_id", "task-1", "active_form", null)).valid()).isTrue();
+        assertThat(tool.validate(json("task_id", "task-1", "add_blocked_by", List.of("task-2"))).valid())
+                .isTrue();
+        assertThat(tool.validate(json("task_id", "task-1", "status", "UNKNOWN")).valid()).isFalse();
+        assertThat(tool.validate(json("task_id", "task-01", "status", "PENDING")).valid()).isFalse();
+        assertThat(tool.validate(json("task_id", "task-1", "operation", "CLAIM")).valid()).isFalse();
+        assertThat(tool.validate(json("task_id", "task-1", "expected_task_revision", 1,
+                "status", "IN_PROGRESS")).valid()).isFalse();
         assertThat(fixture.create().validate(json("subject", "task", "blocked_by",
                 java.util.stream.LongStream.rangeClosed(1, 33).mapToObj(value -> "task-" + value).toList())).valid())
                 .isFalse();
     }
 
     @Test
-    void createAndUpdateParseClosedMetadataAndNullRemoval() {
+    void simpleUpdateSupportsStatusDependencyDeleteAndUnknownTask() {
         Fixture fixture = fixture();
-        JsonObject create = json("subject", "元数据任务", "metadata", Map.of("keep", true, "remove", "old"));
-        ToolResult created = fixture.execute("call-create", TaskCreateTool.NAME, create);
-        assertThat(created.status()).isEqualTo(ToolResultStatus.SUCCESS);
-        TaskId id = fixture.onlyTask();
-        long revision = fixture.service().snapshot().task(id).orElseThrow().revision();
-        LinkedHashMap<String, Object> patch = new LinkedHashMap<>();
-        patch.put("remove", null);
-        patch.put("count", 2);
-        ToolResult updated = fixture.execute("call-update", TaskUpdateTool.NAME,
-                json("task_id", id.value(), "operation", "EDIT", "expected_task_revision", revision,
-                        "metadata_patch", patch));
+        fixture.execute("create-1", TaskCreateTool.NAME,
+                json("subject", "first", "metadata", Map.of("keep", true)));
+        fixture.execute("create-2", TaskCreateTool.NAME, json("subject", "second"));
+        fixture.execute("create-3", TaskCreateTool.NAME, json("subject", "obsolete"));
+
+        ToolResult dependency = fixture.execute("dependency", TaskUpdateTool.NAME,
+                json("task_id", "task-2", "add_blocked_by", List.of("task-1")));
+        assertThat(dependency.status()).isEqualTo(ToolResultStatus.SUCCESS);
+        assertThat(fixture.service().snapshot().task(new TaskId(2)).orElseThrow().blockedBy())
+                .containsExactly(new TaskId(1));
+
+        ToolResult claimed = fixture.execute("claim", TaskUpdateTool.NAME,
+                json("task_id", "task-1", "status", "IN_PROGRESS", "active_form", "working"));
+        ToolResult completed = fixture.execute("complete", TaskUpdateTool.NAME,
+                json("task_id", "task-1", "status", "COMPLETED", "active_form", null));
+        assertThat(claimed.status()).isEqualTo(ToolResultStatus.SUCCESS);
+        assertThat(completed.status()).isEqualTo(ToolResultStatus.SUCCESS);
+        assertThat(fixture.service().snapshot().task(new TaskId(1)).orElseThrow().status())
+                .isEqualTo(TaskStatus.COMPLETED);
+        assertThat(fixture.service().snapshot().task(new TaskId(1)).orElseThrow().activeForm()).isEmpty();
+
+        ToolResult deleted = fixture.execute("delete", TaskUpdateTool.NAME,
+                json("task_id", "task-3", "status", "DELETED"));
+        assertThat(deleted.status()).isEqualTo(ToolResultStatus.SUCCESS);
+        assertThat(fixture.service().snapshot().task(new TaskId(3))).isEmpty();
+
+        ToolResult unknown = fixture.execute("unknown", TaskUpdateTool.NAME,
+                json("task_id", "task-99", "status", "IN_PROGRESS"));
+        assertThat(unknown.status()).isEqualTo(ToolResultStatus.FAILURE);
+        assertThat(unknown.error().orElseThrow().code()).isEqualTo(ToolErrorCode.TASK_NOT_FOUND);
+    }
+
+    @Test
+    void rootOwnerLabelIsCanonicalizedToTheRuntimeActor() {
+        Fixture fixture = fixture();
+        fixture.execute("owner-create", TaskCreateTool.NAME, json("subject", "准备内容"));
+
+        ToolResult updated = fixture.execute("owner-update", TaskUpdateTool.NAME,
+                json("task_id", "task-1", "subject", "准备内容",
+                        "description", "确认目标内容。", "active_form", "准备内容",
+                        "status", "IN_PROGRESS", "owner", "cc-java S04 learning agent",
+                        "add_blocked_by", List.of(), "remove_blocked_by", List.of()));
+
         assertThat(updated.status()).isEqualTo(ToolResultStatus.SUCCESS);
-        assertThat(fixture.service().snapshot().task(id).orElseThrow().metadata().values())
-                .containsOnlyKeys("keep", "count");
+        TaskItemView task = fixture.service().snapshot().task(new TaskId(1)).orElseThrow();
+        assertThat(task.owner()).contains(fixture.capability().actorId());
+        assertThat(task.status()).isEqualTo(TaskStatus.IN_PROGRESS);
+        assertThat(task.activeForm()).contains("准备内容");
+    }
+
+    @Test
+    void dependencyCycleFailsWithoutChangingBoard() {
+        Fixture fixture = fixture();
+        fixture.execute("cycle-create-1", TaskCreateTool.NAME, json("subject", "first"));
+        fixture.execute("cycle-create-2", TaskCreateTool.NAME, json("subject", "second"));
+        assertThat(fixture.execute("cycle-edge-1", TaskUpdateTool.NAME,
+                json("task_id", "task-1", "add_blocked_by", List.of("task-2"))).status())
+                .isEqualTo(ToolResultStatus.SUCCESS);
+        long revision = fixture.service().snapshot().revision();
+
+        ToolResult cycle = fixture.execute("cycle-edge-2", TaskUpdateTool.NAME,
+                json("task_id", "task-2", "add_blocked_by", List.of("task-1")));
+
+        assertThat(cycle.status()).isEqualTo(ToolResultStatus.FAILURE);
+        assertThat(cycle.error().orElseThrow().code()).isEqualTo(ToolErrorCode.TASK_DEPENDENCY_CYCLE);
+        assertThat(fixture.service().snapshot().revision()).isEqualTo(revision);
+        assertThat(fixture.service().snapshot().task(new TaskId(2)).orElseThrow().blockedBy()).isEmpty();
     }
 
     @Test
@@ -257,8 +299,7 @@ class TaskToolBatchBTest {
             ToolResult create = fixture.execute("hook-create", TaskCreateTool.NAME, json("subject", "hooked"));
             TaskId id = fixture.onlyTask();
             ToolResult complete = fixture.execute("hook-complete", TaskUpdateTool.NAME,
-                    json("task_id", id.value(), "operation", "TRANSITION", "expected_task_revision", 1,
-                            "target_status", "COMPLETED"));
+                    json("task_id", id.value(), "status", "COMPLETED"));
             assertThat(create.status()).isEqualTo(ToolResultStatus.SUCCESS);
             assertThat(complete.status()).isEqualTo(ToolResultStatus.SUCCESS);
             assertThat(observed).extracting(HookInvocation::event)

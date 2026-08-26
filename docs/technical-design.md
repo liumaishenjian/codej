@@ -509,15 +509,17 @@ Tool Call 可能跨多个流式 Chunk，必须聚合后才能进入 Pipeline。
 
 所有错误恢复都有次数和总时间限制。
 
-### 9.6 S15 Batch 4 自适应预算与失败策略治理
+### 9.6 S15 Batch 4 可选总量限制与失败策略治理
 
+`AgentLimits` 分别以 `OptionalInt totalModelTurns`、`OptionalInt totalToolCalls` 与
+`Optional<Duration> runDeadline` 表达调用方 hard limit。兼容构造器把三个既有参数映射为 present；
 普通 Headless Interactive、Default、Auto、Plan 与 approved-plan Run 显式装配
-`AgentLimits.interactive(timeout)`。其 16/32 为本项目软检查点：每个成功 Tool batch 分别为模型回合
-与 Tool 数量窗口提供进展租约，窗口按 8/16 递增，绝对不超过 128/256；失败 batch 不续租。
-达到显式上限、无进展或绝对 ceiling 时仍使用既有 `TURN_LIMIT_REACHED`/`TOOL_LIMIT_REACHED`，并先
-发布不含正文的 `BudgetGoverned(reason, counts, effective limits)`。兼容构造器、SDK/Daemon/稳定协议、
-Sub-Agent requested budget 继续使用 `EXPLICIT_HARD`，因此显式上限不会被隐式放宽。取消、Run deadline、
-Context/Token/output ceiling 完全正交且保持既有优先级。
+`AgentLimits.interactive()`，三个维度均 absent，不存在软检查点、续租、absolute ceiling、placeholder
+或默认 30 分钟总 Run deadline。Core 只在对应值 present 时检查次数、创建 deadline cancellation source
+和 deadline thread；达到显式次数上限时发布不含正文的
+`BudgetGoverned(reason=EXPLICIT_LIMIT, counts, optional limits)` 并使用既有
+`TURN_LIMIT_REACHED`/`TOOL_LIMIT_REACHED`。完整 SDK/Daemon/稳定协议请求继续精确消费调用方提供的
+hard limits；取消、Provider 单次 timeout、Tool 单次 timeout、Context/Token/output ceiling 完全正交。
 
 每个 Run 在唯一 `ToolExecutionPipeline` 内拥有短生命周期 `ToolFailureFingerprintGovernance`。执行阶段的
 失败继续使用 Tool 名、递归键排序且类型保真的 arguments digest 与 `ToolFailureCategory`；相同执行调用在
@@ -542,8 +544,8 @@ Adapter 内对同一次 HTTP 调用执行的 429/5xx 有界重试不属于模型
 
 `AgentRunState` 另行追踪连续 repeated-only batch。第一批仍完整回传策略提示；第二批的全部 Result 与原
 Call ID 配对并追加 Canonical History 后，以 `TOOL_ERROR` 终止。任一成功、不同失败、另一种 validation
-错误或混合 batch 重置计数。混合 batch 的真实 success 仍按 ADR-079 计为进展，但 adaptive budget 受
-128/256 absolute ceiling、墙钟及其他正交边界限制，不会无限续租；本修复不增加失败占优策略。
+错误或混合 batch 重置计数。该熔断与总量 limit presence 无关：即使普通交互没有隐式总次数，
+连续两批 repeated-only 结果仍会确定性收敛；本修复不增加失败占优策略。
 
 `ToolErrorCode` 保留具体纠正语义，新增正交 taxonomy/retryable。Provider Mapper 将
 `code/category/retryable/message/details` 与可选有界失败证据投影给模型；Session JSONL 新记录持久化
@@ -1158,9 +1160,12 @@ tombstones、revision 与 actor/session/run/callId 幂等结果；Board 服务�
 Batch B 在 `cc-java-core.task` 增加恰好四个 BUILT_IN Adapter：`task_create`/`task_update` 使用
 `WRITE_SESSION_STATE`，`task_list`/`task_get` 使用 `READ_SESSION_STATE`。该放置直接适配 Core-owned
 `TaskListService`，不依赖文件系统、网络、OS、Jackson 或 Provider 类型，因而不属于 `cc-java-tools-local`；
-Domain 仍只保存框架无关协议。模型 schema 不暴露 Board/actor/Session/Run/owner/status，`task_update` 采用 flat
-schema 并由运行时按 operation 拒绝字段混用。ASSIGN/REASSIGN 的 `target_actor` 还必须通过宿主注入的
-`TaskActorDirectory`，默认只认可当前 capability actor，不能把任意格式合法字符串当成存在的 owner。
+Domain 仍只保存框架无关协议。模型 schema 不暴露 Board/actor Session/actor Run/revision/claim epoch；
+`task_update` 采用 `task_id` 加可选 subject、description、active_form、status、owner、add/remove dependency 的
+简单业务字段。Adapter 在 `TaskListService` 同一临界区读取当前 Task，并以宿主 capability、强 CAS 和稳定 phase
+call ID 组合内部 EDIT/ASSIGN/DEPENDENCY/TRANSITION/DELETE。Session-local root 当前只有 capability actor
+一个可分配目标，模型 owner 文本只表示自分配意图，Adapter 将任意非空标签规范化为该可信 actor；child/未来协作
+目录仍必须通过宿主注入的 `TaskActorDirectory` 精确校验，不能把文本当成可扩大 scope 的 actor identity。
 `JsonNull.INSTANCE` 只在 schema 允许的位置区分显式 null 与字段缺失，`metadata_patch` 将 null 收敛为 removal；
 Context estimator 识别 sentinel，Provider/MCP/Session JSON 边界通过 `jsonValues()` 还原原生 null。
 
@@ -1185,15 +1190,14 @@ DEFAULT/ACCEPT_EDITS 中收敛为 ASK，PLAN、显式 Deny、名称/Effect 错�
 
 stable v1 以 `task-list-v1` 协商只读 `task.snapshot`，提供 revision、TaskId cursor 和最大 50 条投影；mutation 不开放
 旁路协议。内部 stdio `/tasks` 返回活动项与最近五个完成项；成功模型 `task_create/task_update` 在 `tool.completed` 后由
-同一 writer 发布 `task.board.snapshot`，携带 Session/Run 归属与单调 Board revision。批准 Plan 则在 Runtime 生成真实
-RunId、写入 canonical Run 并取得 active ownership 后、首个模型回合前，由应用从唯一明确命名的步骤 section 幂等创建
-Task；只识别顶层有序步骤，保留原语言/顺序/正文，忽略城市清单、代码 fence、嵌套 heading，零 section 保持 legacy，
-多个候选 Fail Closed。Task metadata 绑定 planId、digest 和稳定的用户批准 revision，不绑定随状态推进的 artifact revision。
-批准 execution 从模型 Tool definitions 中移除 `task_create`，只保留 list/get/update；初始 PENDING snapshot 位于
-`run.started` 后、首个 model/tool 事件前。
+同一 writer 发布 `task.board.snapshot`，携带 Session/Run 归属与单调 Board revision。Plan planning 和批准 execution
+继续使用 root Session 对应的同一个 `TaskListService`；四个 Tool definitions 持续可用。批准边界不解析 Markdown、
+不创建初始 seed、不按标题匹配，也不创建第二个 capability。执行 prompt 要求先 list/get 并复用规划期 Task ID；若规划期
+没有创建 Task 或执行发现新拆分，模型仍可显式调用 `task_create`。
 
 TUI 丢弃错 Session、错 Run 和旧 revision，只自动打开非聚焦 live region，不阻塞 Composer/Steering/Approval/Question/
-Plan Review；显式 `/tasks` 才取得 ↑/↓、Enter、Esc 焦点。面板按 recovery、in-progress、unblocked pending、blocked
+Plan Review。当前 activeRunId 对应的 Board 还投影为 Model 状态之后、Tool 历史之前的最多两行紧凑进度，并设置为不可
+flex shrink；它只显示完成数、当前 subject 和 `activeForm`，不显示 Task/Board 内部标识。显式 `/tasks` 才取得 ↑/↓、Enter、Esc 焦点。完整面板按 recovery、in-progress、unblocked pending、blocked
 pending、recent completed 排序，采用无全宽边框的紧凑行并隐藏 ID/revision/owner/实现词；IN_PROGRESS 加粗，COMPLETED
 使用真实 strikethrough/dim。整行预算通过 grapheme segmentation 与 display width 同时计算缩进、符号、CJK/emoji/
 combining、依赖/恢复后缀和控制行；全部完成保留约 5 秒后只隐藏 Surface，durable Board 可由 `/tasks` 重开。
@@ -1203,15 +1207,12 @@ stdio strict codec、TypeScript Client 与 Java dispatcher 必须共享同一 `s
 Run terminal 后仍可读取由 terminated Run 派生 `recoveryRequired` 的权威 snapshot。跨层验收不使用扩展名占位文本：测试通过
 真实 `run_command` 子进程生成/校验 OpenXML XLSX，并以另一个 timeout 子进程对账 Tool failure、Run advisory 和 Task recovery。
 
-批准 Plan execution registry 用同名窄化 Adapter 替换通用 `task_update` mutation schema：模型只提交
-`task_id/status/active_form`，应用依据当前 canonical snapshot 注入 CAS revision、claim epoch、Plan identity 和
-root Run capability，并只允许 `PENDING -> IN_PROGRESS -> COMPLETED`。Provider call ID 与内部多阶段 mutation ID
-通过带阶段分隔的 SHA-256 稳定派生，避免合法长 Unicode ID 追加后超过内部上限，同时保持 partial retry 幂等。
+所有 Run 使用同一个通用 `task_update` Adapter。Provider call ID 与内部多阶段 mutation ID 通过带阶段分隔的稳定摘要
+派生，避免合法长 Unicode ID 追加后超过内部上限，同时保持 partial retry 幂等；这些内部阶段不进入模型 schema。
 
-每次模型请求前，批准 Plan controller 重新验证当前 Plan 的权威 Task 全部精确完成且无 blocked/recovery，并运行确定性
-Evidence Gate；两者满足后单向进入唯一 final-only turn，Tool definitions 为空，违规 Tool Call 在 Pipeline 前以
-`INVALID_MODEL_RESPONSE` 拒绝。最终 `PlanStatus.COMPLETED` 同时要求 Task 与 Evidence；未满足时只使用既有有界纠正，
-不会把模型 prose 合成为成功，也不会在全部完成后继续 list/update 到 `time_limit_reached`。Task 仍不是审批或证据本身。
+批准 Plan controller 只运行确定性 Evidence Gate，并保持原有四个 Tool definitions。Task terminal state 是独立的交互
+进度事实：不能批准 Plan、不能替代产物证据，也不作为应用删除 Tool 或强制 final-only 的依据。模型完成任务更新后，
+snapshot 自然驱动 Ink 勾选与删除线；未更新时 Surface 保留真实未完成状态。
 Team shared、文件 watch/poll、peer message、
 offline owner reclaim、自动领取与 stable push subscription 保持 `SUB-11` L0。
 
@@ -1427,16 +1428,19 @@ Print 只把 `ModelTextDelta` 写到 stdout；若非流式 Fake 只给聚合终�
 `finalText`。退出码为成功 `0`、运行失败 `1`、用法/Provider 配置错误 `2`、用户取消
 `130`。API Key 不作为 CLI 参数，stderr 不输出 Prompt、端点或 Provider 原始异常。
 
-两种模式共同接受：
+两种模式共同接受 Workspace 与模型覆盖；`--timeout` 的总 Run 语义只属于显式 Print hard limit：
 
 - `--workspace <path>`：默认当前目录，进入 Runtime 前解析为真实可访问目录；
 - `--model <name>`：覆盖本次进程模型名，重新执行配置校验；
-- `--timeout <duration>`：接受 `ms/s/m` 或 ISO-8601，范围 10ms～30m，默认 30m；显式值始终硬覆盖。
+- `--timeout <duration>`：接受 `ms/s/m` 或 ISO-8601，范围 10ms～30m，默认 30m；`--print`
+  将其作为总 Run hard deadline，普通 Interactive/Plan/approved-plan 不装配总 Run deadline。
 
-实际 Workspace、最终模型名和 Timeout 写入 `SessionSpec.runtimeMetadata`。API Key 和
-Base URL 不提供 CLI Override。`AgentLimits.maxDuration` 由 Core 驱动虚拟 Deadline
-线程；到期经同一 CancellationToken 释放模型订阅并产生 `TIME_LIMIT_REACHED`。
-用户取消/超时竞态由首次原因获胜，取消后的迟到 Text Delta 在 Runtime 边界被丢弃。
+实际 Workspace、最终模型名和 Timeout 写入 `SessionSpec.runtimeMetadata`。API Key 和 Base URL
+不提供 CLI Override。只有 `AgentLimits.runDeadline()` present 时，Core 才创建虚拟 Deadline 线程；
+到期经同一 CancellationToken 释放模型订阅并产生 `TIME_LIMIT_REACHED`。Interactive/Plan 调用
+`RunScopedModelGateway.openRun()`，仍保留 Provider 自身单请求 timeout；Tool timeout 由每个 Tool
+definition/调用独立执行。用户取消/超时竞态由首次原因获胜，取消后的迟到 Text Delta 在 Runtime
+边界被丢弃。launcher、Java CLI 与帮助的默认值统一为 30m，且用户显式值原样保留。
 
 ### 19.2 S02 内部 stdio v0
 

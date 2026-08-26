@@ -1,16 +1,19 @@
+import {execFile} from 'node:child_process';
 import fs from 'node:fs/promises';
+import {promisify} from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import React from 'react';
 import {render} from 'ink-testing-library';
 import {describe, expect, it} from 'vitest';
-import {AgentTui} from '../src/app.js';
+import {AgentTui, sessionTaskTextDecoration} from '../src/app.js';
 import {StdioClient} from '../src/stdio-client.js';
 import type {ProtocolEvent} from '../src/protocol.js';
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const workspacePath = path.resolve(testDirectory, '..', '..');
+const execFileAsync = promisify(execFile);
 const moduleClassDirectories = [
   'cc-java-cli', 'cc-java-core', 'cc-java-domain', 'cc-java-model-spring-ai', 'cc-java-tools-local',
   'cc-java-tools-web', 'cc-java-mcp', 'cc-java-protocol', 'cc-java-sdk',
@@ -134,8 +137,14 @@ describe('real Java stdio plan flow', () => {
         && event.requestId === executionRequest)).toBe(true);
       expect(events.filter(event => event.type === 'tool.completed'
         && event.requestId === executionRequest && event.payload.toolName === 'write_file')).toHaveLength(2);
-      expect(events.some(event => event.type === 'task.board.snapshot'
-        && (event.requestId === requestId || event.requestId === feedbackRequest))).toBe(false);
+      const planningTaskSnapshots = events.filter(event => event.type === 'task.board.snapshot'
+        && (event.requestId === requestId || event.requestId === feedbackRequest));
+      expect(planningTaskSnapshots.map(event => event.payload.boardRevision)).toEqual([1, 2]);
+      expect(planningTaskSnapshots.at(-1)?.payload.tasks).toEqual([
+        expect.objectContaining({taskId: 'task-1', subject: '生成精确命名的河南天气工作簿。'}),
+        expect.objectContaining({taskId: 'task-2', subject: '验证纠正后的工作簿与回滚结果。',
+          blockerIds: ['task-1']}),
+      ]);
       const taskSnapshots = events.filter(event => event.type === 'task.board.snapshot'
         && event.requestId === executionRequest);
       expect(taskSnapshots.map(event => event.payload.boardRevision)).toEqual([2, 4, 5, 7, 8]);
@@ -317,7 +326,7 @@ describe('real Java stdio plan flow', () => {
       expect(followUpTypes.filter(type => type === 'run.completed')).toHaveLength(1);
       expect(followUpTypes.indexOf('run.command.result')).toBeLessThan(followUpTypes.indexOf('run.started'));
       const frame = view.lastFrame() ?? '';
-      expect(frame).not.toContain('上一条输入仍在等待 Java 接受');
+      expect(frame).not.toContain('上一条输入仍在提交中');
       expect(frame).not.toContain('无法关联');
       expect(frame).not.toContain('连接已关闭');
       expect(failures).toEqual([]);
@@ -427,13 +436,42 @@ describe('real Java stdio plan flow', () => {
       const review = events.find(event => event.type === 'plan.review.requested')!;
       await waitFor(() => events.some(event => event.type === 'run.completed'
         && event.requestId === review.requestId), () => diagnostic(events, failures, exit));
-      const executionRequest = client.resolvePlanReview!({
-        planId: String(review.payload.planId),
-        revision: Number(review.payload.revision),
-        contentDigest: String(review.payload.contentDigest),
-        workspaceDigest: String(review.payload.workspaceDigest),
-        decision: 'APPROVE_USER', contextPolicy: 'KEEP', feedback: '',
-      });
+      const subjects = [
+        '创建独立的工作簿生成器。',
+        '生成真实的河南天气 XLSX 文件。',
+        '校验 OpenXML 工作簿结构与中文数据。',
+        '执行长耗时质量检查。',
+        '汇总真实交付与验证证据。',
+      ];
+      const planningSnapshots = events.filter(event => event.requestId === review.requestId
+        && event.type === 'task.board.snapshot');
+      expect(planningSnapshots.map(event => event.payload.boardRevision)).toEqual([1, 2, 3, 4, 5]);
+      expect((planningSnapshots.at(-1)!.payload.tasks as Array<{
+        taskId: string; subject: string; blockerIds: string[]; status: string;
+      }>).map(task => ({taskId: task.taskId, subject: task.subject, blockerIds: task.blockerIds, status: task.status})))
+        .toEqual(subjects.map((subject, index) => ({
+          taskId: `task-${index + 1}`,
+          subject,
+          blockerIds: index === 0 ? [] : [`task-${index}`],
+          status: 'PENDING',
+        })));
+      await waitFor(() => subjects.every(subject => view.lastFrame()?.includes(subject) === true),
+        () => diagnostic(events, failures, exit));
+      const fixtureRoot = (await fs.readdir(fixtureParent, {withFileTypes: true}))
+        .find(entry => entry.isDirectory() && entry.name.startsWith('xlsx-plan-runtime-'));
+      expect(fixtureRoot).toBeDefined();
+      const workbookPath = path.join(
+        fixtureParent, fixtureRoot!.name, 'workspace', '河南各市7天天气.xlsx');
+      await expect(fs.stat(workbookPath)).rejects.toMatchObject({code: 'ENOENT'});
+
+      // 通过真实 Ink picker 提交决定，使 execution request 在 reducer 中先建立 optimistic live Run。
+      // 直接调用 client 会绕过本地 submission 关联，后续 run.started/Task snapshot 会被安全拒绝。
+      view.stdin.write('[B');
+      await new Promise(resolve => setTimeout(resolve, 10));
+      view.stdin.write('\r');
+      await waitFor(() => events.some(event => event.type === 'plan.execution.accepted'),
+        () => diagnostic(events, failures, exit));
+      const executionRequest = events.find(event => event.type === 'plan.execution.accepted')!.requestId;
       await waitFor(() => events.some(event => event.type === 'run.started'
         && event.requestId === executionRequest), () => diagnostic(events, failures, exit));
       const executionStartedAt = Date.now();
@@ -444,6 +482,14 @@ describe('real Java stdio plan flow', () => {
         const approval = events.filter(event => event.type === 'approval.requested'
           && event.requestId === executionRequest)[approvalCount - 1]!;
         client.resolveApproval(String(approval.payload.approvalId), 'allow_once');
+        if (approvalCount === 4) {
+          await waitFor(() => events.filter(event => event.type === 'tool.started'
+            && event.requestId === executionRequest && event.payload.toolName === 'run_command').length === 3
+            && events.filter(event => event.type === 'tool.completed'
+              && event.requestId === executionRequest && event.payload.toolName === 'run_command').length === 2
+            && view.lastFrame()?.includes('正在执行长耗时质量检查') === true,
+          () => `${diagnostic(events, failures, exit)}, lastFrame=${JSON.stringify(view.lastFrame())}`);
+        }
       }
       await waitFor(() => events.some(event => event.type === 'run.completed'
         && event.requestId === executionRequest), () => diagnostic(events, failures, exit));
@@ -474,21 +520,53 @@ describe('real Java stdio plan flow', () => {
       }
       expect(runEvents.filter(event => event.type === 'tool.completed'
         && event.payload.toolName === 'run_command'), diagnostic(events, failures, exit)).toHaveLength(3);
+      expect(runEvents.some(event => event.type === 'tool.completed'
+        && event.payload.toolName === 'task_create')).toBe(false);
+      expect(runEvents.some(event => event.type === 'tool.completed'
+        && event.payload.toolName === 'task_list')).toBe(true);
+      expect(runEvents.filter(event => event.type === 'tool.completed'
+        && event.payload.toolName === 'task_get')).toHaveLength(5);
       expect(runEvents.some(event => event.type === 'tool.failed')).toBe(false);
+      expect(JSON.stringify(runEvents)).not.toMatch(
+        /invalid_arguments|TASK_CAPABILITY_DENIED|TASK_NOT_FOUND|time_limit_reached/u);
       expect(runEvents.find(event => event.type === 'run.completed')?.payload.stopReason).toBe('completed');
       expect(Date.now() - executionStartedAt).toBeGreaterThanOrEqual(1_000);
-      expect(view.lastFrame()).not.toContain('0/5');
-      expect(view.lastFrame()).not.toContain('time_limit_reached');
+      view.stdin.write('/tasks');
+      view.stdin.write('\r');
+      await waitFor(() => [
+        '创建独立的工作簿生成器。',
+        '生成真实的河南天气 XLSX 文件。',
+        '校验 OpenXML 工作簿结构与中文数据。',
+        '执行长耗时质量检查。',
+        '汇总真实交付与验证证据。',
+      ].every(subject => view.lastFrame()?.includes(`✓ ${subject}`) === true),
+      () => diagnostic(events, failures, exit));
+      const completedFrame = view.lastFrame() ?? '';
+      for (const subject of [
+        '创建独立的工作簿生成器。',
+        '生成真实的河南天气 XLSX 文件。',
+        '校验 OpenXML 工作簿结构与中文数据。',
+        '执行长耗时质量检查。',
+        '汇总真实交付与验证证据。',
+      ]) {
+        expect(completedFrame).toContain(`✓ ${subject}`);
+      }
+      expect(completedFrame).not.toContain('0/5');
+      expect(completedFrame).not.toContain('time_limit_reached');
+      expect(sessionTaskTextDecoration('COMPLETED')).toEqual({dimColor: true, strikethrough: true});
 
-      const fixtureRoot = (await fs.readdir(fixtureParent, {withFileTypes: true}))
-        .find(entry => entry.isDirectory() && entry.name.startsWith('xlsx-plan-runtime-'));
-      expect(fixtureRoot).toBeDefined();
-      const workbook = await fs.readFile(path.join(
-        fixtureParent, fixtureRoot!.name, 'workspace', '河南各市7天天气.xlsx'));
+      const workbook = await fs.readFile(workbookPath);
       expect(workbook.subarray(0, 2).toString('ascii')).toBe('PK');
       expect(workbook.includes(Buffer.from('[Content_Types].xml'))).toBe(true);
       expect(workbook.includes(Buffer.from('xl/worksheets/sheet1.xml'))).toBe(true);
       expect(workbook.byteLength).toBeGreaterThan(800);
+      const reopened = await execFileAsync('java', [
+        '-cp', [fixtureClasses!, effectiveClasspath].join(path.delimiter),
+        'io.github.liumaishenjian.ccjava.cli.stdio.WorkbookMakerFixtureMain',
+        'verify', workbookPath,
+      ]);
+      expect(reopened.stderr).toBe('');
+      expect(reopened.stdout.trim()).toBe('verified_rows=126');
       expect(failures).toEqual([]);
     } finally {
       await client.shutdown();

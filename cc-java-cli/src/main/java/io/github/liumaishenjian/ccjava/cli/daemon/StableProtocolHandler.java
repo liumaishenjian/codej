@@ -588,9 +588,9 @@ public final class StableProtocolHandler implements AutoCloseable {
 
     private AgentRunRequest toRunRequest(ObjectNode payload) throws ProtocolCodecException {
         String prompt = requiredText(payload, "prompt", MAX_PROMPT_CHARS);
-        int turns = positiveInt(payload, "maxModelTurns", AgentLimits.DEFAULT.maxModelTurns());
-        int tools = positiveInt(payload, "maxToolCalls", AgentLimits.DEFAULT.maxToolCalls());
-        long millis = positiveLong(payload, "timeoutMillis", AgentLimits.DEFAULT.maxDuration().toMillis());
+        int turns = positiveInt(payload, "maxModelTurns", AgentLimits.DEFAULT.totalModelTurns().orElseThrow());
+        int tools = positiveInt(payload, "maxToolCalls", AgentLimits.DEFAULT.totalToolCalls().orElseThrow());
+        long millis = positiveLong(payload, "timeoutMillis", AgentLimits.DEFAULT.runDeadline().orElseThrow().toMillis());
         try {
             return new AgentRunRequest(
                     new UserMessage(prompt), new AgentLimits(turns, tools, Duration.ofMillis(millis)),

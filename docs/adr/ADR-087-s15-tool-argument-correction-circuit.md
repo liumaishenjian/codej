@@ -13,7 +13,7 @@
 真实交互 Session 暴露了一个跨层契约缺陷：`search_text` 的公开 Schema 同时声明规范参数
 `limit` 与旧兼容参数 `maxResults`，而 Tool validator 拒绝两者共存。模型依据公开契约同时发送
 两个字段后，只收到泛化的参数校验失败；由于校验失败在既有 failure fingerprint Gate 之前返回，
-同一调用可以跨模型回合持续重复，最终只能依赖较晚的 adaptive budget `NO_PROGRESS` 终止。
+同一调用可以跨模型回合持续重复；当时只能依赖后来已废弃的 adaptive budget `NO_PROGRESS` 终止。
 TUI 又把连续失败折叠为一个缺少纠错说明的次数摘要，掩盖了 Runtime 已经停滞的事实。
 
 本修复不改变 Tool Pipeline、多 Tool Call、Permission、Approval 或 Capability Level。目标是让公开
@@ -88,14 +88,15 @@ fingerprint 继续治理 403、process exit 等 typed failure，并与 validatio
   `StopReason.TOOL_ERROR` 终止 Run；
 - 任一成功、不同失败、变参后的首次 validation failure 或混合 batch 都重置该计数。
 
-该阈值让单调用停滞最多经历“首次 typed failure + 两个 repeated-only batch”，远早于 16/24 回合软预算；
-同时不截断一个多 Tool Call batch，也不制造孤立 Assistant Tool Call。
+该阈值让单调用停滞最多经历“首次 typed failure + 两个 repeated-only batch”。文档初版对比的
+16/24 回合软预算属于现已废弃的历史设计；当前普通交互没有隐式总回合数，因此此熔断是防止确定性
+失败死循环的独立安全边界。同时它不截断一个多 Tool Call batch，也不制造孤立 Assistant Tool Call。
 
-复核 `AgentRunState` 后，本 ADR 不增加“失败占优”规则：混合 batch 中至少一个真实 success 仍按 ADR-079
-视为进展，因此 repeated-only 计数会重置。该语义不会无限续租，因为 interactive budget 仍受 128 model
-turns、256 Tool calls、墙钟、Context/Token/output 与取消的独立绝对边界约束；若未来要限制
-“1 success + 大量 repeated failure”的成本，应作为独立预算策略和 Eval 决策，而不是在本次 validation
-correction 缺陷中悄悄改变成功语义。
+复核 `AgentRunState` 后，本 ADR 不增加“失败占优”规则：混合 batch 中至少一个真实 success 会重置
+repeated-only 计数。该熔断只约束 repeated-only 死循环；普通交互没有 128/256 隐式 ceiling，混合批次
+仍由用户取消、Provider 单请求 timeout、Tool 单次 timeout、Context/Token/输出上限、Permission 与审批等
+正交边界治理。若未来要限制“1 success + 大量 repeated failure”的成本，应作为独立显式预算与 Eval
+决策，而不是在本次 validation correction 缺陷中悄悄改变成功语义。
 
 ### 5. stdio/TUI 只投影白名单动作
 
@@ -113,7 +114,7 @@ TUI reducer 忽略未知字段并保存这两个 boolean。连续聚合仍保留
 1. `search_text` Schema 只含 `limit`，单独 `maxResults` 仍能限制结果；二者共存返回结构化修正动作；
 2. Scripted Model 第一次发送冲突字段，看到 actionable Tool Result 后下一回合仅用 `limit` 并完成；
 3. 模型连续三回合改变 query、但保留同一 `limit/maxResults` conflict 时，第三个模型批次的全部
-   Tool Result（含多 Call ID）配对后以 `TOOL_ERROR` 终止，远早于 adaptive ceiling；
+   Tool Result（含多 Call ID）配对后以 `TOOL_ERROR` 终止，不依赖任何总回合 ceiling；
 4. 同一 Tool 从 conflict A 改成 invalid B 时收到 B 的首次反馈；真正修正冲突后允许执行；并行同 signature
    只有一个首次记录且全部 Call ID 保持一一配对；
 5. Spring AI 映射包含修正字段但不包含原始 query/path/Secret；

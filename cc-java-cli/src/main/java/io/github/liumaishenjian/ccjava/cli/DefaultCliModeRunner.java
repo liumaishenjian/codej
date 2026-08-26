@@ -90,8 +90,8 @@ final class DefaultCliModeRunner implements CliModeRunner {
                 Runtime.getRuntime().addShutdownHook(shutdownHook);
                 try {
                     AgentRunResult result = explicitSkill(prompt)
-                            .map(application::runSkill)
-                            .orElseGet(() -> application.run(prompt));
+                            .map(application::runPrintSkill)
+                            .orElseGet(() -> application.runPrint(prompt));
                     events.finish(result);
                     return exitCode(result, errorOutput);
                 } finally {

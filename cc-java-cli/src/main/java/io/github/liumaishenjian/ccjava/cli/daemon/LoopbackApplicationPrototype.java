@@ -220,10 +220,10 @@ public final class LoopbackApplicationPrototype implements AutoCloseable {
 
     private AgentRunRequest request(JsonNode body) {
         String prompt = requiredText(body, "prompt", MAX_BODY_BYTES);
-        int turns = positiveInt(body, "maxModelTurns", AgentLimits.DEFAULT.maxModelTurns());
-        int tools = positiveInt(body, "maxToolCalls", AgentLimits.DEFAULT.maxToolCalls());
+        int turns = positiveInt(body, "maxModelTurns", AgentLimits.DEFAULT.totalModelTurns().orElseThrow());
+        int tools = positiveInt(body, "maxToolCalls", AgentLimits.DEFAULT.totalToolCalls().orElseThrow());
         long timeoutMillis = positiveLong(
-                body, "timeoutMillis", AgentLimits.DEFAULT.maxDuration().toMillis());
+                body, "timeoutMillis", AgentLimits.DEFAULT.runDeadline().orElseThrow().toMillis());
         Duration timeout;
         try {
             timeout = Duration.ofMillis(timeoutMillis);

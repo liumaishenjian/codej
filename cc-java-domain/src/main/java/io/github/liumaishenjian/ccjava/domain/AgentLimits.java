@@ -2,31 +2,26 @@ package io.github.liumaishenjian.ccjava.domain;
 
 import java.time.Duration;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.OptionalInt;
 
 /**
- * 限制单次 Run 可以消耗的模型回合、Tool Call 数量和墙钟时间。
+ * 描述调用方是否为单次 Agent Run 提供总模型回合、总 Tool Call 和总墙钟硬限制。
  *
- * <p>兼容构造器始终产生 {@link AgentBudgetPolicy#EXPLICIT_HARD}。普通交互必须由 Composition
- * Root 显式选择 adaptive factory；16/32 仅为软检查点，持续成功进展可以续租，但仍受绝对
- * ceiling、墙钟和其他既有预算约束。</p>
+ * <p>三个维度分别建模为 presence/absence：Print、API 或 SDK 可以显式提供一个或多个硬限制；
+ * 普通 Interactive、Plan 与 approved-plan 使用 {@link #interactive()}，不会隐式装配总次数或
+ * Run deadline。用户取消、Provider/Tool 单次 timeout 与重复失败熔断不属于本值对象。</p>
  *
- * @param maxModelTurns 初始模型回合检查点或显式硬上限
- * @param maxToolCalls 初始 Tool Call 检查点或显式硬上限
- * @param maxDuration 单次 Run 最大墙钟时间
- * @param budgetPolicy 数量预算策略
- * @param absoluteMaxModelTurns adaptive 策略的模型回合绝对上限
- * @param absoluteMaxToolCalls adaptive 策略的 Tool Call 绝对上限
+ * @param totalModelTurns 总模型回合硬上限；空表示调用方未提供
+ * @param totalToolCalls 总 Tool Call 硬上限；空表示调用方未提供
+ * @param runDeadline 单次 Run 总墙钟硬限制；空表示调用方未提供
  * @since 0.1.0
  */
-public record AgentLimits(int maxModelTurns, int maxToolCalls, Duration maxDuration,
-                          AgentBudgetPolicy budgetPolicy,
-                          int absoluteMaxModelTurns, int absoluteMaxToolCalls) {
+public record AgentLimits(OptionalInt totalModelTurns,
+                          OptionalInt totalToolCalls,
+                          Optional<Duration> runDeadline) {
     /** 保守的兼容显式限制。 */
     public static final AgentLimits DEFAULT = new AgentLimits(16, 32, Duration.ofMinutes(5));
-    /** 普通交互的独立绝对回合 ceiling。 */
-    public static final int INTERACTIVE_ABSOLUTE_MODEL_TURNS = 128;
-    /** 普通交互的独立绝对 Tool ceiling。 */
-    public static final int INTERACTIVE_ABSOLUTE_TOOL_CALLS = 256;
 
     /**
      * 使用默认五分钟创建显式硬预算。
@@ -35,45 +30,44 @@ public record AgentLimits(int maxModelTurns, int maxToolCalls, Duration maxDurat
      * @param maxToolCalls Tool Call 硬上限
      */
     public AgentLimits(int maxModelTurns, int maxToolCalls) {
-        this(maxModelTurns, maxToolCalls, DEFAULT.maxDuration);
+        this(maxModelTurns, maxToolCalls, DEFAULT.runDeadline().orElseThrow());
     }
 
     /**
-     * 创建显式硬预算。
+     * 创建三个维度均存在的显式硬预算。
      *
      * @param maxModelTurns 模型回合硬上限
      * @param maxToolCalls Tool Call 硬上限
      * @param maxDuration Run 最大墙钟时间
      */
     public AgentLimits(int maxModelTurns, int maxToolCalls, Duration maxDuration) {
-        this(maxModelTurns, maxToolCalls, maxDuration, AgentBudgetPolicy.EXPLICIT_HARD,
-                maxModelTurns, maxToolCalls);
+        this(OptionalInt.of(maxModelTurns), OptionalInt.of(maxToolCalls), Optional.of(maxDuration));
     }
 
     /**
-     * 为普通交互创建进展感知软预算。
+     * 为普通 Interactive、Plan 与 approved-plan 创建无隐式总量预算。
      *
-     * @param maxDuration 单次 Run 最大墙钟时间
-     * @return 使用独立绝对 ceiling 的交互预算
+     * @return 三个总量维度均 absent 的限制对象
      */
-    public static AgentLimits interactive(Duration maxDuration) {
-        return new AgentLimits(DEFAULT.maxModelTurns, DEFAULT.maxToolCalls, maxDuration,
-                AgentBudgetPolicy.INTERACTIVE_ADAPTIVE,
-                INTERACTIVE_ABSOLUTE_MODEL_TURNS, INTERACTIVE_ABSOLUTE_TOOL_CALLS);
+    public static AgentLimits interactive() {
+        return new AgentLimits(OptionalInt.empty(), OptionalInt.empty(), Optional.empty());
     }
 
-    /** 校验所有软硬边界。 */
+    /** 校验所有 present 的硬边界。 */
     public AgentLimits {
-        maxDuration = Objects.requireNonNull(maxDuration, "maxDuration 不能为空");
-        budgetPolicy = Objects.requireNonNull(budgetPolicy, "budgetPolicy 不能为空");
-        if (maxModelTurns < 1 || maxToolCalls < 0) throw new IllegalArgumentException("数量预算非法");
-        if (maxDuration.isZero() || maxDuration.isNegative()) throw new IllegalArgumentException("maxDuration 必须大于 0");
-        if (absoluteMaxModelTurns < maxModelTurns || absoluteMaxToolCalls < maxToolCalls) {
-            throw new IllegalArgumentException("绝对上限不能小于初始检查点");
+        totalModelTurns = Objects.requireNonNull(totalModelTurns, "totalModelTurns 不能为空");
+        totalToolCalls = Objects.requireNonNull(totalToolCalls, "totalToolCalls 不能为空");
+        runDeadline = Objects.requireNonNull(runDeadline, "runDeadline 不能为空");
+        if (totalModelTurns.isPresent() && totalModelTurns.getAsInt() < 1) {
+            throw new IllegalArgumentException("totalModelTurns 必须大于 0");
         }
-        if (budgetPolicy == AgentBudgetPolicy.EXPLICIT_HARD
-                && (absoluteMaxModelTurns != maxModelTurns || absoluteMaxToolCalls != maxToolCalls)) {
-            throw new IllegalArgumentException("显式硬预算不能携带更高隐式 ceiling");
+        if (totalToolCalls.isPresent() && totalToolCalls.getAsInt() < 0) {
+            throw new IllegalArgumentException("totalToolCalls 不能小于 0");
         }
+        runDeadline.ifPresent(duration -> {
+            if (duration.isZero() || duration.isNegative()) {
+                throw new IllegalArgumentException("runDeadline 必须大于 0");
+            }
+        });
     }
 }

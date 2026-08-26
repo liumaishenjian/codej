@@ -66,7 +66,7 @@ final class CcJavaCommand implements Callable<Integer> {
             names = "--timeout",
             paramLabel = "<duration>",
             converter = CliDurationConverter.class,
-            description = "每个 Run 的墙钟限制，例如 250ms、30s、30m；默认 30m；显式值始终硬覆盖")
+            description = "--print 的总 Run 墙钟硬限制，例如 250ms、30s、30m；默认 30m；普通交互/Plan 不装配总 deadline")
     private Duration timeout = CliOverrides.DEFAULT_TIMEOUT;
 
     @Option(

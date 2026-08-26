@@ -71,6 +71,7 @@ try {
 
     $empty = ConvertFrom-CodejArguments -Arguments @() -InvocationDirectory $temp
     Assert-True ($empty.Workspace -eq [IO.Path]::GetFullPath($temp) -and $null -eq $empty.Print) 'empty arguments select interactive mode'
+    Assert-True ($empty.Timeout -eq '30m') 'launcher default timeout matches Java print default'
     $providerControl = ConvertFrom-CodejArguments -Arguments @('auth', 'list', '--json') -InvocationDirectory $temp
     Assert-True (($providerControl.ProviderControlArguments -join '|') -eq 'auth|list|--json') 'provider control commands pass through without TUI parsing'
     Assert-True ($empty.ContextMaximumInputTokens -eq 256000 -and $empty.ContextReservedOutputTokens -eq 8192 -and $empty.ContextSafetyMarginTokens -eq 4096) 'interactive defaults enable the 256k context pipeline'

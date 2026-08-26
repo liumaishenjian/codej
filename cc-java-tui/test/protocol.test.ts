@@ -94,10 +94,10 @@ describe('decodeEvent', () => {
     const event = decodeEvent(JSON.stringify({
       version: 0, type: 'run.budget.governed', requestId: 'req-budget',
       sessionId: 'session-1', runId: 'run-1', sequence: 1,
-      payload: {reason: 'progress_extended', modelTurns: 16, toolCalls: 16,
-        effectiveModelLimit: 24, effectiveToolLimit: 32},
+      payload: {reason: 'explicit_limit', modelTurns: 16, toolCalls: 16,
+        totalModelTurns: 16},
     }), 1);
-    expect(event.payload.reason).toBe('progress_extended');
+    expect(event.payload.reason).toBe('explicit_limit');
   });
 
   it('严格接受 accepted 后、run.started 前的隐私安全启动失败', () => {

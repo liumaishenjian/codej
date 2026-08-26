@@ -499,7 +499,9 @@ public final class AgentRuntime {
      * 在 Runtime 生成真实 Run identity、写入 Run journal 并取得活动所有权后，
      * 于首个模型回合前执行一次确定性初始化。
      *
-     * <p>该入口用于必须与实际执行 Run 绑定的应用事实，例如批准 Plan 的权威 Task seed。
+     * <p>该入口用于必须与实际执行 Run 绑定的应用初始化。Task Board 属于 Session，
+     * 不应在批准 Plan 后从 Markdown 重新生成或替换任务；调用方如需初始化其他 Run 级事实，
+     * 仍必须通过该边界取得宿主生成的真实 Run identity。
      * 调用方不能选择或伪造 Run ID；初始化失败时会记录成对的
      * {@code INTERNAL_ERROR} Run 终态，且不会请求模型或执行 Tool。</p>
      *
@@ -518,7 +520,9 @@ public final class AgentRuntime {
         session.ensureRunnable();
         RunId runId = Objects.requireNonNull(idGenerator.newRunId(), "newRunId 返回 null");
         AgentRunState state = new AgentRunState(sessionId, runId, request.limits());
-        CancellationSource cancellation = new CancellationSource(request.limits().maxDuration());
+        CancellationSource cancellation = request.limits().runDeadline()
+                .map(CancellationSource::new)
+                .orElseGet(CancellationSource::new);
 
         HookAggregateResult promptHook = hooks.evaluate(
                 new HookInvocation(
@@ -614,7 +618,9 @@ public final class AgentRuntime {
                                 "sessionId", sessionId.value(),
                                 "runId", runId.value()))),
                 cancellation.token());
-        Thread deadlineThread = startDeadline(request.limits().maxDuration(), activeRun);
+        Thread deadlineThread = request.limits().runDeadline()
+                .map(duration -> startDeadline(duration, activeRun))
+                .orElse(null);
 
         AgentRunResult result;
         AutoReviewRunScope autoReviewScope = toolPipeline.createRunScope(runId);
@@ -624,7 +630,7 @@ public final class AgentRuntime {
         } catch (RuntimeException exception) {
             result = state.stop(StopReason.INTERNAL_ERROR);
         } finally {
-            deadlineThread.interrupt();
+            if (deadlineThread != null) deadlineThread.interrupt();
             activeRuns.remove(sessionId, activeRun);
             contextPreparation.closeRun(runId);
             autoReviewScope.close();
@@ -725,11 +731,8 @@ public final class AgentRuntime {
             if (turnBudget.isPresent()) {
                 lifecycle.dispatch(session, runId, new LifecycleEvent.BudgetGoverned(
                         turnBudget.orElseThrow(), state.modelTurns(), state.toolCalls(),
-                        state.effectiveModelLimit(), state.effectiveToolLimit()));
-                if (turnBudget.orElseThrow()
-                        != io.github.liumaishenjian.ccjava.domain.BudgetGovernanceReason.PROGRESS_EXTENDED) {
-                    return state.stop(StopReason.TURN_LIMIT_REACHED);
-                }
+                        state.totalModelTurns(), state.totalToolCalls()));
+                return state.stop(StopReason.TURN_LIMIT_REACHED);
             }
 
             int turnNumber = state.recordModelTurnAttempt();
@@ -843,11 +846,8 @@ public final class AgentRuntime {
                 if (toolBudget.isPresent()) {
                     lifecycle.dispatch(session, runId, new LifecycleEvent.BudgetGoverned(
                             toolBudget.orElseThrow(), state.modelTurns(), state.toolCalls(),
-                            state.effectiveModelLimit(), state.effectiveToolLimit()));
-                    if (toolBudget.orElseThrow()
-                            != io.github.liumaishenjian.ccjava.domain.BudgetGovernanceReason.PROGRESS_EXTENDED) {
-                        return state.stop(StopReason.TOOL_LIMIT_REACHED);
-                    }
+                            state.totalModelTurns(), state.totalToolCalls()));
+                    return state.stop(StopReason.TOOL_LIMIT_REACHED);
                 }
 
                 appendAssistant(session, runId, assistant);

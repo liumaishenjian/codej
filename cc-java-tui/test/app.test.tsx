@@ -6,6 +6,7 @@ import {render} from 'ink-testing-library';
 import TestRenderer, {act} from 'react-test-renderer';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {
+  ActiveRunTaskProgress,
   AgentTui,
   AgentView,
   approvalDecision,
@@ -786,7 +787,7 @@ describe('AgentView', () => {
     view.stdin.write('two'); view.stdin.write('\r'); view.stdin.write('draft');
     await waitForFrame(() => view.lastFrame()?.includes('twodraft') === true);
     expect(client.prompts).toEqual(['one']);
-    expect(view.lastFrame()).toContain('上一条输入仍在等待 Java 接受');
+    expect(view.lastFrame()).toContain('上一条输入仍在提交中');
 
     client.emit({version: 0, type: 'run.started', requestId: 'tui-2', sessionId: 'session-1', runId: 'run-1', sequence: 2, payload: {}});
     await new Promise(resolve => setTimeout(resolve, 20));
@@ -818,7 +819,7 @@ describe('AgentView', () => {
     await waitForFrame(() => view.lastFrame()?.includes('就绪') === true);
     view.stdin.write('UNACCEPTED_DRAFT'); view.stdin.write('\r');
     await waitForFrame(() => client.prompts.length === 1);
-    await waitForFrame(() => view.lastFrame()?.includes('正在等待 Java 接受') === true);
+    await waitForFrame(() => view.lastFrame()?.includes('正在提交') === true);
     client.emitFailure('transport closed');
     await waitForFrame(() => view.lastFrame()?.includes('连接已关闭') === true);
     await waitForFrame(() => view.lastFrame()?.includes('❯ UNACCEPTED_DRAFT') === true);
@@ -876,7 +877,7 @@ describe('AgentView', () => {
     view.stdin.write('initial');
     view.stdin.write('\r');
     await waitForFrame(() => client.prompts.length === 1);
-    await waitForFrame(() => view.lastFrame()?.includes('正在等待 Java 接受') === true);
+    await waitForFrame(() => view.lastFrame()?.includes('正在提交') === true);
     client.emit({version: 0, type: 'run.started', requestId: 'tui-2', sessionId: 'session-1', runId: 'run-1', sequence: 2, payload: {}});
     view.stdin.write('follow');
     view.stdin.write(SHIFT_ENTER);
@@ -925,7 +926,7 @@ describe('AgentView', () => {
     view.stdin.write('initial');
     view.stdin.write('\r');
     await waitForFrame(() => client.prompts.length === 1);
-    await waitForFrame(() => view.lastFrame()?.includes('正在等待 Java 接受') === true);
+    await waitForFrame(() => view.lastFrame()?.includes('正在提交') === true);
     client.emit({version: 0, type: 'run.started', requestId: 'tui-2', sessionId: 'session-1', runId: 'run-1', sequence: 2, payload: {}});
     view.stdin.write('REJECTED_STEERING_SECRET');
     view.stdin.write('\r');
@@ -951,7 +952,7 @@ describe('AgentView', () => {
     view.stdin.write('initial');
     view.stdin.write('\r');
     await waitForFrame(() => client.prompts.length === 1);
-    await waitForFrame(() => view.lastFrame()?.includes('正在等待 Java 接受') === true);
+    await waitForFrame(() => view.lastFrame()?.includes('正在提交') === true);
     client.emit({version: 0, type: 'run.started', requestId: 'tui-2', sessionId: 'session-1', runId: 'run-1', sequence: 2, payload: {}});
     view.stdin.write('/doctor');
     view.stdin.write('\r');
@@ -2262,6 +2263,61 @@ describe('Session Task List Ink surface', () => {
     expect(reopened.taskPanelOpen).toBe(true);
     expect(reopened.taskPanelFocused).toBe(true);
     expect(reopened.taskBoard?.tasks).toHaveLength(2);
+  });
+});
+
+describe('active Run Task progress projection', () => {
+  const task = (overrides: Partial<{
+    taskId: string; revision: number; status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED';
+    subject: string; blocked: boolean; blockerIds: string[]; owner: string | undefined;
+    activeForm: string | undefined; recoveryRequired: boolean;
+  }> = {}) => ({
+    taskId: 'task-1', revision: 7, status: 'PENDING' as const, subject: '执行长耗时质量检查。',
+    blocked: false, blockerIds: [], owner: undefined, activeForm: undefined, recoveryRequired: false,
+    ...overrides,
+  });
+  const nodeText = (value: unknown): string => Array.isArray(value)
+    ? value.map(nodeText).join('') : typeof value === 'string' ? value : '';
+
+  it('active title 加粗且 activity 弱化，窄宽投影不泄漏内部字段', async () => {
+    const board = {boardRevision: 9, totalTasks: 3, truncated: false, tasks: [
+      task({status: 'COMPLETED'}),
+      task({taskId: 'task-2', revision: 8, status: 'IN_PROGRESS', subject: '执行长耗时质量检查。',
+        activeForm: '正在执行长耗时质量检查'}),
+      task({taskId: 'task-3', revision: 1, subject: '汇总交付证据。'}),
+    ]};
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => { renderer = TestRenderer.create(
+      <ActiveRunTaskProgress board={board} columns={42} />,
+    ); });
+    const textNodes = renderer.root.findAllByType(Text);
+    const title = textNodes.find(node => nodeText(node.props.children).includes('任务 1/3'));
+    const activity = textNodes.find(node => nodeText(node.props.children).includes('正在执行长耗时质量检查'));
+    expect(title?.props).toMatchObject({bold: true, color: 'cyan'});
+    expect(nodeText(title?.props.children)).toContain('执行长耗时质量检查。');
+    expect(activity?.props).toMatchObject({dimColor: true});
+
+    const narrow = render(<ActiveRunTaskProgress board={board} columns={14} />);
+    const frame = narrow.lastFrame() ?? '';
+    expect(frame.split('\n').every(line => terminalDisplayWidth(line) <= 14)).toBe(true);
+    expect(frame).not.toMatch(/task-|revision|Java/u);
+    narrow.unmount();
+    renderer.unmount();
+  });
+
+  it('全部完成时只显示紧凑完成摘要', async () => {
+    const board = {boardRevision: 4, totalTasks: 2, truncated: false, tasks: [
+      task({status: 'COMPLETED'}), task({taskId: 'task-2', status: 'COMPLETED'}),
+    ]};
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => { renderer = TestRenderer.create(
+      <ActiveRunTaskProgress board={board} columns={30} />,
+    ); });
+    const textNodes = renderer.root.findAllByType(Text);
+    expect(textNodes).toHaveLength(1);
+    expect(nodeText(textNodes[0]!.props.children)).toBe('✓ 任务 2/2 已完成');
+    expect(textNodes[0]!.props).toMatchObject({bold: true, color: 'green'});
+    renderer.unmount();
   });
 });
 

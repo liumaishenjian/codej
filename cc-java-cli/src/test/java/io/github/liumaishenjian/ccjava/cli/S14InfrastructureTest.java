@@ -201,7 +201,7 @@ class S14InfrastructureTest {
                 assertThat(eventTypes).contains("RunStarted", "terminal");
                 assertThat(eventTypes.stream().filter("terminal"::equals).count()).isOne();
                 assertThat(eventBody.path("terminal").path("status").asText()).isEqualTo("CANCELLED");
-                assertThat(application.request.limits().maxModelTurns()).isEqualTo(2);
+                assertThat(application.request.limits().totalModelTurns()).hasValue(2);
                 assertThat(daemon.shutdown(Duration.ofSeconds(1))).isTrue();
                 assertThatThrownBy(() -> send(
                         client, base.resolve("/v1/run"), "POST", token(ownership),

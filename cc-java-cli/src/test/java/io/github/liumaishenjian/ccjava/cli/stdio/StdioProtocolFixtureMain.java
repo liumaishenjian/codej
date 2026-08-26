@@ -80,56 +80,38 @@ public final class StdioProtocolFixtureMain {
                                 && system.content().contains("验证纠正后的工作簿与回滚结果"));
                 if (executing) {
                     directExecution.set(true);
+                    assertTaskToolsVisible(request);
                     int executionCall = executionCalls.getAndIncrement();
-                    if (request.toolDefinitions().stream().anyMatch(tool -> tool.name().equals("task_create"))) {
-                        throw new IllegalStateException("批准 Plan execution 不得暴露 task_create");
+                    if (executionCall == 0) return tool("execution-task-list", "task_list", Map.of());
+                    if (executionCall == 1) {
+                        assertToolResultContains(request, "execution-task-list", "task-1", "生成精确命名的河南天气工作簿。");
+                        return approvedTaskUpdate("execution-task-claim-1", "task-1", "IN_PROGRESS",
+                                "正在生成正确工作簿");
                     }
-                    if (executionCall == 0) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
-                            new io.github.liumaishenjian.ccjava.domain.ToolCall(
-                                    "execution-task-claim-1", "task_update",
-                                    new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
-                                            "task_id", "task-1", "status", "IN_PROGRESS",
-                                            "active_form", "正在生成正确工作簿")))));
-                    if (executionCall == 1) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
+                    if (executionCall == 2) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
                             new io.github.liumaishenjian.ccjava.domain.ToolCall(
                                     "wrong-workbook", "write_file",
                                     new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
                                             "path", wrongWorkbook, "content", "wrong-name")))));
-                    if (executionCall == 2) {
+                    if (executionCall == 3) {
                         return io.github.liumaishenjian.ccjava.domain.ModelTurn.text("FIRST_UNVERIFIED_FINAL");
                     }
-                    if (executionCall == 3) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
+                    if (executionCall == 4) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
                             new io.github.liumaishenjian.ccjava.domain.ToolCall(
                                     "correct-workbook", "write_file",
                                     new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
                                             "path", expectedWorkbook, "content", "correct-name")))));
-                    if (executionCall == 4) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
-                            new io.github.liumaishenjian.ccjava.domain.ToolCall(
-                                    "execution-task-complete-1", "task_update",
-                                    new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
-                                            "task_id", "task-1", "status", "COMPLETED")))));
-                    if (executionCall == 5 && !secondStepApproved) {
-                        if (!request.toolDefinitions().isEmpty()) {
-                            throw new IllegalStateException("Plan final-only 回合仍暴露 Tool definition");
-                        }
+                    if (executionCall == 5) return approvedTaskUpdate(
+                            "execution-task-complete-1", "task-1", "COMPLETED", null);
+                    if (executionCall == 6 && !secondStepApproved) {
                         return io.github.liumaishenjian.ccjava.domain.ModelTurn.text(
                                 "approved plan corrected and verified");
                     }
-                    if (executionCall == 5) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
-                            new io.github.liumaishenjian.ccjava.domain.ToolCall(
-                                    "execution-task-claim-2", "task_update",
-                                    new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
-                                            "task_id", "task-2", "status", "IN_PROGRESS",
-                                            "active_form", "正在验证交付结果")))));
-                    if (executionCall == 6) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
-                            new io.github.liumaishenjian.ccjava.domain.ToolCall(
-                                    "execution-task-complete-2", "task_update",
-                                    new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
-                                            "task_id", "task-2", "status", "COMPLETED")))));
-                    if (executionCall == 7) {
-                        if (!request.toolDefinitions().isEmpty()) {
-                            throw new IllegalStateException("Plan final-only 回合仍暴露 Tool definition");
-                        }
+                    if (executionCall == 6) return approvedTaskUpdate(
+                            "execution-task-claim-2", "task-2", "IN_PROGRESS", "正在验证交付结果");
+                    if (executionCall == 7) return approvedTaskUpdate(
+                            "execution-task-complete-2", "task-2", "COMPLETED", null);
+                    if (executionCall == 8) {
                         return io.github.liumaishenjian.ccjava.domain.ModelTurn.text("approved plan corrected and verified");
                     }
                     throw new IllegalStateException("Plan fixture 收到过多执行请求");
@@ -138,35 +120,39 @@ public final class StdioProtocolFixtureMain {
                     return io.github.liumaishenjian.ccjava.domain.ModelTurn.text("follow-up completed");
                 }
                 int call = calls.getAndIncrement();
-                if (call == 0) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
+                if (call == 0) return tool("plan-task-1", "task_create", Map.of(
+                        "subject", "生成精确命名的河南天气工作簿。"));
+                if (call == 1) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
                         new io.github.liumaishenjian.ccjava.domain.ToolCall("plan-update", "revise_plan_artifact",
                                 new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of("markdown", markdown)))));
-                if (call == 1) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
+                if (call == 2) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
                         new io.github.liumaishenjian.ccjava.domain.ToolCall("plan-evidence", "declare_plan_evidence",
                                 new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
                                         "requirementId", "weather-xlsx", "kind", "DELIVERABLE", "locator", expectedWorkbook,
                                         "label", "exact weather workbook", "required", true)))));
-                if (call == 2) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
+                if (call == 3) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
                         new io.github.liumaishenjian.ccjava.domain.ToolCall("plan-review", "request_plan_review",
                                 io.github.liumaishenjian.ccjava.domain.JsonObject.empty())));
-                if (call == 3) return io.github.liumaishenjian.ccjava.domain.ModelTurn.text("planning finished");
-                if (call == 4) {
+                if (call == 4) return io.github.liumaishenjian.ccjava.domain.ModelTurn.text("planning finished");
+                if (call == 5) {
                     boolean feedbackReachedModel = request.messages().stream()
                             .filter(io.github.liumaishenjian.ccjava.domain.UserMessage.class::isInstance)
                             .map(io.github.liumaishenjian.ccjava.domain.UserMessage.class::cast)
                             .anyMatch(message -> message.content().equals("add rollback verification"));
                     if (!feedbackReachedModel) throw new IllegalStateException("Plan feedback 未进入新的模型回合");
-                    return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
-                            new io.github.liumaishenjian.ccjava.domain.ToolCall(
-                                    "plan-revise-feedback", "revise_plan_artifact",
-                                    new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
-                                            "markdown", revisedMarkdown)))));
+                    return tool("plan-task-2", "task_create", Map.of(
+                            "subject", "验证纠正后的工作簿与回滚结果。", "blocked_by", List.of("task-1")));
                 }
-                if (call == 5) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
+                if (call == 6) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
+                        new io.github.liumaishenjian.ccjava.domain.ToolCall(
+                                "plan-revise-feedback", "revise_plan_artifact",
+                                new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
+                                        "markdown", revisedMarkdown)))));
+                if (call == 7) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
                         new io.github.liumaishenjian.ccjava.domain.ToolCall(
                                 "plan-review-feedback", "request_plan_review",
                                 io.github.liumaishenjian.ccjava.domain.JsonObject.empty())));
-                if (call == 6) return io.github.liumaishenjian.ccjava.domain.ModelTurn.text("replanning finished");
+                if (call == 8) return io.github.liumaishenjian.ccjava.domain.ModelTurn.text("replanning finished");
                 throw new IllegalStateException("Plan fixture 收到过多规划请求");
             };
             Path providerRoot = Files.createDirectory(fixtureRoot.resolve("provider"));
@@ -224,6 +210,9 @@ public final class StdioProtocolFixtureMain {
             initializeGitRepository(workspace);
             Path sessionStore = Files.createDirectory(fixtureRoot.resolve("sessions"));
             String workbook = "河南各市7天天气.xlsx";
+            if (Files.exists(workspace.resolve(workbook))) {
+                throw new IllegalStateException("隔离 Workspace 启动时不得存在陈旧 XLSX");
+            }
             String markdown = """
                     # 河南天气工作簿交付计划
 
@@ -246,33 +235,47 @@ public final class StdioProtocolFixtureMain {
                         .reduce((left, right) -> right).orElse("");
                 if (executing.get() || latestUser.contains("Implement the approved plan")) {
                     executing.set(true);
+                    assertTaskToolsVisible(request);
                     int call = executionCalls.getAndIncrement();
-                    if (request.toolDefinitions().stream().anyMatch(tool -> tool.name().equals("task_create"))) {
-                        throw new IllegalStateException("批准 Plan execution 不得暴露 task_create");
-                    }
                     return switch (call) {
-                        case 0 -> approvedTaskUpdate("xlsx-claim-1", "task-1", "IN_PROGRESS", "正在创建工作簿生成器");
-                        case 1 -> tool("xlsx-generator", "write_file", Map.of(
+                        case 0 -> tool("xlsx-list", "task_list", Map.of("limit", 5));
+                        case 1 -> {
+                            assertToolResultContains(request, "xlsx-list", "task-1", "task-5",
+                                    "创建独立的工作簿生成器。", "汇总真实交付与验证证据。");
+                            yield io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
+                                    taskGet("xlsx-get-1", "task-1"), taskGet("xlsx-get-2", "task-2"),
+                                    taskGet("xlsx-get-3", "task-3"), taskGet("xlsx-get-4", "task-4"),
+                                    taskGet("xlsx-get-5", "task-5")));
+                        }
+                        case 2 -> {
+                            assertToolResultContains(request, "xlsx-get-1", "\"blocked_by\":[]");
+                            assertToolResultContains(request, "xlsx-get-2", "\"blocked_by\":[\"task-1\"]");
+                            assertToolResultContains(request, "xlsx-get-3", "\"blocked_by\":[\"task-2\"]");
+                            assertToolResultContains(request, "xlsx-get-4", "\"blocked_by\":[\"task-3\"]");
+                            assertToolResultContains(request, "xlsx-get-5", "\"blocked_by\":[\"task-4\"]");
+                            yield approvedTaskUpdate("xlsx-claim-1", "task-1", "IN_PROGRESS", "正在创建工作簿生成器");
+                        }
+                        case 3 -> tool("xlsx-generator", "write_file", Map.of(
                                 "path", "workbook-request.json",
                                 "content", "{\"province\":\"河南\",\"days\":7,\"format\":\"xlsx\"}\n"));
-                        case 2 -> approvedTaskUpdate("xlsx-complete-1", "task-1", "COMPLETED", null);
-                        case 3 -> approvedTaskUpdate("xlsx-claim-2", "task-2", "IN_PROGRESS", "正在生成126条天气记录");
-                        case 4 -> tool("xlsx-generate", "run_command", Map.of(
+                        case 4 -> approvedTaskUpdate("xlsx-complete-1", "task-1", "COMPLETED", null);
+                        case 5 -> approvedTaskUpdate("xlsx-claim-2", "task-2", "IN_PROGRESS", "正在生成126条天气记录");
+                        case 6 -> tool("xlsx-generate", "run_command", Map.of(
                                 "command", javaCommand + " generate " + shellQuote(workbook), "timeoutSeconds", 20));
-                        case 5 -> approvedTaskUpdate("xlsx-complete-2", "task-2", "COMPLETED", null);
-                        case 6 -> approvedTaskUpdate("xlsx-claim-3", "task-3", "IN_PROGRESS", "正在校验OpenXML结构");
-                        case 7 -> tool("xlsx-verify", "run_command", Map.of(
+                        case 7 -> approvedTaskUpdate("xlsx-complete-2", "task-2", "COMPLETED", null);
+                        case 8 -> approvedTaskUpdate("xlsx-claim-3", "task-3", "IN_PROGRESS", "正在校验OpenXML结构");
+                        case 9 -> tool("xlsx-verify", "run_command", Map.of(
                                 "command", javaCommand + " verify " + shellQuote(workbook), "timeoutSeconds", 20));
-                        case 8 -> approvedTaskUpdate("xlsx-complete-3", "task-3", "COMPLETED", null);
-                        case 9 -> approvedTaskUpdate("xlsx-claim-4", "task-4", "IN_PROGRESS", "正在执行长耗时质量检查");
-                        case 10 -> tool("xlsx-slow-verify", "run_command", Map.of(
+                        case 10 -> approvedTaskUpdate("xlsx-complete-3", "task-3", "COMPLETED", null);
+                        case 11 -> approvedTaskUpdate("xlsx-claim-4", "task-4", "IN_PROGRESS", "正在执行长耗时质量检查");
+                        case 12 -> tool("xlsx-slow-verify", "run_command", Map.of(
                                 "command", javaCommand + " slow-verify " + shellQuote(workbook), "timeoutSeconds", 20));
-                        case 11 -> approvedTaskUpdate("xlsx-complete-4", "task-4", "COMPLETED", null);
-                        case 12 -> approvedTaskUpdate("xlsx-claim-5", "task-5", "IN_PROGRESS", "正在汇总交付证据");
-                        case 13 -> approvedTaskUpdate("xlsx-complete-5", "task-5", "COMPLETED", null);
-                        case 14 -> {
-                            if (!request.toolDefinitions().isEmpty()) {
-                                throw new IllegalStateException("全部 Task 与 Evidence 满足后必须进入 final-only");
+                        case 13 -> approvedTaskUpdate("xlsx-complete-4", "task-4", "COMPLETED", null);
+                        case 14 -> approvedTaskUpdate("xlsx-claim-5", "task-5", "IN_PROGRESS", "正在汇总交付证据");
+                        case 15 -> approvedTaskUpdate("xlsx-complete-5", "task-5", "COMPLETED", null);
+                        case 16 -> {
+                            if (!Files.isRegularFile(workspace.resolve(workbook))) {
+                                throw new IllegalStateException("全部 Task 完成但本次 XLSX 产物不存在");
                             }
                             yield io.github.liumaishenjian.ccjava.domain.ModelTurn.text(
                                     "河南天气工作簿已真实生成并通过 OpenXML 与长耗时检查");
@@ -281,20 +284,30 @@ public final class StdioProtocolFixtureMain {
                     };
                 }
                 return switch (planningCalls.getAndIncrement()) {
-                    case 0 -> tool("xlsx-plan", "revise_plan_artifact", Map.of("markdown", markdown));
-                    case 1 -> tool("xlsx-deliverable", "declare_plan_evidence", Map.of(
+                    case 0 -> tool("xlsx-task-1", "task_create", Map.of(
+                            "subject", "创建独立的工作簿生成器。"));
+                    case 1 -> tool("xlsx-task-2", "task_create", Map.of(
+                            "subject", "生成真实的河南天气 XLSX 文件。", "blocked_by", List.of("task-1")));
+                    case 2 -> tool("xlsx-task-3", "task_create", Map.of(
+                            "subject", "校验 OpenXML 工作簿结构与中文数据。", "blocked_by", List.of("task-2")));
+                    case 3 -> tool("xlsx-task-4", "task_create", Map.of(
+                            "subject", "执行长耗时质量检查。", "blocked_by", List.of("task-3")));
+                    case 4 -> tool("xlsx-task-5", "task_create", Map.of(
+                            "subject", "汇总真实交付与验证证据。", "blocked_by", List.of("task-4")));
+                    case 5 -> tool("xlsx-plan", "revise_plan_artifact", Map.of("markdown", markdown));
+                    case 6 -> tool("xlsx-deliverable", "declare_plan_evidence", Map.of(
                             "requirementId", "xlsx-file", "kind", "DELIVERABLE", "locator", workbook,
                             "label", "real OpenXML workbook", "required", true));
-                    case 2 -> tool("xlsx-verification", "declare_plan_evidence", Map.of(
+                    case 7 -> tool("xlsx-verification", "declare_plan_evidence", Map.of(
                             "requirementId", "xlsx-check", "kind", "VERIFICATION", "locator", "run_command",
                             "label", "OpenXML verification command", "required", true));
-                    case 3 -> tool("xlsx-review", "request_plan_review", Map.of());
-                    case 4 -> io.github.liumaishenjian.ccjava.domain.ModelTurn.text("planning finished");
+                    case 8 -> tool("xlsx-review", "request_plan_review", Map.of());
+                    case 9 -> io.github.liumaishenjian.ccjava.domain.ModelTurn.text("planning finished");
                     default -> throw new IllegalStateException("XLSX Plan fixture 收到过多规划请求");
                 };
             };
             RuntimeStdioCommandHandler delegate = fixtureRuntimeHandler(
-                    model, workspace, sessionStore, Duration.ofSeconds(30), fixtureRoot, "XLSX");
+                    model, workspace, sessionStore, Duration.ofMillis(100), fixtureRoot, "XLSX");
             return ownedFixtureHandler(delegate, expectedParent, expectedRealParent, fixtureRoot,
                     "xlsx-plan-runtime-");
         } catch (Exception failure) {
@@ -321,7 +334,7 @@ public final class StdioProtocolFixtureMain {
             io.github.liumaishenjian.ccjava.core.ModelGateway model = request -> switch (calls.getAndIncrement()) {
                 case 0 -> tool("timeout-create", "task_create", Map.of(
                         "subject", "执行超时命令", "active_form", "等待长耗时命令"));
-                case 1 -> taskUpdate("timeout-claim", "task-1", "CLAIM", 1, null);
+                case 1 -> approvedTaskUpdate("timeout-claim", "task-1", "IN_PROGRESS", "等待长耗时命令");
                 case 2 -> tool("timeout-command", "run_command", Map.of(
                         "command", timeoutCommand, "timeoutSeconds", 1));
                 case 3 -> io.github.liumaishenjian.ccjava.domain.ModelTurn.text("命令已超时，任务保持待恢复");
@@ -350,17 +363,33 @@ public final class StdioProtocolFixtureMain {
         return tool(callId, "task_update", arguments);
     }
 
-    private static io.github.liumaishenjian.ccjava.domain.ModelTurn taskUpdate(
-            String callId, String taskId, String operation, long revision, Integer claimEpoch) {
-        java.util.LinkedHashMap<String, Object> arguments = new java.util.LinkedHashMap<>();
-        arguments.put("task_id", taskId);
-        arguments.put("operation", operation);
-        arguments.put("expected_task_revision", revision);
-        if (claimEpoch != null) {
-            arguments.put("target_status", "COMPLETED");
-            arguments.put("expected_claim_epoch", claimEpoch);
+    private static io.github.liumaishenjian.ccjava.domain.ToolCall taskGet(String callId, String taskId) {
+        return new io.github.liumaishenjian.ccjava.domain.ToolCall(callId, "task_get",
+                new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of("task_id", taskId)));
+    }
+
+    private static void assertTaskToolsVisible(io.github.liumaishenjian.ccjava.domain.ModelRequest request) {
+        List<String> names = request.toolDefinitions().stream()
+                .map(io.github.liumaishenjian.ccjava.domain.ToolDefinition::name).toList();
+        if (!names.containsAll(List.of("task_create", "task_update", "task_list", "task_get"))) {
+            throw new IllegalStateException("批准 Plan execution 未持续暴露同一 Task Board 的四个 Tool: " + names);
         }
-        return tool(callId, "task_update", arguments);
+    }
+
+    private static void assertToolResultContains(io.github.liumaishenjian.ccjava.domain.ModelRequest request,
+            String callId, String... fragments) {
+        String content = request.messages().stream()
+                .filter(io.github.liumaishenjian.ccjava.domain.ToolResultMessage.class::isInstance)
+                .map(io.github.liumaishenjian.ccjava.domain.ToolResultMessage.class::cast)
+                .map(io.github.liumaishenjian.ccjava.domain.ToolResultMessage::result)
+                .filter(result -> result.callId().equals(callId))
+                .map(io.github.liumaishenjian.ccjava.domain.ToolResult::content)
+                .findFirst().orElseThrow(() -> new IllegalStateException("缺少 Tool Result: " + callId));
+        for (String fragment : fragments) {
+            if (!content.contains(fragment)) {
+                throw new IllegalStateException("Tool Result 身份或正文漂移: " + callId + " missing " + fragment);
+            }
+        }
     }
 
     private static io.github.liumaishenjian.ccjava.domain.ModelTurn tool(
@@ -430,19 +459,10 @@ public final class StdioProtocolFixtureMain {
                                 "task-create", "task_create",
                                 new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
                                         "subject", "完成真实 Task 闭环", "active_form", "验证实时面板")))));
-                case 1 -> io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
-                        new io.github.liumaishenjian.ccjava.domain.ToolCall(
-                                "task-claim", "task_update",
-                                new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
-                                        "task_id", "task-1", "operation", "CLAIM",
-                                        "expected_task_revision", 1)))));
-                case 2 -> io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
-                        new io.github.liumaishenjian.ccjava.domain.ToolCall(
-                                "task-complete", "task_update",
-                                new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
-                                        "task_id", "task-1", "operation", "TRANSITION",
-                                        "expected_task_revision", 2, "target_status", "COMPLETED",
-                                        "expected_claim_epoch", 1)))));
+                case 1 -> approvedTaskUpdate(
+                        "task-claim", "task-1", "IN_PROGRESS", "验证实时面板");
+                case 2 -> approvedTaskUpdate(
+                        "task-complete", "task-1", "COMPLETED", null);
                 case 3 -> io.github.liumaishenjian.ccjava.domain.ModelTurn.text("task lifecycle verified");
                 default -> throw new IllegalStateException("Task fixture 收到过多模型请求");
             };

@@ -9,7 +9,7 @@ param(
     [string]$Model,
 
     [Parameter(Mandatory = $false)]
-    [string]$Timeout = '5m',
+    [string]$Timeout = '30m',
 
     [Parameter(Mandatory = $false)]
     [switch]$SkipBuild

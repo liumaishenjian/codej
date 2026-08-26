@@ -132,9 +132,7 @@ class RuntimeStdioCommandHandlerTest {
             case 0 -> ModelTurn.tools(List.of(new ToolCall("create-task", "task_create",
                     new JsonObject(java.util.Map.of("subject", "实时刷新")))));
             case 1 -> ModelTurn.tools(List.of(new ToolCall("complete-task", "task_update",
-                    new JsonObject(java.util.Map.of(
-                            "task_id", "task-1", "operation", "TRANSITION",
-                            "expected_task_revision", 1, "target_status", "COMPLETED")))));
+                    new JsonObject(java.util.Map.of("task_id", "task-1", "status", "COMPLETED")))));
             default -> ModelTurn.text("done");
         };
 
@@ -183,8 +181,7 @@ class RuntimeStdioCommandHandlerTest {
         ModelGateway model = request -> calls.getAndIncrement() == 0
                 ? ModelTurn.tools(List.of(new ToolCall("missing-task", "task_update",
                         new JsonObject(java.util.Map.of(
-                                "task_id", "task-99", "operation", "TRANSITION",
-                                "expected_task_revision", 1, "target_status", "COMPLETED")))))
+                                "task_id", "task-99", "status", "COMPLETED")))))
                 : ModelTurn.text("done");
 
         try (RuntimeStdioCommandHandler handler = new RuntimeStdioCommandHandler((eventSink, approvals) ->
@@ -1157,7 +1154,7 @@ class RuntimeStdioCommandHandlerTest {
     }
 
     @Test
-    void blockingModelDeadlineEmitsOneFailedTerminalAndAcceptsTheNextRun() throws Exception {
+    void blockingInteractiveModelIgnoresFormerTotalDeadlineUntilCancelled() throws Exception {
         StdioProtocolCodec codec = new StdioProtocolCodec();
         CopyOnWriteArrayList<CapturedEvent> events = new CopyOnWriteArrayList<>();
         AtomicInteger calls = new AtomicInteger();
@@ -1179,22 +1176,22 @@ class RuntimeStdioCommandHandlerTest {
             handler.handle(codec.decodeCommand("{\"version\":0,\"type\":\"initialize\",\"requestId\":\"init\",\"sequence\":1,\"payload\":{}}"), emitter);
             String sessionId = events.getFirst().sessionId().orElseThrow();
             handler.handle(codec.decodeCommand(runStart("timeout-request", sessionId, 2, "timeout prompt")), emitter);
+            CapturedEvent started = awaitEvent(events, "run.started");
+            Thread.sleep(160);
+            assertThat(events.stream().filter(RuntimeStdioCommandHandlerTest::isTerminal)).isEmpty();
+            handler.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"run.cancel\",\"requestId\":\"cancel\","
+                    + "\"sessionId\":\"%s\",\"runId\":\"%s\",\"sequence\":3,\"payload\":{}}")
+                    .formatted(sessionId, started.runId().orElseThrow())), emitter);
             awaitAnyTerminal(events);
             assertThat(events.stream().filter(RuntimeStdioCommandHandlerTest::isTerminal).toList())
                     .singleElement().satisfies(terminal -> {
-                        assertThat(terminal.type()).isEqualTo("run.failed");
+                        assertThat(terminal.type()).isEqualTo("run.cancelled");
                         assertThat(terminal.payload().get("stopReason").stringValue())
-                                .isEqualTo("time_limit_reached");
+                                .isEqualTo("user_cancelled");
                     });
 
-            handler.handle(codec.decodeCommand(runStart("recovery-request", sessionId, 3, "next prompt")), emitter);
-            awaitTerminalCount(events, 2);
         }
-        assertThat(events.stream().filter(RuntimeStdioCommandHandlerTest::isTerminal).toList())
-                .hasSize(2).last().satisfies(terminal -> {
-                    assertThat(terminal.type()).isEqualTo("run.completed");
-                    assertThat(terminal.payload().get("finalText").stringValue()).isEqualTo("recovered");
-                });
+        assertThat(events.stream().filter(RuntimeStdioCommandHandlerTest::isTerminal)).hasSize(1);
     }
 
     @Test

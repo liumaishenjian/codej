@@ -85,103 +85,23 @@ class AgentRuntimeTest {
     }
 
     @Test
-    void adaptiveInteractiveBudgetCompletesAfterMoreThanThirtyTwoProgressingToolCalls() {
-        ModelTurn[] turns = new ModelTurn[35];
-        for (int index = 0; index < 34; index++) {
-            turns[index] = ModelTurn.tools(List.of(call("adaptive-" + index, "echo")));
+    void interactiveCompletesAfterMoreThanOneHundredTwentyEightTurnsWithoutImplicitCountLimit() {
+        ModelTurn[] turns = new ModelTurn[130];
+        for (int index = 0; index < 129; index++) {
+            turns[index] = ModelTurn.tools(List.of(call("unbounded-" + index, "echo")));
         }
-        turns[34] = ModelTurn.text("done after progress");
-        ScriptedModelGateway model = ScriptedModelGateway.of(turns);
-        AgentTool tool = successfulTool("echo");
-        Harness harness = newHarness(model, tool);
+        turns[129] = ModelTurn.text("done after 129 tools");
+        Harness harness = newHarness(ScriptedModelGateway.of(turns), successfulTool("echo"));
 
-        AgentRunResult result = harness.run("long interactive",
-                AgentLimits.interactive(Duration.ofMinutes(1)));
+        AgentRunResult result = harness.run("long interactive", AgentLimits.interactive());
 
         assertThat(result.status()).isEqualTo(RunStatus.COMPLETED);
-        assertThat(result.toolCalls()).isEqualTo(34);
-        assertThat(result.modelTurns()).isEqualTo(35);
+        assertThat(result.toolCalls()).isEqualTo(129);
+        assertThat(result.modelTurns()).isEqualTo(130);
+        assertThat(toolResults(harness.session())).hasSize(129);
         assertThat(harness.events().envelopes()).extracting(AgentEventEnvelope::event)
                 .filteredOn(LifecycleEvent.BudgetGoverned.class::isInstance)
-                .map(LifecycleEvent.BudgetGoverned.class::cast)
-                .extracting(LifecycleEvent.BudgetGoverned::reason)
-                .contains(io.github.liumaishenjian.ccjava.domain.BudgetGovernanceReason.PROGRESS_EXTENDED);
-    }
-
-    @Test
-    void adaptiveToolBudgetRenewsAcrossMultipleStepsBeforeExecutingLargeBatch() {
-        List<ToolCall> largeBatch = java.util.stream.IntStream.range(0, 48)
-                .mapToObj(index -> call("large-" + index, "echo"))
-                .toList();
-        ScriptedModelGateway model = ScriptedModelGateway.of(
-                ModelTurn.tools(List.of(call("progress", "echo"))),
-                ModelTurn.tools(largeBatch),
-                ModelTurn.text("done after large batch"));
-        Harness harness = newHarness(model, successfulTool("echo"));
-
-        AgentRunResult result = harness.run("large progressing batch",
-                AgentLimits.interactive(Duration.ofMinutes(1)));
-
-        assertThat(result.status()).isEqualTo(RunStatus.COMPLETED);
-        assertThat(result.toolCalls()).isEqualTo(49);
-        assertThat(toolResults(harness.session())).hasSize(49);
-        assertThat(harness.events().envelopes()).extracting(AgentEventEnvelope::event)
-                .filteredOn(LifecycleEvent.BudgetGoverned.class::isInstance)
-                .map(LifecycleEvent.BudgetGoverned.class::cast)
-                .filteredOn(event -> event.reason()
-                        == io.github.liumaishenjian.ccjava.domain.BudgetGovernanceReason.PROGRESS_EXTENDED)
-                .singleElement()
-                .satisfies(event -> assertThat(event.effectiveToolLimit()).isEqualTo(64));
-    }
-
-    @Test
-    void adaptiveToolBatchStopsBeforeAppendingWhenAbsoluteCeilingCannotFitWholeBatch() {
-        List<ToolCall> batchNearCeiling = java.util.stream.IntStream.range(0, 46)
-                .mapToObj(index -> call("near-ceiling-" + index, "echo"))
-                .toList();
-        List<ToolCall> batchBeyondCeiling = List.of(
-                call("beyond-ceiling-1", "echo"), call("beyond-ceiling-2", "echo"));
-        ScriptedModelGateway model = ScriptedModelGateway.of(
-                ModelTurn.tools(List.of(call("progress", "echo"))),
-                ModelTurn.tools(batchNearCeiling),
-                ModelTurn.tools(batchBeyondCeiling));
-        Harness harness = newHarness(model, successfulTool("echo"));
-        AgentLimits bounded = new AgentLimits(4, 32, Duration.ofMinutes(1),
-                io.github.liumaishenjian.ccjava.domain.AgentBudgetPolicy.INTERACTIVE_ADAPTIVE, 4, 48);
-
-        AgentRunResult result = harness.run("absolute batch ceiling", bounded);
-
-        assertThat(result.stopReason()).isEqualTo(StopReason.TOOL_LIMIT_REACHED);
-        assertThat(result.toolCalls()).isEqualTo(47);
-        assertThat(toolResults(harness.session())).hasSize(47);
-        assertThat(harness.session().messages()).filteredOn(AssistantMessage.class::isInstance).hasSize(2);
-        assertThat(harness.events().envelopes()).extracting(AgentEventEnvelope::event)
-                .filteredOn(LifecycleEvent.BudgetGoverned.class::isInstance)
-                .map(LifecycleEvent.BudgetGoverned.class::cast)
-                .extracting(LifecycleEvent.BudgetGoverned::reason)
-                .contains(io.github.liumaishenjian.ccjava.domain.BudgetGovernanceReason.ABSOLUTE_LIMIT);
-    }
-
-    @Test
-    void adaptiveAbsoluteCeilingStillTerminatesWithExplicitReason() {
-        ScriptedModelGateway model = ScriptedModelGateway.of(
-                ModelTurn.tools(List.of(call("absolute-1", "echo"))),
-                ModelTurn.tools(List.of(call("absolute-2", "echo"))),
-                ModelTurn.tools(List.of(call("absolute-3", "echo"))),
-                ModelTurn.text("must not be reached"));
-        Harness harness = newHarness(model, successfulTool("echo"));
-        AgentLimits bounded = new AgentLimits(2, 2, Duration.ofMinutes(1),
-                io.github.liumaishenjian.ccjava.domain.AgentBudgetPolicy.INTERACTIVE_ADAPTIVE, 3, 3);
-
-        AgentRunResult result = harness.run("absolute cap", bounded);
-
-        assertThat(result.stopReason()).isEqualTo(StopReason.TURN_LIMIT_REACHED);
-        assertThat(result.modelTurns()).isEqualTo(3);
-        assertThat(harness.events().envelopes()).extracting(AgentEventEnvelope::event)
-                .filteredOn(LifecycleEvent.BudgetGoverned.class::isInstance)
-                .map(LifecycleEvent.BudgetGoverned.class::cast)
-                .extracting(LifecycleEvent.BudgetGoverned::reason)
-                .contains(io.github.liumaishenjian.ccjava.domain.BudgetGovernanceReason.ABSOLUTE_LIMIT);
+                .isEmpty();
     }
 
     @Test
@@ -291,7 +211,7 @@ class AgentRuntimeTest {
                 ModelTurn.text("done"));
         Harness harness = newHarness(model, tool);
 
-        AgentRunResult result = harness.run("correct invalid search", AgentLimits.interactive(Duration.ofMinutes(1)));
+        AgentRunResult result = harness.run("correct invalid search", AgentLimits.interactive());
         List<ToolResult> results = toolResults(harness.session());
 
         assertThat(result.status()).isEqualTo(RunStatus.COMPLETED);
@@ -332,7 +252,7 @@ class AgentRuntimeTest {
                 ModelTurn.text("must not be reached"));
         Harness harness = newHarness(model, tool);
 
-        AgentRunResult result = harness.run("repeat invalid search", AgentLimits.interactive(Duration.ofMinutes(1)));
+        AgentRunResult result = harness.run("repeat invalid search", AgentLimits.interactive());
         List<ToolResult> results = toolResults(harness.session());
 
         assertThat(result.stopReason()).isEqualTo(StopReason.TOOL_ERROR);
@@ -363,7 +283,7 @@ class AgentRuntimeTest {
         Harness harness = newHarness(model, tool);
 
         AgentRunResult result = harness.run(
-                "repeat generic invalid", AgentLimits.interactive(Duration.ofMinutes(1)));
+                "repeat generic invalid", AgentLimits.interactive());
         List<ToolResult> results = toolResults(harness.session());
 
         assertThat(result.stopReason()).isEqualTo(StopReason.TOOL_ERROR);

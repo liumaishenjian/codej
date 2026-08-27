@@ -2162,14 +2162,17 @@ resume，避免副作用重放。legacy `plan.execute` 只保留协议识别并�
 ### 30.1 verification-required 显式再审批与 Task recovery
 
 `plan.resume` 只接受 READY、当前 Session、空 payload 且无 active Run/fence 的请求。Application 在 lifecycle lock
-内加载同一 `NEEDS_VERIFICATION` 工件，先保留旧 brief 的 permission/context 建议，再生成下一 revision：状态回到
-`AWAITING_APPROVAL`，旧 ExecutionBrief 被移除，Evidence requirements 保持 identity 但 references 清空。返回 review
-使用当前 Workspace digest；该命令不建立 `ActiveRun`、不执行 Tool，也不读取相似 deliverable 猜测实际 locator。
+内加载同一 `NEEDS_VERIFICATION` 工件，先把旧 brief 的 permission/context 建议收敛为最小 durable
+`PlanVerificationResumeReview`，再生成下一 revision：状态回到 `AWAITING_APPROVAL`，旧 ExecutionBrief 被移除，Evidence
+requirements 保持 identity 但 references 清空。返回 review 使用当前 Workspace digest；该命令不建立 `ActiveRun`、
+不执行 Tool，也不读取相似 deliverable 猜测实际 locator。若首次事件传输失败或客户端/Runtime 重启，重复命令仅对
+携带该专属标记的工件重新投影同一 revision 与实时 Workspace digest；普通 `AWAITING_APPROVAL` 不会被重新打开。
 
 因此 `plan.review.requested` 有两种合法归属：planning Run 携带 runId；显式 resume review 无 runId，但必须携带
 Session 与原 `plan.resume` requestId。`QueuedStdioEventEmitter` 仅为该 detached review 放宽 Run lifecycle，TUI protocol
 仍校验 Session，reducer 与原始事件 callback 都要求 `sessionId + pendingPlanResumeRequestId` 精确匹配。pending 在成功、
-protocol failure、settle 与 Session 切换时清除；重复命令及 unknown/wrong-session/late review 不产生 picker。
+protocol failure、settle、Session 切换与 initialized replacement 时清除；已有 detached picker 同样在 Session replacement
+清除。重复命令及 unknown/wrong-session/late review 不产生 picker。
 
 再审批走原子 `plan.review.resolve` 并创建新的 execution Run。上一 Run 留下的 IN_PROGRESS Task 会由 Run state 标记为
 `recoveryRequired`；`task_update(status=IN_PROGRESS, active_form=...)` 在同一次 mutation 中先执行 `ResumeClaim`，绑定

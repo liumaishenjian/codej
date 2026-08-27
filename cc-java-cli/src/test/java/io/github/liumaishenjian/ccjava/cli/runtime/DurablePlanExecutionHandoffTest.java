@@ -71,6 +71,7 @@ class DurablePlanExecutionHandoffTest {
             runtime.open();
             runtime.runPlan("prepare a durable plan");
             PlanArtifact awaiting = runtime.planArtifact().orElseThrow();
+            assertThat(runtime.requestPlanVerificationResume()).isEmpty();
             String workspaceDigest = runtime.currentWorkspaceDigest();
             var acceptance = runtime.acceptPlanExecution(awaiting.planId(), awaiting.revision(),
                     awaiting.contentDigest(), workspaceDigest, PlanReviewDecision.APPROVE_AUTO,
@@ -214,13 +215,16 @@ class DurablePlanExecutionHandoffTest {
                     new JsonObject(Map.of("path", "missing.txt", "content", "resumed")))));
             default -> ModelTurn.text("verified after explicit resume");
         };
+        PlanArtifact awaiting;
+        io.github.liumaishenjian.ccjava.domain.PlanReviewEvent firstReview;
+        SessionId sessionId;
         try (HeadlessRuntimeSession runtime = new HeadlessRuntimeSession(model, events::add,
                 options(workspace, root, SessionOpenRequest.create()),
                 (ignoredInvocation, ignoredDefinition, ignoredOutcome) ->
                         io.github.liumaishenjian.ccjava.domain.ApprovalResponse.allowOnce())) {
-            runtime.open();
+            sessionId = runtime.open();
             runtime.runPlan("prepare bounded correction plan");
-            PlanArtifact awaiting = runtime.planArtifact().orElseThrow();
+            awaiting = runtime.planArtifact().orElseThrow();
             var acceptance = runtime.acceptPlanExecution(awaiting.planId(), awaiting.revision(),
                     awaiting.contentDigest(), runtime.currentWorkspaceDigest(), PlanReviewDecision.APPROVE_USER,
                     PlanContextPolicy.KEEP, "");
@@ -237,20 +241,36 @@ class DurablePlanExecutionHandoffTest {
                     .filteredOn(io.github.liumaishenjian.ccjava.domain.LifecycleEvent.PlanVerificationCorrectionRequested.class::isInstance)
                     .hasSize(1);
 
-            var review = runtime.requestPlanVerificationResume().orElseThrow();
-            assertThat(review.planId()).isEqualTo(awaiting.planId());
+            firstReview = runtime.requestPlanVerificationResume().orElseThrow();
+            assertThat(firstReview.planId()).isEqualTo(awaiting.planId());
             assertThat(runtime.planArtifact().orElseThrow().status()).isEqualTo(PlanStatus.AWAITING_APPROVAL);
-            var resumedAcceptance = runtime.acceptPlanExecution(review.planId(), review.revision(),
-                    review.contentDigest(), review.workspaceDigest(), PlanReviewDecision.APPROVE_USER,
+        }
+
+        try (HeadlessRuntimeSession resumedRuntime = new HeadlessRuntimeSession(model, events::add,
+                options(workspace, root, SessionOpenRequest.resume(sessionId)),
+                (ignoredInvocation, ignoredDefinition, ignoredOutcome) ->
+                        io.github.liumaishenjian.ccjava.domain.ApprovalResponse.allowOnce())) {
+            assertThat(resumedRuntime.open()).isEqualTo(sessionId);
+            var resurfaced = resumedRuntime.requestPlanVerificationResume().orElseThrow();
+            assertThat(resurfaced.planId()).isEqualTo(firstReview.planId());
+            assertThat(resurfaced.revision()).isEqualTo(firstReview.revision());
+            assertThat(resurfaced.contentDigest()).isEqualTo(firstReview.contentDigest());
+            assertThat(resurfaced.originalPermissionMode()).isEqualTo(firstReview.originalPermissionMode());
+            assertThat(resurfaced.suggestedContextPolicy()).isEqualTo(firstReview.suggestedContextPolicy());
+            assertThat(resumedRuntime.planArtifact().orElseThrow().revision()).isEqualTo(firstReview.revision());
+
+            var resumedAcceptance = resumedRuntime.acceptPlanExecution(resurfaced.planId(), resurfaced.revision(),
+                    resurfaced.contentDigest(), resurfaced.workspaceDigest(), PlanReviewDecision.APPROVE_USER,
                     PlanContextPolicy.KEEP, "continue exact missing deliverable");
-            var resumed = runtime.runAcceptedPlan(resumedAcceptance);
+            var resumed = resumedRuntime.runAcceptedPlan(resumedAcceptance);
 
             assertThat(resumed.stopReason().name()).isEqualTo("COMPLETED");
             assertThat(resumed.finalText()).contains("verified after explicit resume");
             assertThat(workspace.resolve("missing.txt")).hasContent("resumed");
-            assertThat(runtime.planArtifact().orElseThrow()).satisfies(artifact -> {
+            assertThat(resumedRuntime.planArtifact().orElseThrow()).satisfies(artifact -> {
                 assertThat(artifact.planId()).isEqualTo(awaiting.planId());
                 assertThat(artifact.status()).isEqualTo(PlanStatus.COMPLETED);
+                assertThat(artifact.verificationResumeReview()).isEmpty();
             });
             assertThat(calls).hasValue(8);
         }

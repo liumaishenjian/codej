@@ -4,14 +4,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.github.liumaishenjian.ccjava.core.PlanArtifactStoreException;
+import io.github.liumaishenjian.ccjava.domain.PermissionMode;
 import io.github.liumaishenjian.ccjava.domain.PlanArtifact;
+import io.github.liumaishenjian.ccjava.domain.PlanContextPolicy;
 import io.github.liumaishenjian.ccjava.domain.PlanStatus;
+import io.github.liumaishenjian.ccjava.domain.PlanVerificationResumeReview;
 import io.github.liumaishenjian.ccjava.domain.SessionId;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -40,6 +44,25 @@ class FilePlanArtifactStoreTest {
                             "plan-r2-" + second.contentDigest() + ".md",
                             FilePlanArtifactStore.MANIFEST_FILE);
         }
+    }
+
+    @Test
+    void verificationResumeReviewSurvivesStoreReopenWithoutAdvancingRevision() throws IOException {
+        Path directory = Files.createDirectories(root.resolve(SESSION.value()));
+        FilePlanArtifactStore store = new FilePlanArtifactStore(directory, SESSION);
+        PlanArtifact base = PlanArtifact.create(
+                "plan-resume", SESSION, "# Resume", PlanStatus.AWAITING_APPROVAL, CREATED);
+        PlanArtifact marked = new PlanArtifact(
+                base.planId(), base.sessionId(), base.revision(), base.markdownContent(), base.contentDigest(),
+                base.status(), base.createdAt(), base.updatedAt(), Optional.empty(),
+                Optional.of(new PlanVerificationResumeReview(PermissionMode.DEFAULT, PlanContextPolicy.KEEP)),
+                base.evidenceLedger());
+
+        store.save(marked, 0, "");
+        PlanArtifact reopened = new FilePlanArtifactStore(directory, SESSION).load(SESSION).orElseThrow();
+
+        assertThat(reopened).isEqualTo(marked);
+        assertThat(reopened.revision()).isEqualTo(1);
     }
 
     @Test

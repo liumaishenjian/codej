@@ -1532,8 +1532,10 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
      *
      * <p>该入口不执行 Tool，也不直接恢复旧 ExecutionBrief。它保留同一 Plan、Task cohort 与 Evidence
      * requirement identity，清除旧 Workspace/审批绑定和 reference，并以当前 Workspace 生成新的 review
-     * 快照。只有用户再次批准后才会进入普通 {@link #acceptPlanExecution} 路径；活动 Run、fenced Session
-     * 或其他状态均拒绝，从而保持既有 recovery gate 与 no-replay 边界。</p>
+     * 快照。若首次事件传输失败或客户端重启，verification-resume 专属的 durable 再审批上下文允许重复
+     * 调用原样重新投影同一 revision；普通 AWAITING_APPROVAL 不会被该入口重新打开。只有用户再次批准后
+     * 才会进入普通 {@link #acceptPlanExecution} 路径；活动 Run、fenced Session 或其他状态均拒绝，从而
+     * 保持既有 recovery gate 与 no-replay 边界。</p>
      *
      * @return 可供 stdio/TUI 打开审批 picker 的 durable review 事件
      */
@@ -1543,17 +1545,22 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
             if (activeRun != null || session.isFenced()) return Optional.empty();
             var store = new io.github.liumaishenjian.ccjava.cli.session.SessionPlanArtifactStore(sessions, session.id());
             var loaded = store.load(session.id());
-            if (loaded.isEmpty() || loaded.orElseThrow().status()
-                    != io.github.liumaishenjian.ccjava.domain.PlanStatus.NEEDS_VERIFICATION
-                    || loaded.orElseThrow().executionBrief().isEmpty()) return Optional.empty();
+            if (loaded.isEmpty()) return Optional.empty();
             var current = loaded.orElseThrow();
-            var previousBrief = current.executionBrief().orElseThrow();
+            if (current.status() == io.github.liumaishenjian.ccjava.domain.PlanStatus.AWAITING_APPROVAL
+                    && current.verificationResumeReview().isPresent()) {
+                var review = current.verificationResumeReview().orElseThrow();
+                return Optional.of(io.github.liumaishenjian.ccjava.domain.PlanReviewEvent.from(
+                        current, currentWorkspaceDigest(), review.originalPermissionMode(), review.contextPolicy()));
+            }
+            if (current.status() != io.github.liumaishenjian.ccjava.domain.PlanStatus.NEEDS_VERIFICATION
+                    || current.executionBrief().isEmpty()) return Optional.empty();
             var reopened = current.reopenApprovalForVerificationResume(java.time.Instant.now());
             var saved = store.save(reopened, current.revision(), current.contentDigest());
             pendingVerificationSkipDecisions.clear();
+            var review = saved.verificationResumeReview().orElseThrow();
             return Optional.of(io.github.liumaishenjian.ccjava.domain.PlanReviewEvent.from(
-                    saved, currentWorkspaceDigest(), previousBrief.originalPermissionMode(),
-                    previousBrief.contextPolicy()));
+                    saved, currentWorkspaceDigest(), review.originalPermissionMode(), review.contextPolicy()));
         }
     }
 

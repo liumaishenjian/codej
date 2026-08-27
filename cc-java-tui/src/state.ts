@@ -464,6 +464,8 @@ function applyEvent(state: TuiState, event: ProtocolEvent): TuiState {
         ...state,
         phase: 'ready',
         sessionId: event.sessionId,
+        detachedPlanReview: undefined,
+        pendingPlanResumeRequestId: undefined,
         steeringQueueDepth: 0,
         notice: undefined,
       };
@@ -869,6 +871,7 @@ function applySessionCommandResult(state: TuiState, event: ProtocolEvent): TuiSt
       && event.sessionId === result.resumedSessionId
     ) {
       return {...state, sessionId: result.resumedSessionId, steeringQueueDepth: 0,
+        detachedPlanReview: undefined, pendingPlanResumeRequestId: undefined,
         taskBoard: undefined, taskPanelOpen: false, taskPanelFocused: false,
         selectedTaskId: undefined, taskDetailOpen: false};
     }

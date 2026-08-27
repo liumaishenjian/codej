@@ -223,12 +223,12 @@
     }
   </style>
 </head>
-<body data-matrix-digest="38636e62209e" data-state-digest="6945c3f875e3" data-code-digest="b81414f17627">
+<body data-matrix-digest="38636e62209e" data-state-digest="381cf71dd94e" data-code-digest="53f7642c2927">
   <main class="shell">
     <section class="hero">
       <p class="eyebrow">Reference-driven Java Agent Runtime</p>
       <h1>cc-java 项目进度看板</h1>
-      <p class="hero-copy">ADR-086/088 第十次 corrective 保持 Plan Markdown、Task Board 与 Evidence Ledger 三份独立事实：planning projection 不暴露内部 Task/Plan ID，Evidence 只按批准 exact locator 校验；任一 Gate 在有界纠正后仍未满足时丢弃候选 prose，以 PLAN_VERIFICATION_REQUIRED/run.failed 诚实停止。/plan-resume 绑定 request/session 并重新审批同一 Plan，不自动重放副作用；Task recovery 显式 reclaim，terminal callback 可重入前 Handler 已回 READY。Capability Level 无变化，S15 Stage Exit 仍 OPEN。</p>
+      <p class="hero-copy">ADR-086/088 第十次 corrective 保持 Plan Markdown、Task Board 与 Evidence Ledger 三份独立事实：planning projection 不暴露内部 Task/Plan ID，Evidence 只按批准 exact locator 校验；任一 Gate 在有界纠正后仍未满足时丢弃候选 prose，以 PLAN_VERIFICATION_REQUIRED/run.failed 诚实停止。/plan-resume 绑定 request/session，并以最小 durable verification-resume marker 支持传输失败或 Runtime 重启后同 revision 幂等 re-surface，不自动重放副作用；普通待审批 Plan 不重开，Session replacement 清除旧 pending/picker。Task recovery 显式 reclaim，terminal callback 可重入前 Handler 已回 READY。Capability Level 无变化，S15 Stage Exit 仍 OPEN。</p>
       <div class="hero-meta">
         <span class="chip"><span class="dot"></span>当前 S15 · Independent Innovation</span>
         <span class="chip">Stage Exit · OPEN</span>
@@ -330,13 +330,13 @@
         </div>
       </div>
       <dl class="evidence-grid">
-        <div class="evidence-item"><dt>Last change</dt><dd>ADR-086/088 第十次 corrective 完成显式恢复与 terminal 竞态收敛：/plan-resume 以 pending requestId+sessionId fail-closed 关联 detached 再审批并复用原 Plan/Task identity；recovery-required Task 支持同次 status=IN_PROGRESS reclaim + active_form；Handler 在 terminal callback 前回 READY，取消后也可立即启动下一 Run，三个确定性回归显式验证事件顺序。Capability Level 无变化，TASK-01..05 维持 L2、PLAN-01 维持 L1，S15 保持 OPEN。</dd></div>
+        <div class="evidence-item"><dt>Last change</dt><dd>ADR-086/088 第十次 corrective 完成两项 high-priority recovery review：Session switch/initialized replacement 清除 detached Plan pending/picker，旧 Session 迟到事件 fail closed；PlanVerificationResumeReview 以最小 permission/context durable marker 支持首次事件丢失或 Runtime restart 后同 Plan/revision 幂等 re-surface，普通 AWAITING_APPROVAL 不重开、不创建 Run、不推进 revision、不重放 Tool。此前 recovery-required Task 同次 reclaim + active_form、terminal callback 前 READY 与三个确定性顺序回归保持通过。Capability Level 无变化，TASK-01..05 维持 L2、PLAN-01 维持 L1，S15 保持 OPEN。</dd></div>
         <div class="evidence-item"><dt>Evidence stage</dt><dd><code>S15</code></dd></div>
         <div class="evidence-item"><dt>Evidence class</dt><dd><code>WORKTREE_VERIFIED</code></dd></div>
         <div class="evidence-item"><dt>Code commit</dt><dd><code>UNCOMMITTED</code></dd></div>
         <div class="evidence-item"><dt>Standard command</dt><dd><code>.\mvnw.cmd clean verify；npm.cmd --prefix cc-java-tui run check；npm.cmd --prefix cc-java-tui run test:real-java；.\scripts\TestInstalledPlanTuiE2E.ps1；.\scripts\TestCodejDevLauncher.ps1；java scripts/ProgressDashboard.java；java scripts/ProgressDashboard.java --check；java scripts/ProgressDashboard.java --self-test；git diff --check</code></dd></div>
-        <div class="evidence-item"><dt>Result</dt><dd>未提交工作树修复 Plan/Task/Evidence 终态与恢复边界：持续缺失以 PLAN_VERIFICATION_REQUIRED/run.failed 且无 finalText/run.completed 停止；/plan-resume 重新审批同一 identity 且不自动重放；Task recovery 显式 reclaim；terminal callback 可立即提交下一 Run 或 detached resume。定向 stdio/Plan 77/77、Task 16/16、Fixture 3/3；完整 clean verify 199 reports/1290 tests/37 skips，TUI 17 files/300 tests，真实 Java/Ink 6/6，安装 Plan E2E 1/1，launcher 61 assertions。Capability Level 不变，S15 保持 OPEN。</dd></div>
-        <div class="evidence-item"><dt>Source digests</dt><dd><code>matrix 38636e62209e</code><br><code>state 6945c3f875e3</code><br><code>code/build b81414f17627</code></dd></div>
+        <div class="evidence-item"><dt>Result</dt><dd>未提交工作树修复 Plan/Task/Evidence 终态与恢复边界：持续缺失以 PLAN_VERIFICATION_REQUIRED/run.failed 且无 finalText/run.completed 停止；/plan-resume 以 durable marker 支持 transport/restart 后同 revision 幂等 re-surface，普通 review 不重开且不自动重放；Session replacement 清旧 pending/picker；Task recovery 显式 reclaim；terminal callback 可立即提交下一 Run 或 detached resume。此前定向 stdio/Plan 77/77、Task 16/16、Fixture 3/3，最新 durable/restart Java 67/67、TUI reducer 28/28；完整 clean verify 199 reports/1292 tests/37 skips（CLI 545/16 skips），TUI 17 files/302 tests，真实 Java/Ink 6/6，安装 Plan E2E 1/1，launcher 61 assertions。Capability Level 不变，S15 保持 OPEN。</dd></div>
+        <div class="evidence-item"><dt>Source digests</dt><dd><code>matrix 38636e62209e</code><br><code>state 381cf71dd94e</code><br><code>code/build 53f7642c2927</code></dd></div>
       </dl>
     </section>
 

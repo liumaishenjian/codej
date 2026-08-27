@@ -1,8 +1,10 @@
 package io.github.liumaishenjian.ccjava.domain;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Instant;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 /** 验证 PlanArtifact 的单调时钟和 Fork 身份边界。 */
@@ -38,6 +40,36 @@ class PlanArtifactTest {
         assertThat(fork.status()).isEqualTo(PlanStatus.AWAITING_APPROVAL);
         assertThat(fork.markdownContent()).isEqualTo(completed.markdownContent());
     }
+    @Test
+    void verificationResumePersistsOnlyMinimalReviewContextAndClearsItAfterDecision() {
+        PlanArtifact awaiting = PlanArtifact.create(
+                "plan-source", SOURCE, "# Plan", PlanStatus.AWAITING_APPROVAL, CREATED);
+        ExecutionBrief brief = new ExecutionBrief(
+                awaiting.planId(), SOURCE, awaiting.revision(), awaiting.contentDigest(),
+                awaiting.markdownContent(), PermissionMode.DEFAULT, PermissionMode.DEFAULT,
+                ApprovalReviewer.USER, PlanContextPolicy.KEEP, Optional.empty(), Optional.empty(), "",
+                "a".repeat(64), CREATED.plusSeconds(1));
+        PlanArtifact approved = awaiting.approve(brief, brief.evidenceBindingDigest(), CREATED.plusSeconds(1));
+        PlanArtifact needsVerification = approved.withEvidenceLedger(
+                approved.evidenceLedger(), PlanStatus.NEEDS_VERIFICATION, CREATED.plusSeconds(2));
+
+        PlanArtifact reopened = needsVerification.reopenApprovalForVerificationResume(CREATED.plusSeconds(3));
+
+        assertThat(reopened.status()).isEqualTo(PlanStatus.AWAITING_APPROVAL);
+        assertThat(reopened.executionBrief()).isEmpty();
+        assertThat(reopened.verificationResumeReview()).contains(
+                new PlanVerificationResumeReview(PermissionMode.DEFAULT, PlanContextPolicy.KEEP));
+        assertThat(reopened.revision()).isEqualTo(needsVerification.revision() + 1);
+        PlanArtifact rejected = reopened.nextRevision(
+                reopened.markdownContent(), PlanStatus.REJECTED, CREATED.plusSeconds(4));
+        assertThat(rejected.verificationResumeReview()).isEmpty();
+        assertThatThrownBy(() -> new PlanArtifact(
+                reopened.planId(), reopened.sessionId(), reopened.revision(), reopened.markdownContent(),
+                reopened.contentDigest(), PlanStatus.DRAFT, reopened.createdAt(), reopened.updatedAt(),
+                Optional.empty(), reopened.verificationResumeReview(), reopened.evidenceLedger()))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     @Test
     void lifecyclePolicyAllowsContentRevisionsButClosesTerminalChains() {
         assertThat(PlanLifecyclePolicy.validInitial(PlanStatus.DRAFT)).isTrue();

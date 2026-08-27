@@ -268,6 +268,11 @@ final class JsonlSessionCodec {
         root.put("updatedAt", artifact.updatedAt().toString());
         artifact.executionBrief().ifPresent(brief -> root.set("executionBrief",
                 ExecutionBriefJson.encode(mapper.createObjectNode(), brief)));
+        artifact.verificationResumeReview().ifPresent(review -> {
+            ObjectNode encoded = root.putObject("verificationResumeReview");
+            encoded.put("originalPermissionMode", review.originalPermissionMode().name());
+            encoded.put("contextPolicy", review.contextPolicy().name());
+        });
         root.set("evidenceLedger", PlanEvidenceLedgerJson.encode(mapper.createObjectNode(), artifact.evidenceLedger()));
         return root;
     }
@@ -605,6 +610,7 @@ final class JsonlSessionCodec {
                                 record.has("executionBrief")
                                         ? Optional.of(ExecutionBriefJson.decode(record.get("executionBrief"), requiredText(record, "markdownContent", MAX_TEXT_CHARS)))
                                         : Optional.empty(),
+                                decodeVerificationResumeReview(record),
                                 record.has("evidenceLedger")
                                         ? PlanEvidenceLedgerJson.decode(record.get("evidenceLedger"))
                                         : io.github.liumaishenjian.ccjava.domain.PlanEvidenceLedger.planning(owner,
@@ -774,6 +780,25 @@ final class JsonlSessionCodec {
     record TaskJournalProjection(Optional<io.github.liumaishenjian.ccjava.core.task.TaskBoardSeed> seed,
             List<io.github.liumaishenjian.ccjava.core.task.TaskMutationEvent> events) {
         TaskJournalProjection { seed = Objects.requireNonNull(seed); events = List.copyOf(events); }
+    }
+
+    private Optional<io.github.liumaishenjian.ccjava.domain.PlanVerificationResumeReview>
+            decodeVerificationResumeReview(ObjectNode record) {
+        if (!record.has("verificationResumeReview")) return Optional.empty();
+        JsonNode raw = record.get("verificationResumeReview");
+        if (!(raw instanceof ObjectNode node) || node.size() != 2
+                || !node.has("originalPermissionMode") || !node.has("contextPolicy")) {
+            throw invalid("INVALID_RECORD", "Plan verification resume review 无效");
+        }
+        try {
+            return Optional.of(new io.github.liumaishenjian.ccjava.domain.PlanVerificationResumeReview(
+                    io.github.liumaishenjian.ccjava.domain.PermissionMode.valueOf(
+                            requiredText(node, "originalPermissionMode", 32)),
+                    io.github.liumaishenjian.ccjava.domain.PlanContextPolicy.valueOf(
+                            requiredText(node, "contextPolicy", 32))));
+        } catch (IllegalArgumentException invalidReview) {
+            throw invalid("INVALID_RECORD", "Plan verification resume review 无效");
+        }
     }
 
     private PlanRecoveryProjection decodePlanProjection(

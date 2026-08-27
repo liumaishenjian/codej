@@ -27,6 +27,7 @@ import java.util.regex.Pattern;
  * @param createdAt 首次创建时间；后续 revision 必须保持不变
  * @param updatedAt 当前 revision 的提交时间，不得早于创建时间
  * @param executionBrief 批准后持久保存的不可变执行交接；规划态必须为空
+ * @param verificationResumeReview verification-required 显式再审批的最小 durable 展示上下文
  * @param evidenceLedger 与 Plan/brief/workspace revision 绑定的 durable 证据账本
  * @since 0.1.0
  */
@@ -40,6 +41,7 @@ public record PlanArtifact(
         Instant createdAt,
         Instant updatedAt,
         java.util.Optional<ExecutionBrief> executionBrief,
+        java.util.Optional<PlanVerificationResumeReview> verificationResumeReview,
         PlanEvidenceLedger evidenceLedger) {
 
     /** 单份规划正文的独立 UTF-8 上限。 */
@@ -57,6 +59,8 @@ public record PlanArtifact(
         createdAt = Objects.requireNonNull(createdAt, "createdAt 不能为空");
         updatedAt = Objects.requireNonNull(updatedAt, "updatedAt 不能为空");
         executionBrief = Objects.requireNonNull(executionBrief, "executionBrief 不能为空");
+        verificationResumeReview = Objects.requireNonNull(
+                verificationResumeReview, "verificationResumeReview 不能为空");
         evidenceLedger = Objects.requireNonNull(evidenceLedger, "evidenceLedger 不能为空");
         if (!PLAN_ID.matcher(planId).matches()) {
             throw new IllegalArgumentException("planId 格式无效");
@@ -81,6 +85,10 @@ public record PlanArtifact(
                 || status == PlanStatus.AWAITING_APPROVAL || status == PlanStatus.REJECTED
                 || status == PlanStatus.DIGEST_CONFLICT)) {
             throw new IllegalArgumentException("规划态不能携带 ExecutionBrief");
+        }
+        if (verificationResumeReview.isPresent()
+                && (status != PlanStatus.AWAITING_APPROVAL || executionBrief.isPresent())) {
+            throw new IllegalArgumentException("显式验证再审批上下文只允许出现在独立等待审批态");
         }
         if (executionBrief.isPresent()) {
             ExecutionBrief brief = executionBrief.orElseThrow();
@@ -108,7 +116,7 @@ public record PlanArtifact(
     public static PlanArtifact create(
             String planId, SessionId sessionId, String markdownContent, PlanStatus status, Instant createdAt) {
         return new PlanArtifact(planId, sessionId, 1, markdownContent, digest(markdownContent),
-                status, createdAt, createdAt, java.util.Optional.empty(),
+                status, createdAt, createdAt, java.util.Optional.empty(), java.util.Optional.empty(),
                 PlanEvidenceLedger.planning(sessionId, planId, createdAt));
     }
 
@@ -124,7 +132,9 @@ public record PlanArtifact(
         Instant requested = Objects.requireNonNull(timestamp, "timestamp 不能为空");
         Instant monotonic = requested.isBefore(updatedAt) ? updatedAt : requested;
         return new PlanArtifact(planId, sessionId, Math.addExact(revision, 1), content, digest(content),
-                nextStatus, createdAt, monotonic, executionBrief, evidenceLedger);
+                nextStatus, createdAt, monotonic, executionBrief,
+                nextStatus == PlanStatus.AWAITING_APPROVAL
+                        ? verificationResumeReview : java.util.Optional.empty(), evidenceLedger);
     }
 
 
@@ -142,7 +152,8 @@ public record PlanArtifact(
         PlanEvidenceLedger bound = evidenceLedger.bind(checked.approvedRevision(), executionBriefDigest,
                 checked.workspaceDigest(), monotonic);
         return new PlanArtifact(planId, sessionId, Math.addExact(revision, 1), markdownContent,
-                contentDigest, PlanStatus.APPROVED, createdAt, monotonic, java.util.Optional.of(checked), bound);
+                contentDigest, PlanStatus.APPROVED, createdAt, monotonic, java.util.Optional.of(checked),
+                java.util.Optional.empty(), bound);
     }
 
     /**
@@ -158,7 +169,7 @@ public record PlanArtifact(
         if (status != PlanStatus.APPROVED || executionBrief.isEmpty()) {
             throw new IllegalStateException("只有已批准且未执行的工件可以因 Workspace 漂移重新审批");
         }
-        return reopenApproval(timestamp);
+        return reopenApproval(timestamp, java.util.Optional.empty());
     }
 
     /**
@@ -175,14 +186,17 @@ public record PlanArtifact(
         if (status != PlanStatus.NEEDS_VERIFICATION || executionBrief.isEmpty()) {
             throw new IllegalStateException("只有等待验证且保留旧执行绑定的工件可以请求继续");
         }
-        return reopenApproval(timestamp);
+        ExecutionBrief previous = executionBrief.orElseThrow();
+        return reopenApproval(timestamp, java.util.Optional.of(new PlanVerificationResumeReview(
+                previous.originalPermissionMode(), previous.contextPolicy())));
     }
 
-    private PlanArtifact reopenApproval(Instant timestamp) {
+    private PlanArtifact reopenApproval(
+            Instant timestamp, java.util.Optional<PlanVerificationResumeReview> resumeReview) {
         Instant requested = Objects.requireNonNull(timestamp, "timestamp 不能为空");
         Instant monotonic = requested.isBefore(updatedAt) ? updatedAt : requested;
         return new PlanArtifact(planId, sessionId, Math.addExact(revision, 1), markdownContent, contentDigest,
-                PlanStatus.AWAITING_APPROVAL, createdAt, monotonic, java.util.Optional.empty(),
+                PlanStatus.AWAITING_APPROVAL, createdAt, monotonic, java.util.Optional.empty(), resumeReview,
                 evidenceLedger.resetForReapproval(monotonic));
     }
 
@@ -199,6 +213,8 @@ public record PlanArtifact(
         Instant monotonic = requested.isBefore(updatedAt) ? updatedAt : requested;
         return new PlanArtifact(planId, sessionId, Math.addExact(revision, 1), markdownContent, contentDigest,
                 nextStatus, createdAt, monotonic, executionBrief,
+                nextStatus == PlanStatus.AWAITING_APPROVAL
+                        ? verificationResumeReview : java.util.Optional.empty(),
                 Objects.requireNonNull(ledger, "ledger 不能为空"));
     }
 

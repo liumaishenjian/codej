@@ -350,6 +350,53 @@ describe('reduceTuiState', () => {
     expect(state.sessionId).toBe('session-target');
   });
 
+  it('Session 切换清除 pending Plan resume 并忽略旧 Session 的迟到 detached review', () => {
+    let state = reduceTuiState(initialTuiState, {
+      type: 'event.received', event: event('initialized', 1, {}, 'init', 'session-source'),
+    });
+    state = reduceTuiState(state, {type: 'plan.resume.requested', requestId: 'resume-old'});
+    state = reduceTuiState(state, {type: 'event.received', event: event(
+      'session.command.result', 2, {
+        commandId: 'switch', intent: 'resume', status: 'succeeded', code: 'ok',
+        result: {previousSessionId: 'session-source', resumedSessionId: 'session-target'},
+      }, 'switch', 'session-target',
+    )});
+    expect(state.pendingPlanResumeRequestId).toBeUndefined();
+
+    state = reduceTuiState(state, {type: 'event.received', event: event(
+      'plan.review.requested', 3, {
+        planId: 'plan-old', status: 'awaiting_approval', revision: 8,
+        contentDigest: 'a'.repeat(64), markdown: '# Old', workspaceDigest: 'b'.repeat(64),
+        originalPermissionMode: 'default', suggestedContextPolicy: 'keep',
+      }, 'resume-old', 'session-source',
+    )});
+    expect(state.detachedPlanReview).toBeUndefined();
+  });
+
+  it('Session 切换与 initialized replacement 都清除现有 detached Plan review', () => {
+    const detached = {
+      planId: 'plan-old', status: 'awaiting_approval' as const, revision: 8,
+      contentDigest: 'a'.repeat(64), markdown: '# Old', workspaceDigest: 'b'.repeat(64),
+      originalPermissionMode: 'default' as const, suggestedContextPolicy: 'keep' as const,
+    };
+    let state: TuiState = {...initialTuiState, phase: 'ready', sessionId: 'session-source',
+      detachedPlanReview: detached};
+    state = reduceTuiState(state, {type: 'event.received', event: event(
+      'session.command.result', 1, {
+        commandId: 'switch', intent: 'resume', status: 'succeeded', code: 'ok',
+        result: {previousSessionId: 'session-source', resumedSessionId: 'session-target'},
+      }, 'switch', 'session-target',
+    )});
+    expect(state.detachedPlanReview).toBeUndefined();
+
+    state = {...state, detachedPlanReview: detached, pendingPlanResumeRequestId: 'resume-stale'};
+    state = reduceTuiState(state, {type: 'event.received', event: event(
+      'initialized', 2, {}, 'init-replacement', 'session-replacement',
+    )});
+    expect(state.detachedPlanReview).toBeUndefined();
+    expect(state.pendingPlanResumeRequestId).toBeUndefined();
+  });
+
   it('只投影 steering 深度与固定丢弃原因，不把文本写入 Run 或 notice', () => {
     let state = reduceTuiState(initialTuiState, {
       type: 'event.received', event: event('initialized', 1, {}, 'init', 'session-1'),

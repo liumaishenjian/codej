@@ -61,7 +61,7 @@ public final class FilePlanArtifactStore implements PlanArtifactStore {
     private static final Duration ORPHAN_GRACE = Duration.ofHours(1);
     private static final Set<String> FIELDS = Set.of(
             "schemaVersion", "planId", "sessionId", "revision", "contentFile", "contentDigest",
-            "status", "createdAt", "updatedAt", "executionBrief", "evidenceLedger");
+            "status", "createdAt", "updatedAt", "executionBrief", "verificationResumeReview", "evidenceLedger");
 
     private final Path sessionRoot;
     private final SessionId sessionId;
@@ -137,6 +137,7 @@ public final class FilePlanArtifactStore implements PlanArtifactStore {
                     node.has("executionBrief")
                             ? java.util.Optional.of(ExecutionBriefJson.decode(node.get("executionBrief"), markdown))
                             : java.util.Optional.empty(),
+                    decodeVerificationResumeReview(node),
                     node.has("evidenceLedger")
                             ? PlanEvidenceLedgerJson.decode(node.get("evidenceLedger"))
                             : io.github.liumaishenjian.ccjava.domain.PlanEvidenceLedger.planning(sessionId,
@@ -320,6 +321,25 @@ public final class FilePlanArtifactStore implements PlanArtifactStore {
         return verified;
     }
 
+    private java.util.Optional<io.github.liumaishenjian.ccjava.domain.PlanVerificationResumeReview>
+            decodeVerificationResumeReview(ObjectNode manifest) {
+        if (!manifest.has("verificationResumeReview")) return java.util.Optional.empty();
+        JsonNode raw = manifest.get("verificationResumeReview");
+        if (!(raw instanceof ObjectNode node) || node.size() != 2
+                || !node.has("originalPermissionMode") || !node.has("contextPolicy")) {
+            throw failure(PlanArtifactStoreException.Code.CORRUPT);
+        }
+        try {
+            return java.util.Optional.of(new io.github.liumaishenjian.ccjava.domain.PlanVerificationResumeReview(
+                    io.github.liumaishenjian.ccjava.domain.PermissionMode.valueOf(
+                            requiredText(node, "originalPermissionMode", 32)),
+                    io.github.liumaishenjian.ccjava.domain.PlanContextPolicy.valueOf(
+                            requiredText(node, "contextPolicy", 32))));
+        } catch (IllegalArgumentException invalid) {
+            throw failure(PlanArtifactStoreException.Code.CORRUPT);
+        }
+    }
+
     private byte[] encodeManifest(PlanArtifact artifact) {
         ObjectNode node = mapper.createObjectNode();
         node.put("schemaVersion", 2);
@@ -333,6 +353,11 @@ public final class FilePlanArtifactStore implements PlanArtifactStore {
         node.put("updatedAt", artifact.updatedAt().toString());
         artifact.executionBrief().ifPresent(brief -> node.set("executionBrief",
                 ExecutionBriefJson.encode(mapper.createObjectNode(), brief)));
+        artifact.verificationResumeReview().ifPresent(review -> {
+            ObjectNode encoded = node.putObject("verificationResumeReview");
+            encoded.put("originalPermissionMode", review.originalPermissionMode().name());
+            encoded.put("contextPolicy", review.contextPolicy().name());
+        });
         node.set("evidenceLedger", PlanEvidenceLedgerJson.encode(mapper.createObjectNode(), artifact.evidenceLedger()));
         byte[] bytes = mapper.writeValueAsBytes(node);
         if (bytes.length > MAX_MANIFEST_BYTES) throw failure(PlanArtifactStoreException.Code.LIMIT_EXCEEDED);
@@ -343,7 +368,7 @@ public final class FilePlanArtifactStore implements PlanArtifactStore {
         try {
             JsonNode node = mapper.readTree(bytes);
             if (node == null || !node.isObject()
-                    || (node.size() != FIELDS.size() && node.size() != FIELDS.size() - 1)
+                    || node.size() < FIELDS.size() - 3 || node.size() > FIELDS.size()
                     || node.properties().stream().anyMatch(entry -> !FIELDS.contains(entry.getKey()))
                     || !node.has("schemaVersion") || !node.has("planId") || !node.has("sessionId")
                     || !node.has("revision") || !node.has("contentFile") || !node.has("contentDigest")

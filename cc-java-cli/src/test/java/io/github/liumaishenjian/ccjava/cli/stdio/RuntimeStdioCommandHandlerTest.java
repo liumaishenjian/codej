@@ -433,8 +433,21 @@ class RuntimeStdioCommandHandlerTest {
             assertThat(events.indexOf(executionTerminal)).isLessThan(events.indexOf(resumedReview));
             assertThat(resumedReview.payload().get("planId").stringValue())
                     .isEqualTo(review.payload().get("planId").stringValue());
+            handler.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"plan.resume\","
+                    + "\"requestId\":\"resume-retry\",\"sessionId\":\"%s\",\"sequence\":5,\"payload\":{}}")
+                    .formatted(sessionId)), emitter);
+            CapturedEvent retriedReview = events.stream()
+                    .filter(event -> event.type().equals("plan.review.requested")
+                            && event.requestId().equals("resume-retry"))
+                    .findFirst().orElseThrow(() -> new AssertionError(eventDiagnostics(events)));
+            assertThat(retriedReview.payload().get("planId").stringValue())
+                    .isEqualTo(resumedReview.payload().get("planId").stringValue());
+            assertThat(retriedReview.payload().get("revision").longValue())
+                    .isEqualTo(resumedReview.payload().get("revision").longValue());
+            assertThat(retriedReview.payload().get("contentDigest").stringValue())
+                    .isEqualTo(resumedReview.payload().get("contentDigest").stringValue());
             handler.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"plan.review.resolve\","
-                    + "\"requestId\":\"resume-decision\",\"sessionId\":\"%s\",\"sequence\":5,"
+                    + "\"requestId\":\"resume-decision\",\"sessionId\":\"%s\",\"sequence\":6,"
                     + "\"payload\":{\"planId\":\"%s\",\"revision\":%d,\"contentDigest\":\"%s\","
                     + "\"workspaceDigest\":\"%s\",\"decision\":\"APPROVE_USER\","
                     + "\"contextPolicy\":\"KEEP\",\"feedback\":\"continue safely\"}}")

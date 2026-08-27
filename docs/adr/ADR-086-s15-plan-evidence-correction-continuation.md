@@ -55,9 +55,11 @@ terminal 与 Surface delivery 的 authority 顺序错误。
    永不构成证据。
 10. `plan.resume` 是 `NEEDS_VERIFICATION` 后唯一的新 Surface 入口：它不创建 Run、不执行 Tool，而是在 lifecycle
     lock 内把同一 Plan revision 链显式转回 `AWAITING_APPROVAL`，清除旧 ExecutionBrief、workspace binding 与
-    Evidence references，并按当前 Workspace 生成新的 durable review。TUI 只接受与本地 pending resume requestId
-    和当前 sessionId 同时匹配的 detached `plan.review.requested`；unknown、重复、迟到或跨 Session 事件均 fail closed。
-    再审批后创建新的 execution Run；旧 IN_PROGRESS Task 必须由模型同次提交 `status=IN_PROGRESS` 与可选
+    Evidence references，并只保存原 permission/context 的最小 `PlanVerificationResumeReview` 标记。若首次 detached
+    事件传输失败或客户端/Runtime 重启，重复 `plan.resume` 只对携带该标记的同一工件重新投影当前 Workspace review，
+    不推进 revision；普通 `AWAITING_APPROVAL` 仍拒绝。TUI 只接受与本地 pending resume requestId 和当前 sessionId
+    同时匹配的 detached `plan.review.requested`；unknown、重复、迟到、跨 Session 事件均 fail closed，Session 切换或
+    initialized replacement 会清除 pending 与 picker。再审批后创建新的 execution Run；旧 IN_PROGRESS Task 必须由模型同次提交 `status=IN_PROGRESS` 与可选
     `active_form` 显式建立新 runId/claim epoch，之后才能继续 mutation，不能由 Runtime 自动恢复或重放副作用。
 
 ## 4. 状态与顺序

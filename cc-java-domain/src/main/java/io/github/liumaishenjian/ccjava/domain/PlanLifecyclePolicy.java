@@ -11,7 +11,9 @@ import java.util.Objects;
  *
  * <p>普通 Markdown 修订可以保持非终态不变；终态不能再产生新 revision。重复审批或拒绝
  * 必须由调用方识别为幂等决定并跳过持久化，而不能用终态自环伪造一次新变化。
- * 用户反馈通过 {@code AWAITING_APPROVAL -> DRAFT} 恢复同一 planId/revision 链继续规划。</p>
+ * 用户反馈通过 {@code AWAITING_APPROVAL -> DRAFT} 恢复同一 planId/revision 链继续规划；
+ * 验证未收敛时只能由显式继续请求经 {@code NEEDS_VERIFICATION -> AWAITING_APPROVAL}
+ * 重新审批，不能直接回到执行态或自动重放副作用。</p>
  *
  * @since 0.1.0
  */
@@ -57,7 +59,9 @@ public final class PlanLifecyclePolicy {
                     || to == PlanStatus.COMPLETED
                     || terminalFailure(to);
             case PAUSED -> to == PlanStatus.APPROVED || terminalFailure(to);
-            case NEEDS_VERIFICATION -> to == PlanStatus.COMPLETED || terminalFailure(to);
+            case NEEDS_VERIFICATION -> to == PlanStatus.AWAITING_APPROVAL
+                    || to == PlanStatus.COMPLETED
+                    || terminalFailure(to);
             case COMPLETED, REJECTED, DIGEST_CONFLICT, FAILED, CANCELLED, TIMED_OUT, LIMIT_EXCEEDED -> false;
         };
     }

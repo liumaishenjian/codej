@@ -346,6 +346,12 @@ export class StdioClient {
     return this.#startTextRun('plan.start', task);
   }
 
+  /** 为 NEEDS_VERIFICATION Plan 请求新的显式审批；命令本身不启动执行 Run。 */
+  public resumePlanVerification(): string {
+    if (this.#sessionId === undefined) throw new Error('尚未初始化 Session');
+    return this.#send('plan.resume', {}, this.#sessionId);
+  }
+
   /** 以一个服务端原子命令收敛 durable review，并在批准时直接接受执行。 */
   public resolvePlanReview(input: {
     readonly planId: string;

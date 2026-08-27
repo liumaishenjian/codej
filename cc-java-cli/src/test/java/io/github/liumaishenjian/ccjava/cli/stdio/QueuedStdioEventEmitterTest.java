@@ -94,6 +94,34 @@ class QueuedStdioEventEmitterTest {
     }
 
     @Test
+    void acceptsDetachedResumeReviewButStillValidatesRunBoundReview() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        QueuedStdioEventEmitter emitter = new QueuedStdioEventEmitter(
+                codec,
+                output,
+                4,
+                Duration.ofMillis(500));
+        try {
+            emitter.emit(
+                    "plan.review.requested",
+                    "resume-1",
+                    Optional.of("session-1"),
+                    Optional.empty(),
+                    payload("planId", "plan-1"));
+            assertThatThrownBy(() -> emitter.emit(
+                    "plan.review.requested",
+                    "decision-1",
+                    Optional.of("session-1"),
+                    Optional.of("run-missing"),
+                    payload("planId", "plan-1")))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("run.started");
+        } finally {
+            emitter.close();
+        }
+    }
+
+    @Test
     void rejectsSecondTerminalAndEventsAfterTerminal() {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         QueuedStdioEventEmitter emitter = new QueuedStdioEventEmitter(

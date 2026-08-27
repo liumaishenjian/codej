@@ -813,11 +813,18 @@ S01 已确认：
   Runtime 应在同一 Run 内提供有界、可观察的 correction continuation：只反馈批准 requirement 的身份、kind、locator
   与封闭 reason，不自动执行或重放任何既有 Tool；相同失败指纹或次数上限必须收敛为清晰用户决定。
 - correction 期间沿用原 Run 的预算、deadline、取消、Permission、Approval、Hook 和 Tool Pipeline；第一份未验证
-  final 不得进入后续 canonical request。Surface 必须抑制或明确标记未验证 prose，只有 evidence 全部满足后的
-  terminal 才可把最终文本作为完成交付展示；`NEEDS_VERIFICATION` terminal 不得携带模型完成声明。
+  final 不得进入后续 canonical request。Surface 必须抑制未验证 prose，只有 Evidence 与当前 Plan Task cohort
+  全部满足后的 terminal 才可把最终文本作为完成交付展示。重复指纹或次数上限后任一 Gate 仍未满足时，Runtime
+  必须丢弃候选 prose，以 typed `PLAN_VERIFICATION_REQUIRED` 非成功终态停止；Plan 保持 `NEEDS_VERIFICATION`，
+  stdio 发布 `plan.verification.required` 后发布 `run.failed`，不得发布 `run.completed` 或携带 `finalText`。
 - accepted Plan 的模型失败、重试耗尽、取消、deadline、limit 与 incomplete stream 必须进入 durable
-  failure status 并投影 `plan.execution.failed`；只有正常完成后才允许投影 `plan.verification.required/completed`。
-  Surface 必须明确“不自动重放”，恢复仍需显式领取并经过既有 recovery gate。
+  failure status 并投影 `plan.execution.failed`；Gate 有界未收敛则使用上述 verification-required typed failure，
+  不冒充模型/执行故障。Surface 必须明确“不自动重放”，恢复仍需显式领取并经过既有 recovery gate。
+- `NEEDS_VERIFICATION` 必须提供真实可达的 `/plan-resume`/`plan.resume`：命令只把同一 Plan 转回
+  `AWAITING_APPROVAL` 并按当前 Workspace 生成新 review，不创建 Run 或 Tool，不复用旧 approval/workspace/reference。
+  TUI 必须以当前 sessionId + 本地 pending requestId 精确关联 detached review，防重复提交并拒绝 unknown/late/spoofed
+  事件；再审批后启动新 Run，旧 recoveryRequired Task 只能由该 Run 同次 `status=IN_PROGRESS + active_form` 显式
+  建立新 runId/claim epoch 后继续，Task ID/cohort 不变。
 - 用户可在策略允许时对具体 requirement 显式批准 typed skip；skip 必须使用独立 decision identity、
   durable/auditable，不能从模型文本暗示或批量推断。
 - Surface 必须显示 actionable 非完成状态；Evidence Gate 不改变 Permission、AutoReview、Hard Denial、

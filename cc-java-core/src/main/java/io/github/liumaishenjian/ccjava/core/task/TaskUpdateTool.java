@@ -54,7 +54,7 @@ public final class TaskUpdateTool implements AgentTool {
             "task_id", "subject", "description", "active_form", "status", "owner",
             "add_blocked_by", "remove_blocked_by");
     private static final ToolDefinition DEFINITION = new ToolDefinition(NAME,
-            "Update one task using task_id and only the fields that should change. Runtime owns revisions, claims, board, session, run and actor identities. In the session-local root runtime, any owner label means assign to the current runtime actor.",
+            "Update one task using task_id and only the fields that should change. Runtime owns revisions, claims, board, session, run and actor identities. For an IN_PROGRESS task with recovery_required=true, explicitly send status=IN_PROGRESS to reclaim it for the current run; active_form and other requested fields may be updated in that same call. In the session-local root runtime, any owner label means assign to the current runtime actor.",
             """
             {"type":"object","additionalProperties":false,"required":["task_id"],"properties":{"task_id":{"type":"string","pattern":"^task-[1-9][0-9]*$"},"subject":{"type":"string","minLength":1,"maxLength":200},"description":{"type":"string","maxLength":4096},"active_form":{"anyOf":[{"type":"string","minLength":1,"maxLength":200},{"type":"null"}]},"status":{"type":"string","enum":["PENDING","IN_PROGRESS","COMPLETED","DELETED"]},"owner":{"type":"string","minLength":1,"maxLength":128},"add_blocked_by":{"type":"array","maxItems":32,"items":{"type":"string","pattern":"^task-[1-9][0-9]*$"}},"remove_blocked_by":{"type":"array","maxItems":32,"items":{"type":"string","pattern":"^task-[1-9][0-9]*$"}}}}
             """, ToolEffect.WRITE_SESSION_STATE, ToolSource.BUILT_IN, false,
@@ -117,7 +117,9 @@ public final class TaskUpdateTool implements AgentTool {
                     Optional.of(current.id()), service.snapshot().revision(), Optional.empty(), Set.of()));
         }
         try {
-            TaskItemView candidate = applyEdit(invocation.call().id(), capability, current, request);
+            TaskItemView candidate = resumeRecoveryClaim(
+                    invocation.call().id(), capability, current, request);
+            candidate = applyEdit(invocation.call().id(), capability, candidate, request);
             candidate = applyOwner(invocation.call().id(), capability, candidate, request);
             candidate = applyDependencies(invocation.call().id(), capability, candidate, request);
             Optional<TaskItemView> terminal = applyStatus(invocation.call().id(), capability, candidate, request);
@@ -127,6 +129,28 @@ public final class TaskUpdateTool implements AgentTool {
         } catch (StageFailure failure) {
             return failure.outcome();
         }
+    }
+
+    /**
+     * 在同一次显式 IN_PROGRESS 更新中先收敛旧 Run 的 recovery claim。
+     *
+     * <p>恢复成功后，后续 edit/owner/dependency 阶段基于新 revision 与新 claim epoch 继续，
+     * 因而 {@code active_form} 等用户可见字段不需要拆成第二次 Tool 调用。未明确提交
+     * IN_PROGRESS 时不触碰 recovery，避免普通字段编辑暗中接管旧副作用。</p>
+     */
+    private TaskItemView resumeRecoveryClaim(String callId, TaskBoardCapability capability,
+            TaskItemView current, Request request) {
+        if (request.status().orElse(null) != UpdateStatus.IN_PROGRESS
+                || current.status() != TaskStatus.IN_PROGRESS
+                || !current.recoveryRequired()
+                || current.claim().isEmpty()) {
+            return current;
+        }
+        var result = service.execute(capability, new TaskMutation.ResumeClaim(
+                new TaskCallId(phaseCallId(callId, "resume")), current.id(), current.revision(),
+                current.claim().orElseThrow().epoch()));
+        if (!result.succeeded()) throw new StageFailure(TaskToolSupport.mutationOutcome(result));
+        return result.task().orElseThrow();
     }
 
     private TaskItemView applyEdit(String callId, TaskBoardCapability capability,

@@ -187,6 +187,10 @@ public final class QueuedStdioEventEmitter
             }
             return;
         }
+        if (type.equals("plan.review.requested") && runId.isEmpty()) {
+            // 显式 plan.resume 只打开 durable 审批，不创建模型 Run；request/session correlation 由 TUI fail closed。
+            return;
+        }
         if (type.equals("model.text.delta") || type.equals("plan.proposed")
                 || type.equals("plan.review.requested") || type.equals("question.requested")
                 || RUN_TERMINALS.contains(type)) {

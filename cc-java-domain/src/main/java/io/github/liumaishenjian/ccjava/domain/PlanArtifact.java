@@ -158,6 +158,27 @@ public record PlanArtifact(
         if (status != PlanStatus.APPROVED || executionBrief.isEmpty()) {
             throw new IllegalStateException("只有已批准且未执行的工件可以因 Workspace 漂移重新审批");
         }
+        return reopenApproval(timestamp);
+    }
+
+    /**
+     * 为有界验证失败后的显式继续重新打开审批。
+     *
+     * <p>保留同一 Plan、Markdown、Evidence requirement 与 Task cohort identity，但撤销旧 ExecutionBrief、
+     * Workspace 绑定和旧 reference。用户必须基于当前 Workspace 再次批准，Runtime 才能启动新的执行 Run；
+     * 该转换本身不执行或重放任何 Tool。</p>
+     *
+     * @param timestamp 显式恢复请求时间
+     * @return 状态为 AWAITING_APPROVAL 的下一 revision
+     */
+    public PlanArtifact reopenApprovalForVerificationResume(Instant timestamp) {
+        if (status != PlanStatus.NEEDS_VERIFICATION || executionBrief.isEmpty()) {
+            throw new IllegalStateException("只有等待验证且保留旧执行绑定的工件可以请求继续");
+        }
+        return reopenApproval(timestamp);
+    }
+
+    private PlanArtifact reopenApproval(Instant timestamp) {
         Instant requested = Objects.requireNonNull(timestamp, "timestamp 不能为空");
         Instant monotonic = requested.isBefore(updatedAt) ? updatedAt : requested;
         return new PlanArtifact(planId, sessionId, Math.addExact(revision, 1), markdownContent, contentDigest,

@@ -252,7 +252,7 @@ describe('real Java stdio plan flow', () => {
     expect(exit?.stderrBytes).toBe(0);
   }, 30_000);
 
-  it('renders early approved execution events through the real Ink reducer path', async () => {
+  it('renders explicit verification resume through real Java stdio and Ink', async () => {
     const classpath = process.env.CC_JAVA_TEST_CLASSPATH;
     expect(classpath, 'CC_JAVA_TEST_CLASSPATH must point to compiled Java classes and dependencies').toBeTruthy();
     const workspace = workspacePath.replaceAll('\\', '/');
@@ -266,7 +266,7 @@ describe('real Java stdio plan flow', () => {
     const client = new StdioClient({
       executable: 'java',
       args: ['-cp', [planFakeClasspath!, effectiveClasspath].join(path.delimiter),
-        'io.github.liumaishenjian.ccjava.cli.stdio.StdioProtocolFixtureMain', 'plan-runtime', os.tmpdir()],
+        'io.github.liumaishenjian.ccjava.cli.stdio.StdioProtocolFixtureMain', 'plan-runtime-resume', os.tmpdir()],
       cwd: workspace,
       env: {...process.env, CC_JAVA_PLAN_FAKE_CLASSPATH: planFakeClasspath!},
     }, {shutdownTimeoutMs: 2_000});
@@ -300,16 +300,47 @@ describe('real Java stdio plan flow', () => {
         && view.lastFrame()?.includes('不会自动重放既有副作用') === true,
       () => diagnostic(events, failures, exit));
       expect(view.lastFrame()).not.toContain('FIRST_UNVERIFIED_FINAL');
+      await waitFor(() => events.some(event => event.type === 'plan.verification.required')
+        && events.some(event => event.type === 'run.failed'
+          && event.payload.stopReason === 'plan_verification_required'),
+      () => diagnostic(events, failures, exit));
+      expect(events.filter(event => event.type === 'approval.requested')).toHaveLength(1);
+      expect(events.some(event => event.type === 'run.completed'
+        && event.payload.finalText === 'SECOND_UNVERIFIED_FINAL')).toBe(false);
+      await waitFor(() => view.lastFrame()?.includes('计划尚未完成') === true
+        && view.lastFrame()?.includes('运行失败 · plan_verification_required') === true
+        && view.lastFrame()?.includes('· 就绪') === true,
+      () => diagnostic(events, failures, exit));
+
+      const firstPlanId = String(events.find(event => event.type === 'plan.review.requested')!.payload.planId);
+      const taskIdsBeforeResume = events.filter(event => event.type === 'task.board.snapshot')
+        .flatMap(event => (event.payload.tasks as Array<{taskId: string}>).map(task => task.taskId));
+      expect(new Set(taskIdsBeforeResume)).toEqual(new Set(['task-1']));
+      view.stdin.write('/plan-resume');
+      view.stdin.write('\r');
+      await waitFor(() => events.filter(event => event.type === 'plan.review.requested').length === 2,
+        () => diagnostic(events, failures, exit));
+      const resumedReview = events.filter(event => event.type === 'plan.review.requested')[1]!;
+      expect(resumedReview.payload.planId).toBe(firstPlanId);
+      await waitFor(() => view.lastFrame()?.includes('实施计划') === true
+        && view.lastFrame()?.includes('批准并自动执行') === true,
+      () => diagnostic(events, failures, exit));
+      view.stdin.write('[B');
+      await new Promise(resolve => setTimeout(resolve, 10));
+      view.stdin.write('\r');
       await waitFor(() => events.filter(event => event.type === 'approval.requested').length === 2,
         () => diagnostic(events, failures, exit));
       view.stdin.write('\r');
-      await waitFor(() => view.lastFrame()?.includes('approved plan corrected and verified') === true
+      await waitFor(() => view.lastFrame()?.includes('approved plan corrected and verified after explicit resume') === true
         && view.lastFrame()?.includes('计划证据已验证') === true
         && view.lastFrame()?.includes('✓ 生成精确命名的河南天气工作簿。') === true
         && view.lastFrame()?.includes('已完成') === true,
       () => diagnostic(events, failures, exit));
       await waitFor(() => view.lastFrame()?.includes('· 就绪') === true,
         () => diagnostic(events, failures, exit));
+      const taskIdsAfterResume = events.filter(event => event.type === 'task.board.snapshot')
+        .flatMap(event => (event.payload.tasks as Array<{taskId: string}>).map(task => task.taskId));
+      expect(new Set(taskIdsAfterResume)).toEqual(new Set(['task-1']));
 
       const eventBoundary = events.length;
       view.stdin.write('计划完成后的普通输入');

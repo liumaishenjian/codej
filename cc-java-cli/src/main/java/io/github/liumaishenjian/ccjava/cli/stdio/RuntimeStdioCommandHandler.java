@@ -417,6 +417,7 @@ public final class RuntimeStdioCommandHandler
             case "run.start" -> startRun(command, events);
             case "plan.start" -> startPlan(command, events);
             case "plan.review.resolve" -> resolvePlanReview(command, events);
+            case "plan.resume" -> resumePlanVerification(command, events);
             case "plan.execute" -> executeApprovedPlan(command, events);
             case "plan.feedback" -> returnPlanFeedback(command, events);
             case "input.begin" -> beginInput(command);
@@ -704,6 +705,36 @@ public final class RuntimeStdioCommandHandler
                 || feedback.stringValue().codePointCount(0, feedback.stringValue().length()) > 8_192) {
             throw protocolError("INVALID_PAYLOAD", command, "Plan review payload 无效");
         }
+    }
+
+    /**
+     * 将 NEEDS_VERIFICATION 工件显式转回再审批；该命令本身不启动 Run 或重放 Tool。
+     */
+    private StdioProtocol.Disposition resumePlanVerification(
+            StdioProtocol.Command command, StdioProtocol.EventEmitter events) throws StdioProtocolException {
+        synchronized (lock) {
+            ensureState(State.READY, command);
+            requireSession(command);
+            requireNoRunId(command);
+            if (!command.payload().isEmpty()) {
+                throw protocolError("INVALID_PAYLOAD", command, "plan.resume payload 必须为空");
+            }
+        }
+        var review = application.requestPlanVerificationResume()
+                .orElseThrow(() -> protocolError("PLAN_RESUME_UNAVAILABLE", command,
+                        "当前 Plan 不可继续；可能不是 NEEDS_VERIFICATION 或 Session 需要先恢复"));
+        ObjectNode payload = codec.objectNode();
+        payload.put("planId", review.planId());
+        payload.put("status", "awaiting_approval");
+        payload.put("revision", review.revision());
+        payload.put("contentDigest", review.contentDigest());
+        payload.put("markdown", review.markdownContent());
+        payload.put("workspaceDigest", review.workspaceDigest());
+        payload.put("originalPermissionMode", review.originalPermissionMode().name().toLowerCase(Locale.ROOT));
+        payload.put("suggestedContextPolicy", review.suggestedContextPolicy().name().toLowerCase(Locale.ROOT));
+        events.emit("plan.review.requested", command.requestId(), Optional.of(application.sessionId().value()),
+                Optional.empty(), payload);
+        return StdioProtocol.Disposition.CONTINUE;
     }
 
     /** 隐藏兼容入口：durable review 不再允许通过 plan.execute 触发第二次用户动作。 */
@@ -2013,29 +2044,45 @@ public final class RuntimeStdioCommandHandler
             var artifact = application.planArtifact().orElseThrow(
                     () -> new IllegalStateException("Plan 执行终态缺少 durable artifact"));
             if (result.stopReason() != io.github.liumaishenjian.ccjava.domain.StopReason.COMPLETED) {
-                emitPlanExecutionFailure(run, result, artifact);
+                if (result.stopReason()
+                        == io.github.liumaishenjian.ccjava.domain.StopReason.PLAN_VERIFICATION_REQUIRED) {
+                    run.events.emit("plan.verification.required", run.requestId,
+                            Optional.of(application.sessionId().value()), Optional.empty(),
+                            planVerificationPayload(artifact));
+                } else {
+                    emitPlanExecutionFailure(run, result, artifact);
+                }
                 emitTerminal(run, result, false);
                 return;
             }
-            ObjectNode payload = codec.objectNode();
-            payload.put("planId", artifact.planId());
-            payload.put("status", artifact.status().name().toLowerCase(Locale.ROOT));
-            payload.put("requiredEvidence", artifact.evidenceLedger().requirements().stream()
-                    .filter(io.github.liumaishenjian.ccjava.domain.PlanEvidenceRequirement::required).count());
-            payload.put("satisfiedEvidence", artifact.evidenceLedger().references().stream()
-                    .filter(reference -> reference.status() == io.github.liumaishenjian.ccjava.domain.PlanEvidenceStatus.PASSED
-                            || reference.status() == io.github.liumaishenjian.ccjava.domain.PlanEvidenceStatus.SKIPPED).count());
-            artifact.evidenceLedger().firstBlockingRequirement()
-                    .ifPresent(requirement -> payload.put("blockingRequirementId", requirement));
             boolean completed = artifact.status() == io.github.liumaishenjian.ccjava.domain.PlanStatus.COMPLETED;
             run.events.emit(completed ? "plan.verification.completed" : "plan.verification.required",
-                    run.requestId, Optional.of(application.sessionId().value()), Optional.empty(), payload);
+                    run.requestId, Optional.of(application.sessionId().value()), Optional.empty(),
+                    planVerificationPayload(artifact));
             emitTerminal(run, result, completed);
         } catch (HeadlessRuntimeSession.PlanExecutionWorkspaceDriftException drift) {
             // typed session-level plan.execution.blocked 已在抛出前发布；不得再伪造成 run.failed。
         } catch (RuntimeException exception) {
             emitUnexpectedFailure(run);
         }
+    }
+
+    /** 构造 Plan evidence terminal 的唯一有界协议投影。 */
+    private ObjectNode planVerificationPayload(
+            io.github.liumaishenjian.ccjava.domain.PlanArtifact artifact) {
+        ObjectNode payload = codec.objectNode();
+        payload.put("planId", artifact.planId());
+        payload.put("status", artifact.status().name().toLowerCase(Locale.ROOT));
+        payload.put("requiredEvidence", artifact.evidenceLedger().requirements().stream()
+                .filter(io.github.liumaishenjian.ccjava.domain.PlanEvidenceRequirement::required).count());
+        payload.put("satisfiedEvidence", artifact.evidenceLedger().references().stream()
+                .filter(reference -> reference.status()
+                        == io.github.liumaishenjian.ccjava.domain.PlanEvidenceStatus.PASSED
+                        || reference.status()
+                        == io.github.liumaishenjian.ccjava.domain.PlanEvidenceStatus.SKIPPED).count());
+        artifact.evidenceLedger().firstBlockingRequirement()
+                .ifPresent(requirement -> payload.put("blockingRequirementId", requirement));
+        return payload;
     }
 
     private void emitPlanExecutionFailure(
@@ -2312,8 +2359,10 @@ public final class RuntimeStdioCommandHandler
             case USER_CANCELLED -> "run.cancelled";
             default -> "run.failed";
         };
+        boolean scheduleSteering = releaseRunBeforeTerminal(
+                run, result.stopReason() == io.github.liumaishenjian.ccjava.domain.StopReason.USER_CANCELLED);
         emit(run, type, payload);
-        finish(run, result.stopReason() == io.github.liumaishenjian.ccjava.domain.StopReason.USER_CANCELLED);
+        if (scheduleSteering) scheduleSteeringAfterTerminal();
     }
 
     private ObjectNode telemetryPayload(RunTelemetry telemetry) {
@@ -2485,6 +2534,7 @@ public final class RuntimeStdioCommandHandler
             ObjectNode payload = codec.objectNode();
             payload.put("code", "RUNTIME_LAUNCH_FAILED");
             payload.put("stopReason", "internal_error");
+            boolean scheduleSteering = releaseRunBeforeTerminal(run, false);
             try {
                 run.events.emit("run.launch.failed", run.requestId,
                         Optional.of(application.sessionId().value()), Optional.empty(), payload);
@@ -2494,7 +2544,7 @@ public final class RuntimeStdioCommandHandler
                 }
                 throw transportFailure;
             }
-            finish(run, false);
+            if (scheduleSteering) scheduleSteeringAfterTerminal();
             return;
         }
         ObjectNode payload = codec.objectNode();
@@ -2502,8 +2552,9 @@ public final class RuntimeStdioCommandHandler
         payload.put("stopReason", "internal_error");
         payload.put("modelTurns", 0);
         payload.put("toolCalls", 0);
+        boolean scheduleSteering = releaseRunBeforeTerminal(run, false);
         emit(run, "run.failed", payload);
-        finish(run, false);
+        if (scheduleSteering) scheduleSteeringAfterTerminal();
     }
 
     private void emit(ActiveRun run, String type, ObjectNode payload) {
@@ -2585,31 +2636,40 @@ public final class RuntimeStdioCommandHandler
     }
 
     /**
-     * 在唯一 Run 终态已经投影后释放活动状态，并且只在安全边界调度下一条 steering。
+     * 在同步终态回调可重入命令处理前释放当前 Run，并把非关闭 Handler 恢复为 READY。
      *
-     * <p>当前 Run 的终态事件先于下一 Run 的启动；用户取消、关闭或显式丢弃都不会消费未发送
-     * 文本，其余终态才可进入下一条。队列中的原始文本始终只停留在本适配器内存，直到被实际启动时
-     * 才交给 Runtime。</p>
+     * <p>终态 EventEmitter 可以同步触发客户端命令；因此 activeRun/state 必须先完成原子迁移，
+     * 否则客户端在收到 terminal 后立即提交 {@code plan.resume} 仍会误判为 RUNNING。USER_CANCELLED
+     * 只丢弃排队 steering，不得把 Handler 永久留在 RUNNING。</p>
+     *
+     * @return 终态成功投影后是否允许尝试调度下一条 steering
      */
-    private void finish(ActiveRun run, boolean discardQueuedSteering) {
-        QueuedSteering next = null;
+    private boolean releaseRunBeforeTerminal(ActiveRun run, boolean discardQueuedSteering) {
         synchronized (lock) {
-            if (activeRun != run) {
-                return;
-            }
+            if (activeRun != run) return false;
             activeRun = null;
-            if (discardQueuedSteering || state == State.CLOSED) {
-                discardSteering(discardQueuedSteering ? DiscardReason.CANCELLED : DiscardReason.SHUTDOWN);
-                return;
+            if (state == State.CLOSED) {
+                discardSteering(DiscardReason.SHUTDOWN);
+                return false;
             }
             state = State.READY;
-            next = steeringQueue.pollFirst();
-            if (next != null) {
-                QueuedSteering steering = next;
-                ActiveRun nextRun = startRunLocked(
-                        steering.requestId(), steering.message().content().length(), steering.events());
-                executor.submit(() -> executeRun(nextRun, steering.message()));
+            if (discardQueuedSteering) {
+                discardSteering(DiscardReason.CANCELLED);
+                return false;
             }
+            return true;
+        }
+    }
+
+    /** 终态已经成功投影后，再以 READY/无活动 Run 为条件领取下一条 steering。 */
+    private void scheduleSteeringAfterTerminal() {
+        synchronized (lock) {
+            if (state != State.READY || activeRun != null) return;
+            QueuedSteering steering = steeringQueue.pollFirst();
+            if (steering == null) return;
+            ActiveRun nextRun = startRunLocked(
+                    steering.requestId(), steering.message().content().length(), steering.events());
+            executor.submit(() -> executeRun(nextRun, steering.message()));
         }
     }
 

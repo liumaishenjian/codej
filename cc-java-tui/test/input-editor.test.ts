@@ -402,8 +402,8 @@ describe('legacy W4 compatibility seams', () => {
     expect(completionCandidates('/permissions m')).toEqual([
       '/permissions mode ACCEPT_EDITS', '/permissions mode DEFAULT', '/permissions mode PLAN',
     ]);
-    expect(completionCandidates('/plan-')).toEqual(['/plan-status']);
-    expect(completionCandidates('/plan')).toEqual(['/plan', '/plan-status']);
+    expect(completionCandidates('/plan-')).toEqual(['/plan-resume', '/plan-status']);
+    expect(completionCandidates('/plan')).toEqual(['/plan', '/plan-resume', '/plan-status']);
     let history = initialInputHistoryState;
     for (let index = 0; index < MAX_HISTORY_ENTRIES + 2; index++) history = recordInputHistory(history, `input-${index}`);
     const previous = navigateInputHistory(history, 'draft', 'previous');

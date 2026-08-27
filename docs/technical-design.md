@@ -2159,7 +2159,24 @@ journal 不删除。Context 使用率 70% 只生成默认建议，picker 显式�
 USER 保留普通审批。APPROVED restart 需要显式领取；EXECUTING restart 由 `PLAN_EXECUTION_RECOVERY` 阻止可写
 resume，避免副作用重放。legacy `plan.execute` 只保留协议识别并固定拒绝，Surface 不暴露。
 
-### 30.1 stdio/Ink Run correlation 与调度无关投影（ADR-082）
+### 30.1 verification-required 显式再审批与 Task recovery
+
+`plan.resume` 只接受 READY、当前 Session、空 payload 且无 active Run/fence 的请求。Application 在 lifecycle lock
+内加载同一 `NEEDS_VERIFICATION` 工件，先保留旧 brief 的 permission/context 建议，再生成下一 revision：状态回到
+`AWAITING_APPROVAL`，旧 ExecutionBrief 被移除，Evidence requirements 保持 identity 但 references 清空。返回 review
+使用当前 Workspace digest；该命令不建立 `ActiveRun`、不执行 Tool，也不读取相似 deliverable 猜测实际 locator。
+
+因此 `plan.review.requested` 有两种合法归属：planning Run 携带 runId；显式 resume review 无 runId，但必须携带
+Session 与原 `plan.resume` requestId。`QueuedStdioEventEmitter` 仅为该 detached review 放宽 Run lifecycle，TUI protocol
+仍校验 Session，reducer 与原始事件 callback 都要求 `sessionId + pendingPlanResumeRequestId` 精确匹配。pending 在成功、
+protocol failure、settle 与 Session 切换时清除；重复命令及 unknown/wrong-session/late review 不产生 picker。
+
+再审批走原子 `plan.review.resolve` 并创建新的 execution Run。上一 Run 留下的 IN_PROGRESS Task 会由 Run state 标记为
+`recoveryRequired`；`task_update(status=IN_PROGRESS, active_form=...)` 在同一次 mutation 中先执行 `ResumeClaim`，绑定
+新 runId 与新 claim epoch，再基于新 revision 应用 active form/owner/dependencies，最终 status 为 no-op。没有显式
+IN_PROGRESS 的普通编辑仍被 recovery gate 拒绝；Runtime 不自动重放旧写入或清除 Task recovery。
+
+### 30.2 stdio/Ink Run correlation 与调度无关投影（ADR-082）
 
 当前 Java Plan 交接在 executor 接受后先发布 `plan.execution.accepted`，再通过一次性 start gate 放行 worker，
 因此同一 execution request 的 `run.started` 不会抢在 accepted 前。Surface 仍不得把该顺序当作唯一安全边界：
@@ -2224,32 +2241,39 @@ smoke 真实启动该包的 Java stdio initialize/shutdown；这不是 Provider 
 ### 31.1 Evidence correction continuation 与 final delivery 线性化
 
 ADR-086 把 Evidence Gate 前移到 `AgentRuntime` 接受无 Tool Call final 的线性化点。新的
-`FinalAssistantDecision` 允许 `ACCEPT/REJECT/CONTINUE`；旧 `FinalAssistantHandler.handle` 通过 default
+`FinalAssistantDecision` 允许 `ACCEPT/REJECT/CONTINUE/STOP`；旧 `FinalAssistantHandler.handle` 通过 default
 adapter 保持 boolean 兼容。`CONTINUE` 不 append 当前 Assistant、不产生 `RunFinished`、不创建新 Run，也不自动
-执行 Tool；Runtime 只继续下一 Model Turn，因此同一 Run 的预算、deadline、取消、Permission、Approval、Hook、
-Skill/Plugin/MCP 与 Tool Pipeline 不变。
+执行 Tool；Runtime 只继续下一 Model Turn。`STOP` 携带宿主确定的非 `COMPLETED` StopReason，同样不 append
+候选 Assistant，并直接形成 typed 非成功 Run terminal。因此同一 Run 的预算、deadline、取消、Permission、
+Approval、Hook、Skill/Plugin/MCP 与 Tool Pipeline 不变。
 
 approved Plan 的 `PlanExecutionCorrectionController` 在每个候选 final 上重新调用确定性验证，并在语义变化时把 Ledger
 以 `EXECUTING` durable revision 保存。blocking failure 由 required requirement 与最新 reference 生成，只含
 `requirementId/kind/locator/reason`；transient Instructions projection 把它插入下一次 Model Request，但不进入
-canonical transcript。correction 独立上限为 2；相同字段构成的稳定指纹再次出现时立即终止自动 correction，外层
-terminal 把 Plan 写为 `NEEDS_VERIFICATION`。该数值和指纹是本项目安全默认值，不来自参考常量。
+canonical transcript。correction 独立上限为 2；相同字段构成的稳定指纹再次出现时立即终止自动 correction。只要 Evidence 或当前
+Plan cohort Task 任一仍未满足，Controller 就返回 `STOP(PLAN_VERIFICATION_REQUIRED)`，丢弃当前候选 prose，
+Plan 写为 `NEEDS_VERIFICATION`。该数值和指纹是本项目安全默认值，不来自参考常量。
 
 ```text
 Assistant final candidate
-  -> validate deliverable digest / successful canonical ToolResult
-  -> satisfied: ACCEPT -> append final -> Plan COMPLETED
+  -> validate exact deliverable digest / successful canonical ToolResult / current Plan Task cohort
+  -> all satisfied: ACCEPT -> append final -> Plan COMPLETED -> run.completed(finalText)
   -> fresh blocking failure: persist EXECUTING ledger -> correction lifecycle -> CONTINUE same Run
-  -> repeated fingerprint / bound: ACCEPT Run stop only -> Plan NEEDS_VERIFICATION
+  -> repeated fingerprint / bound: STOP(plan_verification_required)
+       -> discard candidate -> Plan NEEDS_VERIFICATION -> run.failed(no finalText)
 ```
 
 stdio 对 approved Plan 设置 `suppressModelText`，且 `RunFinished` 不直接发布 terminal。execution worker 根据 durable
 Plan terminal 先发布 `plan.verification.completed|required`，再发布唯一 Run terminal；只有 `COMPLETED` 分支带
-`finalText`。模型错误、取消、deadline、limit 和 incomplete stream 仍先写 durable failure 并发布
+`finalText`。`PLAN_VERIFICATION_REQUIRED` 发布 `plan.verification.required` 后发布 `run.failed`，不发布
+`plan.execution.failed`。模型错误、取消、deadline、limit 和 incomplete stream 仍先写 durable failure并发布
 `plan.execution.failed`，不进入 verification correction，也不携带模型完成声明。
 
-TUI 对 `plan.verification.correction` 使用 exact schema：`attempt/maxAttempts/failures[]`，failure 项只允许四个固定
-字段和 `deliverable|verification` kind。Reducer 保持 phase 为 running，显示同一 Run 次数与 no-replay notice；
-`plan.verification.required` 后才在 terminal 回 ready，并显示 actionable 非完成状态。真实 Java Fixture 先经
+TUI 对 `plan.verification.correction` 使用 exact schema：`attempt/maxAttempts/incompleteTaskCount/
+incompleteTaskIds/failures[]`，failure 项只允许批准 requirement 的四个固定字段和 `deliverable|verification` kind，
+不猜测相似文件或 actual locator。Reducer 保持 phase 为 running，显示同一 Run 次数与 no-replay notice；
+`plan.verification.required + run.failed(plan_verification_required)` 后回 ready，并显示 actionable 非完成状态。
+Session Task Panel 只读取独立 Task artifact：历史 Plan failure 不改变 completed 项的绿色勾、dim/strikethrough 或
+约 5 秒 auto-hide。真实 Java Fixture 先经
 `write_file` 创建错误中文文件名，correction 后再次经过 Approval/Pipeline 创建精确 locator；两个 Tool 各执行一次，
 第一份 final 不出现在 stdio event、TUI 或下一 canonical request。

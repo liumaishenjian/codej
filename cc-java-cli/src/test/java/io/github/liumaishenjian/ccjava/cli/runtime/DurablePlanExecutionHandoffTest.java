@@ -137,8 +137,8 @@ class DurablePlanExecutionHandoffTest {
     void deliverableFilenameMismatchContinuesSameRunAndWithholdsFirstFinalUntilCorrected() throws Exception {
         Path workspace = Files.createDirectory(temporary.resolve("workspace-correction"));
         Path root = temporary.resolve("sessions-correction");
-        String expected = "河南各市7天天气.xlsx";
-        String wrong = "河南各市7天天气预报.xlsx";
+        String expected = "河南 各市`7天天气.xlsx";
+        String wrong = "河南 各市`7天天气预报.xlsx";
         AtomicInteger calls = new AtomicInteger();
         List<io.github.liumaishenjian.ccjava.domain.ModelRequest> requests = new ArrayList<>();
         List<io.github.liumaishenjian.ccjava.domain.AgentEventEnvelope> events = new ArrayList<>();
@@ -179,7 +179,8 @@ class DurablePlanExecutionHandoffTest {
             assertThat(events).extracting(io.github.liumaishenjian.ccjava.domain.AgentEventEnvelope::event)
                     .anyMatch(io.github.liumaishenjian.ccjava.domain.LifecycleEvent.PlanVerificationCorrectionRequested.class::isInstance);
             assertThat(requests.get(6).messages().toString())
-                    .contains("weather-xlsx", expected, "FILE_MISSING_OR_UNSAFE")
+                    .contains("weather-xlsx", "exactLocator=" + expected, "FILE_MISSING_OR_UNSAFE")
+                    .doesNotContain("actualLocator=", wrong + " reason=")
                     .contains("Do not repeat already successful side effects");
             assertThat(requests).filteredOn(request -> request.messages().toString().contains("已完成并交付天气工作簿"))
                     .isEmpty();
@@ -194,7 +195,7 @@ class DurablePlanExecutionHandoffTest {
     }
 
     @Test
-    void repeatedMissingDeliverableStopsCorrectionWithoutUnboundedModelLoop() throws Exception {
+    void repeatedMissingDeliverableStopsThenExplicitReapprovalResumesSamePlan() throws Exception {
         Path workspace = Files.createDirectory(temporary.resolve("workspace-correction-bounded"));
         Path root = temporary.resolve("sessions-correction-bounded");
         AtomicInteger calls = new AtomicInteger();
@@ -208,10 +209,15 @@ class DurablePlanExecutionHandoffTest {
             case 2 -> ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review", JsonObject.empty())));
             case 3 -> ModelTurn.text("planning complete");
             case 4 -> ModelTurn.text("unverified first final");
-            default -> ModelTurn.text("unverified repeated final");
+            case 5 -> ModelTurn.text("unverified repeated final");
+            case 6 -> ModelTurn.tools(List.of(new ToolCall("resume-file", "write_file",
+                    new JsonObject(Map.of("path", "missing.txt", "content", "resumed")))));
+            default -> ModelTurn.text("verified after explicit resume");
         };
         try (HeadlessRuntimeSession runtime = new HeadlessRuntimeSession(model, events::add,
-                options(workspace, root, SessionOpenRequest.create()))) {
+                options(workspace, root, SessionOpenRequest.create()),
+                (ignoredInvocation, ignoredDefinition, ignoredOutcome) ->
+                        io.github.liumaishenjian.ccjava.domain.ApprovalResponse.allowOnce())) {
             runtime.open();
             runtime.runPlan("prepare bounded correction plan");
             PlanArtifact awaiting = runtime.planArtifact().orElseThrow();
@@ -221,14 +227,32 @@ class DurablePlanExecutionHandoffTest {
 
             var result = runtime.runAcceptedPlan(acceptance);
 
-            assertThat(result.stopReason().name()).isEqualTo("COMPLETED");
-            assertThat(result.finalText()).contains("unverified repeated final");
+            assertThat(result.stopReason().name()).isEqualTo("PLAN_VERIFICATION_REQUIRED");
+            assertThat(result.finalText()).isEmpty();
+            assertThat(result.status().name()).isEqualTo("STOPPED");
             assertThat(runtime.planArtifact().orElseThrow().status()).isEqualTo(PlanStatus.NEEDS_VERIFICATION);
             assertThat(workspace.resolve("missing.txt")).doesNotExist();
             assertThat(calls).hasValue(6);
             assertThat(events).extracting(io.github.liumaishenjian.ccjava.domain.AgentEventEnvelope::event)
                     .filteredOn(io.github.liumaishenjian.ccjava.domain.LifecycleEvent.PlanVerificationCorrectionRequested.class::isInstance)
                     .hasSize(1);
+
+            var review = runtime.requestPlanVerificationResume().orElseThrow();
+            assertThat(review.planId()).isEqualTo(awaiting.planId());
+            assertThat(runtime.planArtifact().orElseThrow().status()).isEqualTo(PlanStatus.AWAITING_APPROVAL);
+            var resumedAcceptance = runtime.acceptPlanExecution(review.planId(), review.revision(),
+                    review.contentDigest(), review.workspaceDigest(), PlanReviewDecision.APPROVE_USER,
+                    PlanContextPolicy.KEEP, "continue exact missing deliverable");
+            var resumed = runtime.runAcceptedPlan(resumedAcceptance);
+
+            assertThat(resumed.stopReason().name()).isEqualTo("COMPLETED");
+            assertThat(resumed.finalText()).contains("verified after explicit resume");
+            assertThat(workspace.resolve("missing.txt")).hasContent("resumed");
+            assertThat(runtime.planArtifact().orElseThrow()).satisfies(artifact -> {
+                assertThat(artifact.planId()).isEqualTo(awaiting.planId());
+                assertThat(artifact.status()).isEqualTo(PlanStatus.COMPLETED);
+            });
+            assertThat(calls).hasValue(8);
         }
     }
 

@@ -48,6 +48,10 @@ class PlanArtifactTest {
                 PlanStatus.AWAITING_APPROVAL, PlanStatus.AWAITING_APPROVAL)).isTrue();
         assertThat(PlanLifecyclePolicy.validTransition(
                 PlanStatus.AWAITING_APPROVAL, PlanStatus.DRAFT)).isTrue();
+        assertThat(PlanLifecyclePolicy.validTransition(
+                PlanStatus.NEEDS_VERIFICATION, PlanStatus.AWAITING_APPROVAL)).isTrue();
+        assertThat(PlanLifecyclePolicy.validTransition(
+                PlanStatus.NEEDS_VERIFICATION, PlanStatus.EXECUTING)).isFalse();
         assertThat(PlanLifecyclePolicy.validTransition(PlanStatus.REJECTED, PlanStatus.REJECTED)).isFalse();
         assertThat(PlanLifecyclePolicy.validTransition(PlanStatus.COMPLETED, PlanStatus.APPROVED)).isFalse();
     }

@@ -63,7 +63,7 @@ class RuntimeStdioCommandHandlerTest {
     }
 
     @Test
-    void terminalCallbackImmediateSubmissionGetsQueuedDispositionThenStartsExactlyOnce() throws Exception {
+    void terminalCallbackImmediateSubmissionSeesReadyAndStartsExactlyOnce() throws Exception {
         StdioProtocolCodec codec = new StdioProtocolCodec();
         CopyOnWriteArrayList<CapturedEvent> events = new CopyOnWriteArrayList<>();
         java.util.concurrent.atomic.AtomicReference<RuntimeStdioCommandHandler> handlerRef =
@@ -73,8 +73,10 @@ class RuntimeStdioCommandHandlerTest {
         java.util.concurrent.atomic.AtomicBoolean submitted = new java.util.concurrent.atomic.AtomicBoolean();
         java.util.concurrent.atomic.AtomicReference<Throwable> submissionFailure =
                 new java.util.concurrent.atomic.AtomicReference<>();
+        CountDownLatch secondCompleted = new CountDownLatch(1);
         StdioProtocol.EventEmitter emitter = (type, requestId, sessionId, runId, payload) -> {
             events.add(new CapturedEvent(type, requestId, sessionId, runId, payload.deepCopy()));
+            if (type.equals("run.completed") && requestId.equals("second")) secondCompleted.countDown();
             if (type.equals("run.completed") && requestId.equals("first")
                     && submitted.compareAndSet(false, true)) {
                 try {
@@ -98,12 +100,7 @@ class RuntimeStdioCommandHandlerTest {
             handler.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"run.start\","
                     + "\"requestId\":\"first\",\"sessionId\":\"%s\",\"sequence\":2,"
                     + "\"payload\":{\"prompt\":\"first\"}}").formatted(sessionId)), emitter);
-            long deadline = System.nanoTime() + Duration.ofSeconds(3).toNanos();
-            while (System.nanoTime() < deadline && events.stream()
-                    .noneMatch(event -> event.type().equals("run.completed")
-                            && event.runId().isPresent() && event.requestId().equals("second"))) {
-                Thread.sleep(10);
-            }
+            assertThat(secondCompleted.await(3, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
         }
 
         assertThat(submissionFailure.get()).isNull();
@@ -111,13 +108,22 @@ class RuntimeStdioCommandHandlerTest {
                 .filter(event -> event.type().equals("run.command.result")
                         && event.requestId().equals("second"))
                 .map(event -> event.payload().get("disposition").stringValue()))
-                .containsExactly("queued");
+                .containsExactly("accepted");
         assertThat(events.stream()
                 .filter(event -> event.type().equals("run.started") && event.requestId().equals("second")))
                 .hasSize(1);
         assertThat(events.stream()
                 .filter(event -> event.type().equals("run.completed") && event.requestId().equals("second")))
                 .hasSize(1);
+        int firstTerminalIndex = java.util.stream.IntStream.range(0, events.size())
+                .filter(index -> events.get(index).type().equals("run.completed")
+                        && events.get(index).requestId().equals("first"))
+                .findFirst().orElseThrow();
+        int secondStartedIndex = java.util.stream.IntStream.range(0, events.size())
+                .filter(index -> events.get(index).type().equals("run.started")
+                        && events.get(index).requestId().equals("second"))
+                .findFirst().orElseThrow();
+        assertThat(firstTerminalIndex).isLessThan(secondStartedIndex);
     }
 
     @Test
@@ -317,8 +323,30 @@ class RuntimeStdioCommandHandlerTest {
     void evidenceCorrectionIsObservableAndWithholdsUnverifiedFinalTextUntilTerminalDecision() throws Exception {
         StdioProtocolCodec codec = new StdioProtocolCodec();
         CopyOnWriteArrayList<CapturedEvent> events = new CopyOnWriteArrayList<>();
-        StdioProtocol.EventEmitter emitter = (type, requestId, sessionId, runId, payload) ->
-                events.add(new CapturedEvent(type, sessionId, runId, payload.deepCopy()));
+        java.util.concurrent.atomic.AtomicReference<RuntimeStdioCommandHandler> handlerRef =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<String> sessionRef = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<Throwable> resumeFailure = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicBoolean resumeSubmitted = new java.util.concurrent.atomic.AtomicBoolean();
+        java.util.concurrent.CountDownLatch resumeFinished = new java.util.concurrent.CountDownLatch(1);
+        StdioProtocol.EventEmitter[] emitterRef = new StdioProtocol.EventEmitter[1];
+        StdioProtocol.EventEmitter emitter = (type, requestId, sessionId, runId, payload) -> {
+            events.add(new CapturedEvent(type, requestId, sessionId, runId, payload.deepCopy()));
+            if (type.equals("run.failed") && requestId.equals("decision")
+                    && resumeSubmitted.compareAndSet(false, true)) {
+                try {
+                    Files.writeString(workspace().resolve("exact.txt"), "created before explicit resume");
+                    handlerRef.get().handle(codec.decodeCommand(("{\"version\":0,\"type\":\"plan.resume\","
+                            + "\"requestId\":\"resume\",\"sessionId\":\"%s\",\"sequence\":4,\"payload\":{}}")
+                            .formatted(sessionRef.get())), emitterRef[0]);
+                } catch (Throwable failure) {
+                    resumeFailure.set(failure);
+                } finally {
+                    resumeFinished.countDown();
+                }
+            }
+        };
+        emitterRef[0] = emitter;
         AtomicInteger calls = new AtomicInteger();
         String markdown = "# Plan\n\nCreate the exact deliverable.\n";
         String digest = io.github.liumaishenjian.ccjava.domain.PlanArtifact.digest(markdown);
@@ -335,9 +363,11 @@ class RuntimeStdioCommandHandlerTest {
                     case 4 -> ModelTurn.text("FIRST_UNVERIFIED_FINAL");
                     default -> ModelTurn.text("SECOND_UNVERIFIED_FINAL");
                 }, testOptions())) {
+            handlerRef.set(handler);
             handler.handle(codec.decodeCommand(
                     "{\"version\":0,\"type\":\"initialize\",\"requestId\":\"init\",\"sequence\":1,\"payload\":{}}"), emitter);
             String sessionId = events.getFirst().sessionId().orElseThrow();
+            sessionRef.set(sessionId);
             handler.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"plan.start\","
                     + "\"requestId\":\"plan\",\"sessionId\":\"%s\",\"sequence\":2,"
                     + "\"payload\":{\"prompt\":\"plan\"}}").formatted(sessionId)), emitter);
@@ -355,26 +385,74 @@ class RuntimeStdioCommandHandlerTest {
                             review.payload().get("workspaceDigest").stringValue())), emitter);
 
             CapturedEvent correction = awaitEvent(events, "plan.verification.correction");
-            CapturedEvent required = awaitEvent(events, "plan.verification.required");
+            awaitEvent(events, "plan.verification.required");
             awaitTerminalCount(events, 2);
-            CapturedEvent executionTerminal = events.stream().filter(event -> event.type().equals("run.completed"))
-                    .reduce((first, second) -> second).orElseThrow();
+            List<CapturedEvent> executionEvents = events.stream()
+                    .filter(event -> "decision".equals(event.requestId())).toList();
+            List<CapturedEvent> executionTerminals = executionEvents.stream()
+                    .filter(event -> event.type().equals("run.completed")
+                            || event.type().equals("run.failed") || event.type().equals("run.cancelled"))
+                    .toList();
+            assertThat(executionTerminals).singleElement().satisfies(terminal -> {
+                assertThat(terminal.type()).isEqualTo("run.failed");
+                assertThat(terminal.payload().toString())
+                        .contains("\"stopReason\":\"plan_verification_required\"")
+                        .doesNotContain("finalText", "FIRST_UNVERIFIED_FINAL", "SECOND_UNVERIFIED_FINAL");
+            });
+            List<CapturedEvent> requiredEvents = executionEvents.stream()
+                    .filter(event -> event.type().equals("plan.verification.required"))
+                    .toList();
+            assertThat(requiredEvents).singleElement();
+            CapturedEvent required = requiredEvents.getFirst();
+            CapturedEvent executionTerminal = executionTerminals.getFirst();
 
             assertThat(correction.payload().toString()).isEqualTo("{\"attempt\":1,\"maxAttempts\":2,"
                     + "\"incompleteTaskCount\":0,\"incompleteTaskIds\":[],"
                     + "\"failures\":[{\"requirementId\":\"exact-file\",\"kind\":\"deliverable\","
                     + "\"locator\":\"exact.txt\",\"reason\":\"FILE_MISSING_OR_UNSAFE\"}]}");
             assertThat(required.payload().toString()).contains("\"status\":\"needs_verification\"", "\"requiredEvidence\":1", "\"satisfiedEvidence\":0");
-            assertThat(executionTerminal.payload().toString())
+            assertThat(executionEvents).noneMatch(event -> event.type().equals("run.completed"));
+            assertThat(executionEvents.toString())
                     .doesNotContain("finalText", "FIRST_UNVERIFIED_FINAL", "SECOND_UNVERIFIED_FINAL");
+            assertThat(events.indexOf(required)).isLessThan(events.indexOf(executionTerminal));
             assertThat(events).noneMatch(event -> event.type().equals("model.text.delta")
                     && (event.payload().toString().contains("FIRST_UNVERIFIED_FINAL")
                             || event.payload().toString().contains("SECOND_UNVERIFIED_FINAL")));
-            int requiredIndex = events.indexOf(required);
-            int terminalIndex = events.indexOf(executionTerminal);
-            assertThat(requiredIndex).isLessThan(terminalIndex);
             assertThat(events).filteredOn(event -> event.type().equals("plan.verification.correction")).hasSize(1);
             assertThat(calls).hasValue(6);
+
+            assertThat(resumeSubmitted).isTrue();
+            assertThat(resumeFinished.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(resumeFailure.get()).isNull();
+            List<CapturedEvent> resumedReviews = events.stream()
+                    .filter(event -> event.type().equals("plan.review.requested")
+                            && "resume".equals(event.requestId()))
+                    .toList();
+            assertThat(resumedReviews).as(eventDiagnostics(events)).singleElement();
+            CapturedEvent resumedReview = resumedReviews.getFirst();
+            assertThat(events.indexOf(executionTerminal)).isLessThan(events.indexOf(resumedReview));
+            assertThat(resumedReview.payload().get("planId").stringValue())
+                    .isEqualTo(review.payload().get("planId").stringValue());
+            handler.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"plan.review.resolve\","
+                    + "\"requestId\":\"resume-decision\",\"sessionId\":\"%s\",\"sequence\":5,"
+                    + "\"payload\":{\"planId\":\"%s\",\"revision\":%d,\"contentDigest\":\"%s\","
+                    + "\"workspaceDigest\":\"%s\",\"decision\":\"APPROVE_USER\","
+                    + "\"contextPolicy\":\"KEEP\",\"feedback\":\"continue safely\"}}")
+                    .formatted(sessionId, resumedReview.payload().get("planId").stringValue(),
+                            resumedReview.payload().get("revision").longValue(),
+                            resumedReview.payload().get("contentDigest").stringValue(),
+                            resumedReview.payload().get("workspaceDigest").stringValue())), emitter);
+            awaitTerminalCount(events, 3);
+            List<CapturedEvent> resumedTerminals = events.stream()
+                    .filter(event -> "resume-decision".equals(event.requestId()))
+                    .filter(event -> event.type().equals("run.completed")
+                            || event.type().equals("run.failed") || event.type().equals("run.cancelled"))
+                    .toList();
+            assertThat(resumedTerminals).singleElement().satisfies(terminal -> {
+                assertThat(terminal.type()).isEqualTo("run.completed");
+                assertThat(terminal.payload().toString()).contains("SECOND_UNVERIFIED_FINAL");
+            });
+            assertThat(calls).hasValue(7);
         }
     }
 
@@ -1193,6 +1271,85 @@ class RuntimeStdioCommandHandlerTest {
 
         }
         assertThat(events.stream().filter(RuntimeStdioCommandHandlerTest::isTerminal)).hasSize(1);
+    }
+
+    @Test
+    void cancelledTerminalCallbackSeesReadyAndCanStartNextRunWithoutRetry() throws Exception {
+        StdioProtocolCodec codec = new StdioProtocolCodec();
+        CopyOnWriteArrayList<CapturedEvent> events = new CopyOnWriteArrayList<>();
+        CountDownLatch firstEntered = new CountDownLatch(1);
+        CountDownLatch secondCompleted = new CountDownLatch(1);
+        AtomicInteger calls = new AtomicInteger();
+        java.util.concurrent.atomic.AtomicReference<RuntimeStdioCommandHandler> handlerRef =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<StdioProtocol.EventEmitter> emitterRef =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<Throwable> callbackFailure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        StdioProtocol.EventEmitter emitter = (type, requestId, sessionId, runId, payload) -> {
+            events.add(new CapturedEvent(type, requestId, sessionId, runId, payload.deepCopy()));
+            if (type.equals("run.cancelled") && requestId.equals("first")) {
+                try {
+                    handlerRef.get().handle(codec.decodeCommand(("{\"version\":0,\"type\":\"run.start\","
+                            + "\"requestId\":\"second\",\"sessionId\":\"%s\",\"sequence\":4,"
+                            + "\"payload\":{\"prompt\":\"second\"}}")
+                            .formatted(sessionId.orElseThrow())), emitterRef.get());
+                } catch (Throwable failure) {
+                    callbackFailure.set(failure);
+                }
+            }
+            if (type.equals("run.completed") && requestId.equals("second")) secondCompleted.countDown();
+        };
+        emitterRef.set(emitter);
+
+        try (RuntimeStdioCommandHandler handler = new RuntimeStdioCommandHandler(request -> {
+            if (calls.getAndIncrement() == 0) {
+                firstEntered.countDown();
+                try {
+                    new CountDownLatch(1).await();
+                } catch (InterruptedException expected) {
+                    Thread.currentThread().interrupt();
+                    throw new io.github.liumaishenjian.ccjava.core.ModelGatewayException(
+                            io.github.liumaishenjian.ccjava.core.ModelGatewayException.FailureKind.CANCELLED,
+                            "fixed interrupted model");
+                }
+            }
+            return ModelTurn.text("recovered");
+        }, testOptions())) {
+            handlerRef.set(handler);
+            handler.handle(codec.decodeCommand(
+                    "{\"version\":0,\"type\":\"initialize\",\"requestId\":\"init\",\"sequence\":1,\"payload\":{}}"),
+                    emitter);
+            String sessionId = events.getFirst().sessionId().orElseThrow();
+            handler.handle(codec.decodeCommand(runStart("first", sessionId, 2, "first")), emitter);
+            assertThat(firstEntered.await(1, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            CapturedEvent started = awaitEvent(events, "run.started");
+            handler.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"run.cancel\",\"requestId\":\"cancel\","
+                    + "\"sessionId\":\"%s\",\"runId\":\"%s\",\"sequence\":3,\"payload\":{}}")
+                    .formatted(sessionId, started.runId().orElseThrow())), emitter);
+            assertThat(secondCompleted.await(3, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        }
+
+        assertThat(callbackFailure.get()).isNull();
+        assertThat(events).filteredOn(event -> event.type().equals("run.cancelled")
+                && event.requestId().equals("first")).hasSize(1);
+        assertThat(events).filteredOn(event -> event.type().equals("run.command.result")
+                && event.requestId().equals("second"))
+                .singleElement().satisfies(event -> assertThat(event.payload().get("disposition").stringValue())
+                        .isEqualTo("accepted"));
+        assertThat(events).filteredOn(event -> event.type().equals("run.started")
+                && event.requestId().equals("second")).hasSize(1);
+        assertThat(events).filteredOn(event -> event.type().equals("run.completed")
+                && event.requestId().equals("second")).hasSize(1);
+        int cancelledIndex = java.util.stream.IntStream.range(0, events.size())
+                .filter(index -> events.get(index).type().equals("run.cancelled")
+                        && events.get(index).requestId().equals("first"))
+                .findFirst().orElseThrow();
+        int secondStartedIndex = java.util.stream.IntStream.range(0, events.size())
+                .filter(index -> events.get(index).type().equals("run.started")
+                        && events.get(index).requestId().equals("second"))
+                .findFirst().orElseThrow();
+        assertThat(cancelledIndex).isLessThan(secondStartedIndex);
     }
 
     @Test

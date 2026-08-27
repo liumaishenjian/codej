@@ -221,6 +221,9 @@ export interface TuiState {
   readonly sessionId: string | undefined;
   readonly activeRunId: string | undefined;
   readonly runs: readonly RunView[];
+  /** 不隶属于模型 Run 的显式 Plan 再审批 artifact。 */
+  readonly detachedPlanReview?: PlanReviewView | undefined;
+  readonly pendingPlanResumeRequestId?: string | undefined;
   readonly checkpoints: readonly CheckpointView[];
   readonly childTasks?: readonly ChildTaskView[];
   readonly taskBoard?: TaskBoardView | undefined;
@@ -250,6 +253,8 @@ export type TuiAction =
   | {readonly type: 'run.submission.rejected'; readonly requestId: string; readonly message: string}
   | {readonly type: 'run.submission.timed_out'; readonly requestId: string}
   | {readonly type: 'run.submission.late'; readonly requestId: string}
+  | {readonly type: 'plan.resume.requested'; readonly requestId: string}
+  | {readonly type: 'plan.resume.failed'; readonly requestId: string; readonly message: string}
   | {readonly type: 'approval.submitted'; readonly approvalId: string}
   | {readonly type: 'plan.status.received'; readonly requestId: string; readonly proposal: PlanProposalView}
   | {readonly type: 'checkpoint.selected'; readonly checkpointId: string}
@@ -272,6 +277,8 @@ export const initialTuiState: TuiState = {
   sessionId: undefined,
   activeRunId: undefined,
   runs: [],
+  detachedPlanReview: undefined,
+  pendingPlanResumeRequestId: undefined,
   checkpoints: [],
   childTasks: [],
   taskBoard: undefined,
@@ -358,6 +365,14 @@ export function reduceTuiState(state: TuiState, action: TuiAction): TuiState {
       );
     case 'run.submission.late':
       return {...state, notice: '已忽略迟到的 Java acceptance；不会自动重放'};
+    case 'plan.resume.requested':
+      return state.pendingPlanResumeRequestId === undefined && state.detachedPlanReview === undefined
+        ? {...state, pendingPlanResumeRequestId: action.requestId, notice: undefined}
+        : state;
+    case 'plan.resume.failed':
+      return state.pendingPlanResumeRequestId === action.requestId
+        ? {...state, pendingPlanResumeRequestId: undefined, notice: action.message}
+        : state;
     case 'approval.submitted':
       return {
         ...state,
@@ -593,20 +608,25 @@ function applyEvent(state: TuiState, event: ProtocolEvent): TuiState {
           })),
         },
       }));
-    case 'plan.review.requested':
-      return updateCurrentRun(state, event, run => ({
-        ...run,
-        planReview: {
-          planId: String(event.payload.planId),
-          status: 'awaiting_approval',
-          revision: Number(event.payload.revision),
-          contentDigest: String(event.payload.contentDigest),
-          markdown: String(event.payload.markdown),
-          workspaceDigest: String(event.payload.workspaceDigest),
-          originalPermissionMode: String(event.payload.originalPermissionMode) as 'default' | 'accept_edits',
-          suggestedContextPolicy: String(event.payload.suggestedContextPolicy) as 'keep' | 'clear',
-        },
-      }));
+    case 'plan.review.requested': {
+      const planReview: PlanReviewView = {
+        planId: String(event.payload.planId),
+        status: 'awaiting_approval',
+        revision: Number(event.payload.revision),
+        contentDigest: String(event.payload.contentDigest),
+        markdown: String(event.payload.markdown),
+        workspaceDigest: String(event.payload.workspaceDigest),
+        originalPermissionMode: String(event.payload.originalPermissionMode) as 'default' | 'accept_edits',
+        suggestedContextPolicy: String(event.payload.suggestedContextPolicy) as 'keep' | 'clear',
+      };
+      if (event.runId === undefined) {
+        return event.sessionId === state.sessionId
+          && event.requestId === state.pendingPlanResumeRequestId
+          ? {...state, detachedPlanReview: planReview, pendingPlanResumeRequestId: undefined}
+          : state;
+      }
+      return updateCurrentRun(state, event, run => ({...run, planReview}));
+    }
     case 'question.requested':
       return updateCurrentRun(state, event, run => ({
         ...run,
@@ -752,6 +772,8 @@ function applyEvent(state: TuiState, event: ProtocolEvent): TuiState {
     case 'protocol.error':
       return {
         ...state,
+        pendingPlanResumeRequestId: event.requestId === state.pendingPlanResumeRequestId
+          ? undefined : state.pendingPlanResumeRequestId,
         notice: safeProtocolMessage(event.payload),
       };
   }
@@ -1164,6 +1186,9 @@ function annotatePlanVerification(
 function settlePlanReview(state: TuiState, planId: string): TuiState {
   return {
     ...state,
+    detachedPlanReview: state.detachedPlanReview?.planId === planId
+      ? undefined : state.detachedPlanReview,
+    pendingPlanResumeRequestId: undefined,
     runs: state.runs.map(run => run.planReview?.planId === planId
       ? {...run, planReviewSettled: true} : run),
   };

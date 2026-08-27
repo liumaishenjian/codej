@@ -711,6 +711,12 @@ describe('continuous plan protocol', () => {
         contentDigest: 'a'.repeat(64), markdown: '# Plan\n\nRead safely.', workspaceDigest: 'b'.repeat(64), originalPermissionMode: 'default', suggestedContextPolicy: 'keep'},
     };
     expect(decodeEvent(JSON.stringify(review), 1).payload.markdown).toContain('# Plan');
+    const detachedReview = {...review, requestId: 'resume-1'};
+    delete (detachedReview as {runId?: string}).runId;
+    expect(decodeEvent(JSON.stringify(detachedReview), 1).runId).toBeUndefined();
+    const reviewWithoutSession = {...detachedReview};
+    delete (reviewWithoutSession as {sessionId?: string}).sessionId;
+    expect(() => decodeEvent(JSON.stringify(reviewWithoutSession), 1)).toThrowError(/缺少 sessionId/);
     expect(() => decodeEvent(JSON.stringify({...review,
       payload: {...review.payload, objective: 'hidden'}}), 1)).toThrowError(/plan\.review/);
 

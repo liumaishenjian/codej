@@ -32,7 +32,7 @@ public final class PlanArtifactUpdateTool implements AgentTool {
             "markdown", "expectedRevision", "expectedContentDigest");
     private static final ToolDefinition DEFINITION = new ToolDefinition(
             NAME,
-            "Create or replace the current session's Markdown plan. The runtime owns revision and content-digest concurrency control.",
+            "Create or replace the current session's user-readable Markdown plan. Keep runtime identity and bookkeeping out of the document; the runtime owns those details and concurrency control.",
             """
             {"type":"object","additionalProperties":false,"required":["markdown"],"properties":{"markdown":{"type":"string","minLength":1,"maxLength":1048576}}}
             """,

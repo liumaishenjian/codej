@@ -51,7 +51,7 @@ npm --prefix cc-java-tui run check
 - 20/24/240 列宽度测试覆盖 CJK、emoji、combining sequence、依赖与恢复后缀，相关行不越界；
 - Run 的 canonical final 保持原文，只额外显示未完成/需恢复 advisory。
 
-2026-08-25 corrective 实际结果：Java PASS；TUI build PASS，17 files / 293 tests PASS。
+2026-08-27 corrective 实际结果：Java PASS；TUI build PASS，17 files / 299 tests PASS。历史 `plan_verification_required` Run 与后续 completed Board 同帧回归证明：Plan failure 独立显示，Task 项仍为绿色 `✓`、dim/strikethrough，并保持约 5 秒 auto-hide。
 
 ## Demo 4：真实 Java stdio → Ink 实时闭环
 
@@ -66,7 +66,7 @@ npm --prefix cc-java-tui run test:real-java
 - 普通复杂任务无需输入 `/tasks`，在真实 `task_create → IN_PROGRESS → COMPLETED` 后自动显示 Task List；
 - 每个权威 snapshot 紧随对应 `tool.completed`，Board revision 严格单调；
 - Plan planning 模型通过 `task_create` 建立中文任务；宿主注入模型不可提交的当前 `planId` 绑定。无 bound incomplete Task 时 `request_plan_review` 返回 typed `PLAN_GATE_BLOCKED`，Task mutation 后相同 review 参数可重试；同 Session 历史普通/旧 Plan Task 保留但不进入当前 reminder 或 Gate。批准 execution 首先 list/get，并以同一 task-1..N 原位更新，不从 Markdown 预置第二套 Task；
-- Task snapshot 依次显示中文 PENDING/IN_PROGRESS/COMPLETED；模型提前输出 final 时，同一 Run correction 只携带当前 planId cohort 未完成 Task ID并要求原位完成；Evidence 独立验证真实产物，只有 Evidence 与当前 cohort 同时收敛时 Run 与 durable Plan 才完成；
+- Task snapshot 依次显示中文 PENDING/IN_PROGRESS/COMPLETED；模型提前输出 final 时，同一 Run correction 只携带当前 planId cohort 未完成 Task ID与批准 Evidence 的 exact locator，并要求原位完成；不扫描相似文件名。只有 Evidence 与当前 cohort 同时收敛时 Run 与 durable Plan 才完成；重复指纹或上限后发布 `plan.verification.required + run.failed(plan_verification_required)`，无 `finalText`/`run.completed`，可显式 resume；
 - 自动面板不抢输入焦点；慢 Tool 期间唯一 Task 行显示黄色动画、subject 和一次 `active_form`，模型进度行不重复；完成行显示绿色 `✓`，完成态装饰策略为 `strikethrough/dim`。
 
 2026-08-27 corrective E2E 继续覆盖 6 个场景。历史失败先后暴露 execution scope 缺 Task Tool、简单状态参数被旧 parser 拒绝、隐式 5m/30m 总 deadline、批准后 seeder 造成两套 Task identity/capability、Task 仅 advisory 导致 Plan/Run 可在清单未完成时成功，以及全 Board Gate 被历史 pending Task 卡死。当前实现三个总量维度为 optional，Interactive/Plan/approved-plan 均 absent；Plan 两阶段共享同一 Board和四个 Tool，宿主 planId cohort 让 review/reminder/final 只约束当前 Plan，通用 `task_update` 由宿主管 CAS。XLSX fixture 的 options timeout 固定 100ms，仍通过独立 Tool timeout 完成 1.2s 检查；隔离 Workspace 从文件不存在开始生成，独立进程重新打开校验 18×7=126 行，最终 `/tasks` Ink frame 显示五个 `✓ 中文标题`。回归还覆盖 reserved metadata 伪造拒绝和合法“开发规划模块”任务不被标题关键词误杀。失败历史均保留为可证伪证据。

@@ -12,6 +12,7 @@ import type {
   RunView,
   SessionTaskStatus,
   TuiAction,
+  TuiState,
 } from './state.js';
 import {AssistantMarkdown} from './assistant-markdown.js';
 import {ToolActivityGroup} from './tool-activity.js';
@@ -159,6 +160,7 @@ export interface AgentClient {
   initialize(): string;
   startRun(prompt: string): string;
   startPlan?(task: string): string;
+  resumePlanVerification?(): string;
   resolvePlanReview?(input: {
     readonly planId: string; readonly revision: number; readonly contentDigest: string;
     readonly workspaceDigest: string;
@@ -281,8 +283,19 @@ export function scheduleTaskPanelAutoHide(
   return () => clearTimeout(timer);
 }
 
+/** Task 面板仅根据自身 artifact 判断完成态，不读取任何历史 Plan Run。 */
+export function taskBoardAutoHideEligible(state: TuiState): boolean {
+  return state.taskPanelOpen === true
+    && state.taskPanelFocused !== true
+    && state.taskBoard !== undefined
+    && state.taskBoard.tasks.length > 0
+    && state.taskBoard.tasks.every(task => task.status === 'COMPLETED');
+}
+
 export function AgentTui({client}: AgentTuiProps) {
   const [state, dispatch] = useReducer(reduceTuiState, initialTuiState);
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const [composer, setComposer] = useState<ComposerState>(() => createComposerState(4));
   const [providerLoginActive, setProviderLoginActive] = useState(false);
   const [connectWizard, setConnectWizard] = useState<ModelSetupState | undefined>(undefined);
@@ -293,13 +306,11 @@ export function AgentTui({client}: AgentTuiProps) {
   const [questionPicker, setQuestionPicker] = useState<QuestionPickerState | undefined>(undefined);
   const [activityTick, setActivityTick] = useState(0);
   const planReviewPickerRef = useRef<PlanReviewPickerState | undefined>(undefined);
-  const allSessionTasksCompleted = state.taskBoard !== undefined
-    && state.taskBoard.tasks.length > 0
-    && state.taskBoard.tasks.every(task => task.status === 'COMPLETED');
+  const taskPanelAutoHideEligible = taskBoardAutoHideEligible(state);
   useEffect(() => {
-    if (!state.taskPanelOpen || state.taskPanelFocused === true || !allSessionTasksCompleted) return undefined;
+    if (!taskPanelAutoHideEligible) return undefined;
     return scheduleTaskPanelAutoHide(dispatch);
-  }, [allSessionTasksCompleted, state.taskBoard?.boardRevision, state.taskPanelFocused, state.taskPanelOpen]);
+  }, [taskPanelAutoHideEligible, state.taskBoard?.boardRevision]);
   const planFeedbackInputRef = useRef<PlanFeedbackInputState | undefined>(undefined);
   const composerRef = useRef(composer);
   const permissionPickerSubmittedRef = useRef(false);
@@ -715,12 +726,17 @@ export function AgentTui({client}: AgentTuiProps) {
         ));
       }
       if (event.type === 'plan.review.requested') {
-        pendingPlanDecisionRef.current = undefined;
-        replacePlanFeedbackInput(undefined);
-        replacePlanReviewPicker(createPlanReviewPicker(
-          String(event.payload.planId), Number(event.payload.revision), String(event.payload.contentDigest),
-          String(event.payload.workspaceDigest), String(event.payload.suggestedContextPolicy) as 'keep' | 'clear',
-        ));
+        const detachedAccepted = event.runId === undefined
+          && event.sessionId === stateRef.current.sessionId
+          && event.requestId === stateRef.current.pendingPlanResumeRequestId;
+        if (event.runId !== undefined || detachedAccepted) {
+          pendingPlanDecisionRef.current = undefined;
+          replacePlanFeedbackInput(undefined);
+          replacePlanReviewPicker(createPlanReviewPicker(
+            String(event.payload.planId), Number(event.payload.revision), String(event.payload.contentDigest),
+            String(event.payload.workspaceDigest), String(event.payload.suggestedContextPolicy) as 'keep' | 'clear',
+          ));
+        }
       }
       if (event.type === 'plan.feedback.accepted') {
         replacePlanFeedbackInput(undefined);
@@ -1472,7 +1488,24 @@ export function AgentTui({client}: AgentTuiProps) {
           dispatch({type: 'slash.notice', message: '当前连接不支持 Slash 命令'});
           return;
         }
-        if (slash.command.intent === 'plan') {
+        if (slash.command.intent === 'plan-resume') {
+          if (client.resumePlanVerification === undefined || state.phase !== 'ready') {
+            dispatch({type: 'slash.notice', message: '当前连接或状态不能继续等待验证的 Plan'});
+            return;
+          }
+          if (state.pendingPlanResumeRequestId !== undefined || state.detachedPlanReview !== undefined) {
+            dispatch({type: 'slash.notice', message: 'Plan 继续或再审批已在处理中，请勿重复提交'});
+            return;
+          }
+          try {
+            const requestId = client.resumePlanVerification();
+            dispatch({type: 'plan.resume.requested', requestId});
+            dispatch({type: 'slash.notice', message: '已请求基于当前工作区重新审批；不会自动重放既有副作用'});
+          } catch {
+            dispatch({type: 'slash.notice', message: 'Plan 继续请求未被接受'});
+            return;
+          }
+        } else if (slash.command.intent === 'plan') {
           const task = typeof slash.command.arguments.task === 'string'
             ? slash.command.arguments.task : undefined;
           if (task !== undefined && client.startPlan === undefined) {
@@ -1717,6 +1750,10 @@ export function AgentView({state, composer, input = '', columns, rows, composerL
       ) : null}
       {connectWizard === undefined ? null : <ConnectWizardPanel state={connectWizard} />}
       {permissionPicker === undefined ? null : <PermissionPickerPanel state={permissionPicker} />}
+      {state.detachedPlanReview === undefined ? null : (
+        <DurablePlanReviewPanel review={state.detachedPlanReview} picker={planReviewPicker}
+          feedbackInput={planFeedbackInput} />
+      )}
       {liveRuns.map(run => <RunPresentation
         key={run.requestId}
         run={run}

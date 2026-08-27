@@ -129,7 +129,7 @@ metadata 持久值只允许 boolean、安全整数和字符串；patch 中删除
 | Tool | Effect | 模型可提交字段 | 投影/约束 |
 | --- | --- | --- | --- |
 | `task_create` | `WRITE_SESSION_STATE` | subject、description、active_form、blocked_by、metadata | Board/actor/Session/Run/ID/owner/status 由宿主注入 |
-| `task_update` | `WRITE_SESSION_STATE` | task_id；可选 subject、description、active_form、status、owner、add_blocked_by、remove_blocked_by | 模型不提交 operation/revision/claim/run/Plan identity；Adapter 在同一服务临界区读取最新 Task，并以宿主 capability、强 CAS 和稳定 phase call ID 应用编辑、owner、依赖和状态；Session-local root 的 owner 标签规范化为当前 capability actor，child 仍精确校验目录；支持 `DELETED` |
+| `task_update` | `WRITE_SESSION_STATE` | task_id；可选 subject、description、active_form、status、owner、add_blocked_by、remove_blocked_by | 模型不提交 operation/revision/claim/run/Plan identity；Adapter 在同一服务临界区读取最新 Task，并以宿主 capability、强 CAS 和稳定 phase call ID 应用编辑、owner、依赖和状态；对 recoveryRequired IN_PROGRESS，只有同次明确 `status=IN_PROGRESS` 才先建立绑定当前可信 runId 的新 claim epoch，再基于新 revision 应用 `active_form` 等字段，最终 status no-op；Session-local root 的 owner 标签规范化为当前 capability actor，child 仍精确校验目录；支持 `DELETED` |
 | `task_list` | `READ_SESSION_STATE` | status、filter、cursor、limit | 默认 25、最大 50、TaskId 稳定顺序；不返回 description/metadata/claim/timestamp；16KiB UTF-8 语义分页并返回 continuation cursor，不让 Pipeline 切断 JSON |
 | `task_get` | `READ_SESSION_STATE` | task_id | 在同一 Board 临界区捕获 revision/detail；完整合法 JSON 的 UTF-8 上限为 16KiB，超限整体失败而不截断 |
 
@@ -147,7 +147,7 @@ stable v1 通过 wire 名 `task-list-v1` 协商，只读 `task.snapshot` 支持 
 
 普通复杂 Run、Plan planning Run 与批准后的 execution Run 在 durable Task Tool 已注册时都获得同一组四个 Tool 和 Task 指导。Board 由 root Session identity 定位，不随 Run 切换。宿主为 planning/execution 的 `task_create` 注入模型不可提交的 `codej.plan_id` metadata，ActiveRun 持有当前 Plan identity。每个模型回合的 reminder 与 `request_plan_review` 只观察当前 planId cohort，并要求至少一个 bound incomplete Task；同 Session 普通 Run 或旧 Plan 的 Task 保留在 Board 中，但既不能满足也不能阻断当前 Plan。成功 `WRITE_SESSION_STATE` mutation 只精确释放 readiness failure，使相同 review 参数可合法重试而不清除无关失败。批准 execution 先 `task_list`/`task_get` 并原位更新规划期 Task；`task_create` 只用于执行中真正发现的新可验证拆分，不能翻译、汇总或重建第二 identity。应用仍不得从 Markdown 标题或 Task 文案推断执行语义。
 
-Plan controller 同时读取确定性 Evidence 与当前 planId cohort 的 Task terminal state，但不混同二者：Task 不能批准 Plan或替代产物证据，Evidence 不能改写 Task identity。候选 final 只有在 Evidence 满足且当前 cohort 未完成 Task 为空时才接受；否则同一 Run 内以有界 transient correction 投影封闭 Evidence failure 和当前 cohort 未完成 Task ID，要求复用原 ID 继续 claim/complete，不自动重放既有副作用。历史普通 Run/旧 Plan Task 不参与当前终态判断。重复指纹或两次上限后，Evidence-only failure 可进入 `NEEDS_VERIFICATION`；当前 cohort 仍未完成则拒绝候选 final，不能伪造 Plan/Run 完成。成功 mutation 后由同一 stdio writer 发布 snapshot，取消或失败则保留真实 IN_PROGRESS/recoveryRequired。
+Plan controller 同时读取确定性 Evidence 与当前 planId cohort 的 Task terminal state，但不混同二者：Task 不能批准 Plan或替代产物证据，Evidence 不能改写 Task identity。候选 final 只有在 Evidence 满足且当前 cohort 未完成 Task 为空时才接受；否则同一 Run 内以有界 transient correction 投影封闭 Evidence failure 和当前 cohort 未完成 Task ID，要求复用原 ID 继续 claim/complete，不自动重放既有副作用。历史普通 Run/旧 Plan Task 不参与当前终态判断。重复指纹或两次上限后，只要 Evidence 或 Task 任一仍未满足，候选 prose 都被丢弃，Run 以 `PLAN_VERIFICATION_REQUIRED` typed failure 停止，Plan 保持 `NEEDS_VERIFICATION`；不得形成 `Run COMPLETED`。Task List 仍是独立 artifact：对应 Run 的 `planVerification + run.failed` 单独表达 Plan failure，历史 failure 不得改变 completed Task 的绿色勾、dim/strikethrough 或 auto-hide。成功 mutation 后由同一 stdio writer 发布 snapshot，取消或失败则保留真实 IN_PROGRESS/recoveryRequired。
 
 ## 8. 可证伪验证
 

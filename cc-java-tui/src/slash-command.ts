@@ -12,6 +12,7 @@ export type SlashIntent =
   | 'resume'
   | 'tasks'
   | 'plan-status'
+  | 'plan-resume'
   | 'plan';
 
 export type SessionSlashIntent = Exclude<SlashIntent, 'connect' | 'auth' | 'models'>;
@@ -47,7 +48,7 @@ const MAX_COMPACT_ANCHOR_CODE_POINTS = 512;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/u;
 const COMMAND_NAMES: readonly SlashIntent[] = [
   'help', 'clear', 'compact', 'context', 'doctor', 'model', 'connect', 'auth', 'models', 'permissions', 'resume',
-  'tasks', 'plan-status', 'plan',
+  'tasks', 'plan-status', 'plan-resume', 'plan',
 ];
 const COMMANDS = new Set<SlashIntent>(COMMAND_NAMES);
 const TYPO_PROTECTED_COMMANDS: readonly string[] = [...COMMAND_NAMES, 'task'];
@@ -67,6 +68,7 @@ const COMMAND_USAGE: Readonly<Record<SlashIntent, string>> = {
   resume: '/resume <session-id> — 安全恢复会话',
   tasks: '/tasks — 打开当前 Session 的执行任务列表',
   'plan-status': '/plan-status — 查看当前计划状态',
+  'plan-resume': '/plan-resume — 对 NEEDS_VERIFICATION 计划基于当前工作区重新审批后继续',
   plan: '/plan [自然语言任务] — 进入只读 Plan 模式、规划任务或查看当前计划',
 };
 
@@ -97,7 +99,7 @@ export function parseSlashCommand(input: string): SlashParseResult {
     return {kind: 'invalid', message: '未知 Slash 命令'};
   }
   const intent = rawName as SessionSlashIntent;
-  if (['help', 'clear', 'context', 'doctor', 'tasks', 'plan-status'].includes(intent)) {
+  if (['help', 'clear', 'context', 'doctor', 'tasks', 'plan-status', 'plan-resume'].includes(intent)) {
     return values.length === 0
       ? {kind: 'command', command: {intent, arguments: {}}}
       : {kind: 'invalid', message: `/${intent} 不接受参数`};
@@ -282,6 +284,7 @@ function isSlashIntent(value: unknown): value is SlashIntent {
     case 'resume':
     case 'tasks':
     case 'plan-status':
+    case 'plan-resume':
     case 'plan':
       return true;
     default:

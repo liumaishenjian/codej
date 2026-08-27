@@ -835,6 +835,9 @@ public final class AgentRuntime {
                     if (finalDecision.outcome() == FinalAssistantDecision.Outcome.REJECT) {
                         return state.stop(StopReason.INVALID_MODEL_RESPONSE);
                     }
+                    if (finalDecision.outcome() == FinalAssistantDecision.Outcome.STOP) {
+                        return state.stop(finalDecision.stopReason().orElseThrow());
+                    }
                     if (finalDecision.outcome() == FinalAssistantDecision.Outcome.CONTINUE) {
                         continue;
                     }

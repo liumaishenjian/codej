@@ -19,6 +19,7 @@ import {
   renderProviderControlResult,
   scheduleTaskPanelAutoHide,
   sessionTaskTextDecoration,
+  taskBoardAutoHideEligible,
   TASK_COMPLETION_VISIBLE_MS,
   terminalDisplayWidth,
   truncateTerminalText,
@@ -2238,9 +2239,19 @@ describe('Session Task List Ink surface', () => {
       phase: 'ready', sessionId: 'session-1', activeRunId: undefined, notice: undefined,
       checkpoints: [], checkpointPanelOpen: false, selectedCheckpointId: undefined,
       checkpointDiff: undefined, pendingUndoCheckpointId: undefined, checkpointUndo: undefined,
-      runs: [], taskPanelOpen: true, taskPanelFocused: false, selectedTaskId: 'task-1', taskDetailOpen: false,
+      runs: [{requestId: 'historical-plan', prompt: '执行旧计划', runId: 'run-old-plan', text: '', tools: [],
+        modelProgress: undefined, pendingApproval: undefined, planProposal: undefined, status: 'failed',
+        stopReason: 'plan_verification_required', modelFailure: undefined, modelTurns: 2, toolCalls: 1,
+        planVerification: '计划尚未完成：需要验证 exact.xlsx（0/1）', awaitingPlanVerification: false}],
+      taskPanelOpen: true, taskPanelFocused: false, selectedTaskId: 'task-1', taskDetailOpen: false,
       taskBoard: completedBoard,
     };
+    expect(taskBoardAutoHideEligible(completedState)).toBe(true);
+    const frame = render(<AgentView state={completedState} input="" columns={100} rows={40} />).lastFrame() ?? '';
+    expect(frame).toContain('全部 2 项任务已完成');
+    expect(frame).toContain('计划尚未完成：需要验证 exact.xlsx（0/1）');
+    expect(sessionTaskTextDecoration('COMPLETED')).toEqual({dimColor: true, strikethrough: true});
+
     const dispatched: TuiAction[] = [];
     const cancel = scheduleTaskPanelAutoHide(action => dispatched.push(action));
 
@@ -2555,13 +2566,51 @@ describe('continuous plan Ink interaction', () => {
     client.emit({version: 0, type: 'plan.verification.required', requestId, sessionId: 'session-1',
       sequence: 4, payload: {planId: 'plan-1', status: 'needs_verification',
         requiredEvidence: 1, satisfiedEvidence: 0}});
-    client.emit({version: 0, type: 'run.completed', requestId, sessionId: 'session-1',
-      runId: 'run-correction', sequence: 5, payload: {stopReason: 'completed', modelTurns: 2, toolCalls: 0}});
+    client.emit({version: 0, type: 'run.failed', requestId, sessionId: 'session-1',
+      runId: 'run-correction', sequence: 5, payload: {stopReason: 'plan_verification_required',
+        modelTurns: 2, toolCalls: 0}});
     await waitForFrame(() => (view.lastFrame() ?? '').includes('计划尚未完成')
-      && (view.lastFrame() ?? '').includes('0/1') && (view.lastFrame() ?? '').includes('就绪'));
+      && (view.lastFrame() ?? '').includes('0/1')
+      && (view.lastFrame() ?? '').includes('运行失败 · plan_verification_required')
+      && (view.lastFrame() ?? '').includes('就绪'));
     const frame = view.lastFrame() ?? '';
     expect(frame).not.toContain('FIRST_UNVERIFIED_FINAL');
     expect(frame).not.toContain('已完成并交付');
+    expect(frame).not.toContain('✓ 已完成');
+
+    view.stdin.write('/plan-resume'); view.stdin.write('\r');
+    await waitForFrame(() => client.planResumes.length === 1);
+    view.stdin.write('/plan-resume'); view.stdin.write('\r');
+    await waitForFrame(() => (view.lastFrame() ?? '').includes('请勿重复提交'));
+    expect(client.planResumes).toHaveLength(1);
+    client.emit({version: 0, type: 'plan.review.requested', requestId: 'spoof', sessionId: 'session-1',
+      sequence: 6, payload: {planId: 'plan-spoof', status: 'awaiting_approval', revision: 8,
+        contentDigest: 'a'.repeat(64), markdown: '# Spoof', workspaceDigest: 'b'.repeat(64),
+        originalPermissionMode: 'default', suggestedContextPolicy: 'keep'}});
+    expect(view.lastFrame()).not.toContain('# Spoof');
+    client.emit({version: 0, type: 'plan.review.requested', requestId: 'tui-plan-resume-1', sessionId: 'session-1',
+      sequence: 7, payload: {planId: 'plan-1', status: 'awaiting_approval', revision: 8,
+        contentDigest: 'c'.repeat(64), markdown: '# Resume exact plan', workspaceDigest: 'd'.repeat(64),
+        originalPermissionMode: 'default', suggestedContextPolicy: 'keep'}});
+    await waitForFrame(() => (view.lastFrame() ?? '').includes('Resume exact plan')
+      && (view.lastFrame() ?? '').includes('批准并自动执行'));
+    view.stdin.write('\r');
+    await waitForFrame(() => client.planReviewResolutions.length === 1);
+    expect(client.planReviewResolutions[0]).toContain('plan-1:8:');
+    client.emit({version: 0, type: 'plan.execution.accepted', requestId: 'tui-plan-review-1',
+      sessionId: 'session-1', sequence: 9, payload: {planId: 'plan-1', status: 'approved', revision: 8,
+        contentDigest: 'c'.repeat(64), contextPolicy: 'keep', approvalReviewer: 'auto_review'}});
+    client.emit({version: 0, type: 'run.started', requestId: 'tui-plan-review-1', sessionId: 'session-1',
+      runId: 'run-resumed-plan', sequence: 10, payload: {}});
+    client.emit({version: 0, type: 'plan.verification.completed', requestId: 'tui-plan-review-1',
+      sessionId: 'session-1', sequence: 11, payload: {planId: 'plan-1', status: 'completed',
+        requiredEvidence: 1, satisfiedEvidence: 1}});
+    client.emit({version: 0, type: 'run.completed', requestId: 'tui-plan-review-1', sessionId: 'session-1',
+      runId: 'run-resumed-plan', sequence: 12, payload: {stopReason: 'completed', modelTurns: 1, toolCalls: 0,
+        finalText: 'resumed and verified'}});
+    await waitForFrame(() => (view.lastFrame() ?? '').includes('resumed and verified')
+      && (view.lastFrame() ?? '').includes('计划证据已验证'));
+    expect(view.lastFrame()).not.toContain('Resume exact plan');
     view.unmount();
   });
 
@@ -2798,6 +2847,7 @@ describe('continuous plan Ink interaction', () => {
 class FakeAgentClient implements AgentClient {
   readonly prompts: string[] = [];
   readonly planTasks: string[] = [];
+  readonly planResumes: string[] = [];
   readonly planExecutions: string[] = [];
   readonly planFeedback: string[] = [];
   readonly planReviewResolutions: string[] = [];
@@ -2852,6 +2902,11 @@ class FakeAgentClient implements AgentClient {
     if (this.rejectPlanStart) throw new Error('rejected');
     this.planTasks.push(task);
     return `tui-plan-${this.planTasks.length}`;
+  }
+
+  public resumePlanVerification(): string {
+    this.planResumes.push('resume');
+    return `tui-plan-resume-${this.planResumes.length}`;
   }
 
   public resolvePlanReview(input: {

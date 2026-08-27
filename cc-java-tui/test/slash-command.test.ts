@@ -16,6 +16,9 @@ describe('parseSlashCommand', () => {
     expect(parseSlashCommand('/plan-status')).toEqual({
       kind: 'command', command: {intent: 'plan-status', arguments: {}},
     });
+    expect(parseSlashCommand('/plan-resume')).toEqual({
+      kind: 'command', command: {intent: 'plan-resume', arguments: {}},
+    });
     expect(parseSlashCommand('/plan')).toEqual({
       kind: 'command', command: {intent: 'plan', arguments: {}},
     });

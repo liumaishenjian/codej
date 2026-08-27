@@ -45,6 +45,9 @@ public enum StopReason {
     /** Context 无法在安全预算内继续组装。 */
     CONTEXT_LIMIT_REACHED,
 
+    /** 已批准 Plan 的精确 Evidence 或 Task Gate 在有界纠正后仍未满足，可显式恢复。 */
+    PLAN_VERIFICATION_REQUIRED,
+
     /** 关键操作被拒绝且 Run 无法继续。 */
     PERMISSION_DENIED,
 

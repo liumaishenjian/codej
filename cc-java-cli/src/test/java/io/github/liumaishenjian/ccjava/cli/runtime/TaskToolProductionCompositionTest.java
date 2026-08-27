@@ -123,6 +123,51 @@ class TaskToolProductionCompositionTest {
     }
 
     @Test
+    void taskCreatedBeforeChinesePlanKeepsIdentityOutOfUserReadableMarkdown(@TempDir Path root) throws Exception {
+        Path workspace = Files.createDirectory(root.resolve("workspace-plan-markdown-boundary"));
+        CopyOnWriteArrayList<ModelRequest> requests = new CopyOnWriteArrayList<>();
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        String cleanMarkdown = "# 中文执行计划\n\n1. 生成精确命名的工作簿。\n2. 重新打开并验证内容。\n";
+        ModelGateway model = request -> {
+            requests.add(request);
+            return switch (calls.getAndIncrement()) {
+                case 0 -> ModelTurn.tools(List.of(new ToolCall("create", "task_create",
+                        new JsonObject(Map.of("subject", "生成精确命名的工作簿。")))));
+                case 1 -> ModelTurn.tools(List.of(new ToolCall("plan", "revise_plan_artifact",
+                        new JsonObject(Map.of("markdown", cleanMarkdown)))));
+                case 2 -> ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review", JsonObject.empty())));
+                case 3 -> ModelTurn.text("规划完成");
+                default -> throw new IllegalStateException("Plan Markdown 边界流程不得额外调用模型");
+            };
+        };
+        HeadlessRuntimeOptions options = new HeadlessRuntimeOptions(
+                workspace, "fake-model", Duration.ofSeconds(10), PermissionMode.DEFAULT,
+                List.of(), SessionOpenRequest.create(), root.resolve("sessions-plan-markdown-boundary"));
+
+        try (HeadlessRuntimeSession runtime = productionRuntime(
+                root.resolve("home-plan-markdown-boundary"), model, options)) {
+            runtime.open();
+            var result = runtime.runPlan("先建立执行任务，再提交中文计划");
+
+            assertThat(result.stopReason()).isEqualTo(io.github.liumaishenjian.ccjava.domain.StopReason.COMPLETED);
+            assertThat(runtime.planArtifact().orElseThrow().markdownContent()).isEqualTo(cleanMarkdown);
+            assertThat(runtime.planArtifact().orElseThrow().markdownContent())
+                    .doesNotContain("task-1", "codej.plan_id", "plan-");
+            assertThat(runtime.taskBoardSnapshot().orElseThrow().tasks().values())
+                    .extracting(view -> view.id().value(), view -> view.subject())
+                    .containsExactly(org.assertj.core.groups.Tuple.tuple(
+                            "task-1", "生成精确命名的工作簿。"));
+        }
+        assertThat(calls).hasValue(4);
+        assertThat(requests.get(1).messages())
+                .filteredOn(io.github.liumaishenjian.ccjava.domain.SystemMessage.class::isInstance)
+                .anySatisfy(message -> assertThat(
+                        ((io.github.liumaishenjian.ccjava.domain.SystemMessage) message).content())
+                        .contains("internal Task identities are intentionally omitted")
+                        .doesNotContain("task-1", "codej.plan_id"));
+    }
+
+    @Test
     void reviewGateRejectsPlanWithoutExecutionTasksThenKeepsCreatedIdentity(@TempDir Path root) throws Exception {
         Path workspace = Files.createDirectory(root.resolve("workspace-review-gate"));
         CopyOnWriteArrayList<ModelRequest> requests = new CopyOnWriteArrayList<>();
@@ -178,12 +223,14 @@ class TaskToolProductionCompositionTest {
                 io.github.liumaishenjian.ccjava.domain.SystemMessage.class::isInstance)
                 .anySatisfy(message -> assertThat(
                         ((io.github.liumaishenjian.ccjava.domain.SystemMessage) message).content())
-                        .contains("Current authoritative Plan Task cohort", "0/0 completed"));
+                        .contains("Current user-readable execution checklist", "0/0 completed")
+                        .doesNotContain("task-"));
         assertThat(requests.get(4).messages()).filteredOn(
                 io.github.liumaishenjian.ccjava.domain.SystemMessage.class::isInstance)
                 .anySatisfy(message -> assertThat(
                         ((io.github.liumaishenjian.ccjava.domain.SystemMessage) message).content())
-                        .contains("task-1 [PENDING] 创建中文产物。", "task-2 [PENDING] 验证中文产物。"));
+                        .contains("[PENDING] 创建中文产物。", "[PENDING] 验证中文产物。")
+                        .doesNotContain("task-1", "task-2"));
     }
 
     @Test
@@ -240,8 +287,8 @@ class TaskToolProductionCompositionTest {
                 .filteredOn(io.github.liumaishenjian.ccjava.domain.SystemMessage.class::isInstance)
                 .anySatisfy(message -> assertThat(
                         ((io.github.liumaishenjian.ccjava.domain.SystemMessage) message).content())
-                        .contains("task-2 [PENDING] 开发规划模块。")
-                        .doesNotContain("历史普通 Run 待办。"));
+                        .contains("[PENDING] 开发规划模块。")
+                        .doesNotContain("task-1", "task-2", "历史普通 Run 待办。"));
     }
 
     @Test
@@ -413,7 +460,9 @@ class TaskToolProductionCompositionTest {
                     io.github.liumaishenjian.ccjava.domain.PlanReviewDecision.APPROVE_USER,
                     io.github.liumaishenjian.ccjava.domain.PlanContextPolicy.KEEP, "");
             var result = runtime.runAcceptedPlan(acceptance);
-            assertThat(result.stopReason()).isEqualTo(io.github.liumaishenjian.ccjava.domain.StopReason.COMPLETED);
+            assertThat(result.stopReason()).isEqualTo(
+                    io.github.liumaishenjian.ccjava.domain.StopReason.PLAN_VERIFICATION_REQUIRED);
+            assertThat(result.finalText()).isEmpty();
             assertThat(runtime.planArtifact().orElseThrow().status())
                     .isEqualTo(io.github.liumaishenjian.ccjava.domain.PlanStatus.NEEDS_VERIFICATION);
         }

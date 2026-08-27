@@ -138,6 +138,7 @@ export interface ProtocolCommand {
     | 'run.start'
     | 'plan.start'
     | 'plan.review.resolve'
+    | 'plan.resume'
     | 'plan.execute'
     | 'plan.feedback'
     | 'input.begin'
@@ -272,13 +273,15 @@ function validateEventShape(
   } else if (type === 'checkpoint.undone') {
     validateCheckpointUndo(payload);
   }
+  if (type === 'plan.review.requested' && sessionId === undefined) {
+    throw new ProtocolViolation('plan.review.requested 缺少 sessionId');
+  }
   if (
     (type === 'run.started'
       || type === 'run.budget.governed'
       || type === 'skill.completed'
       || type === 'model.text.delta'
       || type === 'plan.proposed'
-      || type === 'plan.review.requested'
       || type === 'question.requested'
       || type === 'approval.requested'
       || type === 'tool.started'

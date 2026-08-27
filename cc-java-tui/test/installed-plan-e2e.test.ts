@@ -52,7 +52,7 @@ describe('installed Plan TUI to Java flow', () => {
       executable: 'java',
       args: ['-cp', launchClasspath,
         'io.github.liumaishenjian.ccjava.cli.stdio.StdioProtocolFixtureMain',
-        'plan-runtime', workspace],
+        'plan-runtime-resume', workspace],
       cwd: workspace,
       env: {...process.env, CC_JAVA_PLAN_FAKE_CLASSPATH: fixtureClasses},
     }, {shutdownTimeoutMs: 2_000});
@@ -90,18 +90,42 @@ describe('installed Plan TUI to Java flow', () => {
       await waitFor(() => view.lastFrame()?.includes('同一 Run 内纠正（1/2）') === true,
         () => diagnostic(view.lastFrame(), events, failures, exitResult));
       expect(view.lastFrame()).not.toContain('FIRST_UNVERIFIED_FINAL');
-      await waitFor(() => events.filter(event => event.type === 'approval.requested'
-        && event.requestId === executionRequestId).length === 2,
+      await waitFor(() => events.some(event => event.type === 'plan.verification.required'
+        && event.requestId === executionRequestId)
+        && events.some(event => event.type === 'run.failed'
+          && event.requestId === executionRequestId
+          && event.payload.stopReason === 'plan_verification_required'),
       () => diagnostic(view.lastFrame(), events, failures, exitResult));
+      expect(events.filter(event => event.type === 'approval.requested'
+        && event.requestId === executionRequestId)).toHaveLength(1);
+      await waitFor(() => view.lastFrame()?.includes('计划尚未完成') === true
+        && view.lastFrame()?.includes('运行失败 · plan_verification_required') === true,
+      () => diagnostic(view.lastFrame(), events, failures, exitResult));
+
+      const planId = String(events.find(event => event.type === 'plan.review.requested')!.payload.planId);
+      view.stdin.write('/plan-resume');
+      view.stdin.write('\r');
+      await waitFor(() => events.filter(event => event.type === 'plan.review.requested').length === 2,
+        () => diagnostic(view.lastFrame(), events, failures, exitResult));
+      const resumedReview = events.filter(event => event.type === 'plan.review.requested')[1]!;
+      expect(resumedReview.payload.planId).toBe(planId);
+      await waitFor(() => view.lastFrame()?.includes('批准并自动执行') === true,
+        () => diagnostic(view.lastFrame(), events, failures, exitResult));
+      view.stdin.write('[B');
+      await new Promise(resolve => setTimeout(resolve, 10));
+      view.stdin.write('\r');
+      await waitFor(() => events.filter(event => event.type === 'approval.requested').length === 2,
+        () => diagnostic(view.lastFrame(), events, failures, exitResult));
+      const resumedExecutionRequestId = events.filter(event => event.type === 'approval.requested')[1]!.requestId;
       view.stdin.write('\r');
       await waitFor(() => events.some(event => event.type === 'plan.verification.completed'
-        && event.requestId === executionRequestId),
+        && event.requestId === resumedExecutionRequestId),
       () => diagnostic(view.lastFrame(), events, failures, exitResult));
       await waitFor(() => events.some(event => event.type === 'run.completed'
-        && event.requestId === executionRequestId
-        && String(event.payload.finalText).includes('approved plan corrected and verified')),
+        && event.requestId === resumedExecutionRequestId
+        && String(event.payload.finalText).includes('approved plan corrected and verified after explicit resume')),
       () => diagnostic(view.lastFrame(), events, failures, exitResult));
-      await waitFor(() => view.lastFrame()?.includes('approved plan corrected and verified') === true
+      await waitFor(() => view.lastFrame()?.includes('approved plan corrected and verified after explicit resume') === true
         && view.lastFrame()?.includes('已完成') === true,
       () => diagnostic(view.lastFrame(), events, failures, exitResult));
 
@@ -111,11 +135,18 @@ describe('installed Plan TUI to Java flow', () => {
       expect(finalFrame).not.toContain('FIRST_UNVERIFIED_FINAL');
       expect(finalFrame).toContain('计划证据已验证');
       expect(events.filter(event => event.type === 'tool.completed'
-        && event.requestId === executionRequestId && event.payload.toolName === 'write_file')).toHaveLength(2);
+        && event.requestId === executionRequestId && event.payload.toolName === 'write_file')).toHaveLength(1);
+      expect(events.filter(event => event.type === 'tool.completed'
+        && event.requestId === resumedExecutionRequestId && event.payload.toolName === 'write_file')).toHaveLength(1);
       expect(events.filter(event => event.type === 'plan.verification.correction'
         && event.requestId === executionRequestId)).toHaveLength(1);
-      expect(events.some(event => event.type === 'plan.verification.required'
+      expect(events.filter(event => event.type === 'plan.verification.required'
+        && event.requestId === executionRequestId)).toHaveLength(1);
+      expect(events.some(event => event.type === 'run.completed'
         && event.requestId === executionRequestId)).toBe(false);
+      const taskIds = events.filter(event => event.type === 'task.board.snapshot')
+        .flatMap(event => (event.payload.tasks as Array<{taskId: string}>).map(task => task.taskId));
+      expect(new Set(taskIds)).toEqual(new Set(['task-1']));
       expect(failures).toEqual([]);
     } finally {
       await client.shutdown();

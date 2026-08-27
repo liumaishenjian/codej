@@ -30,7 +30,9 @@ public final class StdioProtocolFixtureMain {
                     : args.length == 2 && args[0].equals("permission-runtime")
                             ? permissionRuntimeHandler(Path.of(args[1]))
                     : args.length == 2 && args[0].equals("plan-runtime")
-                            ? planRuntimeHandler(Path.of(args[1]))
+                            ? planRuntimeHandler(Path.of(args[1]), false)
+                    : args.length == 2 && args[0].equals("plan-runtime-resume")
+                            ? planRuntimeHandler(Path.of(args[1]), true)
                     : args.length == 2 && args[0].equals("xlsx-plan-runtime")
                             ? xlsxPlanRuntimeHandler(Path.of(args[1]))
                     : args.length == 2 && args[0].equals("task-timeout-runtime")
@@ -47,7 +49,8 @@ public final class StdioProtocolFixtureMain {
         if (failed) System.exit(2);
     }
 
-    private static StdioProtocol.CommandHandler planRuntimeHandler(Path parent) throws Exception {
+    private static StdioProtocol.CommandHandler planRuntimeHandler(
+            Path parent, boolean verificationResume) throws Exception {
         Path expectedParent = parent.toAbsolutePath().normalize();
         Path expectedRealParent = expectedParent.toRealPath();
         Path fixtureRoot = Files.createTempDirectory(expectedRealParent, "plan-runtime-");
@@ -96,22 +99,33 @@ public final class StdioProtocolFixtureMain {
                     if (executionCall == 3) {
                         return io.github.liumaishenjian.ccjava.domain.ModelTurn.text("FIRST_UNVERIFIED_FINAL");
                     }
-                    if (executionCall == 4) return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
-                            new io.github.liumaishenjian.ccjava.domain.ToolCall(
-                                    "correct-workbook", "write_file",
-                                    new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
-                                            "path", expectedWorkbook, "content", "correct-name")))));
-                    if (executionCall == 5) return approvedTaskUpdate(
-                            "execution-task-complete-1", "task-1", "COMPLETED", null);
-                    if (executionCall == 6 && !secondStepApproved) {
-                        return io.github.liumaishenjian.ccjava.domain.ModelTurn.text(
-                                "approved plan corrected and verified");
+                    if (executionCall == 4 && verificationResume) {
+                        return io.github.liumaishenjian.ccjava.domain.ModelTurn.text("SECOND_UNVERIFIED_FINAL");
                     }
-                    if (executionCall == 6) return approvedTaskUpdate(
+                    if (executionCall == 5 && verificationResume) {
+                        return approvedTaskUpdate(
+                                "execution-task-resume-1", "task-1", "IN_PROGRESS", "正在显式恢复正确工作簿");
+                    }
+                    int resumedOffset = verificationResume ? 2 : 0;
+                    if (executionCall == 4 + resumedOffset) {
+                        return io.github.liumaishenjian.ccjava.domain.ModelTurn.tools(List.of(
+                                new io.github.liumaishenjian.ccjava.domain.ToolCall(
+                                        "correct-workbook", "write_file",
+                                        new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
+                                                "path", expectedWorkbook, "content", "correct-name")))));
+                    }
+                    if (executionCall == 5 + resumedOffset) return approvedTaskUpdate(
+                            "execution-task-complete-1", "task-1", "COMPLETED", null);
+                    if (executionCall == 6 + resumedOffset && !secondStepApproved) {
+                        return io.github.liumaishenjian.ccjava.domain.ModelTurn.text(verificationResume
+                                ? "approved plan corrected and verified after explicit resume"
+                                : "approved plan corrected and verified");
+                    }
+                    if (executionCall == 6 + resumedOffset) return approvedTaskUpdate(
                             "execution-task-claim-2", "task-2", "IN_PROGRESS", "正在验证交付结果");
-                    if (executionCall == 7) return approvedTaskUpdate(
+                    if (executionCall == 7 + resumedOffset) return approvedTaskUpdate(
                             "execution-task-complete-2", "task-2", "COMPLETED", null);
-                    if (executionCall == 8) {
+                    if (executionCall == 8 + resumedOffset) {
                         return io.github.liumaishenjian.ccjava.domain.ModelTurn.text("approved plan corrected and verified");
                     }
                     throw new IllegalStateException("Plan fixture 收到过多执行请求");
@@ -521,7 +535,7 @@ public final class StdioProtocolFixtureMain {
     }
 
     static StdioProtocol.CommandHandler planRuntimeHandlerForTest(Path workspace) throws Exception {
-        return planRuntimeHandler(workspace);
+        return planRuntimeHandler(workspace, false);
     }
 
     /** 为 TUI→真实 Java 权限测试提供三个同 source/selector Patch 的确定性 Runtime。 */

@@ -245,15 +245,52 @@ describe('reduceTuiState', () => {
       }, 'req-plan', 'session-1'),
     });
     state = reduceTuiState(state, {
-      type: 'event.received', event: event('run.completed', 5, {
-        stopReason: 'completed', modelTurns: 2, toolCalls: 0,
+      type: 'event.received', event: event('run.failed', 5, {
+        stopReason: 'plan_verification_required', modelTurns: 2, toolCalls: 0,
       }, 'req-plan', 'session-1', 'run-1'),
     });
     expect(state.phase).toBe('ready');
     expect(state.runs[0]).toEqual(expect.objectContaining({
-      text: '', status: 'completed',
+      text: '', status: 'failed', stopReason: 'plan_verification_required',
       planVerification: '计划尚未完成：需要验证 required-evidence-not-declared（0/1）',
     }));
+  });
+
+  it('显式 Plan resume 只接受同 Session 与 pending requestId 的 detached review', () => {
+    let state = reduceTuiState(initialTuiState, {
+      type: 'event.received', event: event('initialized', 1, {}, 'init', 'session-1'),
+    });
+    state = reduceTuiState(state, {type: 'plan.resume.requested', requestId: 'resume-1'});
+    const duplicate = reduceTuiState(state, {type: 'plan.resume.requested', requestId: 'resume-2'});
+    expect(duplicate.pendingPlanResumeRequestId).toBe('resume-1');
+
+    const payload = {planId: 'plan-1', status: 'awaiting_approval', revision: 8,
+      contentDigest: 'a'.repeat(64), markdown: '# Resume', workspaceDigest: 'b'.repeat(64),
+      originalPermissionMode: 'default', suggestedContextPolicy: 'keep'};
+    const unknown = reduceTuiState(state, {
+      type: 'event.received', event: event('plan.review.requested', 2, payload, 'spoof', 'session-1'),
+    });
+    expect(unknown.detachedPlanReview).toBeUndefined();
+    expect(unknown.pendingPlanResumeRequestId).toBe('resume-1');
+    const wrongSession = reduceTuiState(state, {
+      type: 'event.received', event: event('plan.review.requested', 3, payload, 'resume-1', 'session-other'),
+    });
+    expect(wrongSession.detachedPlanReview).toBeUndefined();
+
+    state = reduceTuiState(state, {
+      type: 'event.received', event: event('plan.review.requested', 4, payload, 'resume-1', 'session-1'),
+    });
+    expect(state.pendingPlanResumeRequestId).toBeUndefined();
+    expect(state.detachedPlanReview).toEqual(expect.objectContaining({planId: 'plan-1', revision: 8}));
+    const late = reduceTuiState(state, {
+      type: 'event.received', event: event('plan.review.requested', 5,
+        {...payload, revision: 9}, 'resume-1', 'session-1'),
+    });
+    expect(late.detachedPlanReview?.revision).toBe(8);
+
+    state = reduceTuiState(state, {type: 'event.received', event: event('plan.execution.accepted', 6,
+      {planId: 'plan-1', status: 'approved'}, 'resume-decision', 'session-1')});
+    expect(state.detachedPlanReview).toBeUndefined();
   });
 
   it('在没有流式 delta 时使用 Java 终态 finalText', () => {

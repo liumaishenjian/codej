@@ -122,9 +122,11 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                     + "for each real execution step in the same language and order as the plan. Never create a Task for "
                     + "drafting or approving the plan itself. The review gate requires at least one incomplete execution "
                     + "Task and keeps those identities on the same Board after approval; do not recreate or translate them. "
-                    + "The runtime owns durable revision and content-digest concurrency control; provide only Markdown "
-                    + "when revising and no arguments when requesting review. When the plan and Task List agree, call "
-                    + "request_plan_review. Do not return JSON, executable step payloads, workspace digests, or hidden "
+                    + "The runtime owns durable revision, content digest, Task IDs, Plan IDs and cohort bookkeeping. "
+                    + "The Markdown itself must contain only user-readable goals, steps, verification and risks: never copy "
+                    + "internal Task or Plan identifiers, cohort labels, runtime fields or Tool bookkeeping into headings, prose or code spans. "
+                    + "Provide only Markdown when revising and no arguments when requesting review. When the plan and Task List "
+                    + "agree, call request_plan_review. Do not return JSON, executable step payloads, workspace digests, or hidden "
                     + "objective/title/detail triples. Workspace writes, process execution, and undeclared extension "
                     + "tools are unavailable while planning.";
 
@@ -1426,14 +1428,21 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                 .filter(task -> planId.isPresent() && planId.orElseThrow().equals(planTaskIdentity(task)))
                 .sorted(java.util.Comparator.comparing(io.github.liumaishenjian.ccjava.domain.task.TaskItemView::id))
                 .toList();
-        StringBuilder reminder = new StringBuilder(512)
-                .append("\n\nCurrent authoritative Plan Task cohort (reuse these IDs; do not recreate or translate them):\n");
-        tasks.stream().limit(25).forEach(task -> reminder.append("- ")
-                .append(task.id().value()).append(" [").append(task.status().name()).append("] ")
-                .append(safeTaskProjection(task.subject()))
-                .append(task.blocked() ? " blocked" : "")
-                .append(task.recoveryRequired() ? " recovery-required" : "")
-                .append('\n'));
+        StringBuilder reminder = new StringBuilder(512).append(planning
+                ? "\n\nCurrent user-readable execution checklist (internal Task identities are intentionally omitted; "
+                        + "use task_list/task_get for Task operations and never copy their IDs into Plan Markdown):\n"
+                : "\n\nCurrent authoritative Plan Task cohort (reuse these IDs; do not recreate or translate them):\n");
+        tasks.stream().limit(25).forEach(task -> {
+            reminder.append("- ");
+            if (!planning) {
+                reminder.append(task.id().value()).append(' ');
+            }
+            reminder.append('[').append(task.status().name()).append("] ")
+                    .append(safeTaskProjection(task.subject()))
+                    .append(task.blocked() ? " blocked" : "")
+                    .append(task.recoveryRequired() ? " recovery-required" : "")
+                    .append('\n');
+        });
         if (tasks.size() > 25) reminder.append("- ... ").append(tasks.size() - 25).append(" more Tasks omitted\n");
         long incomplete = tasks.stream().filter(task -> task.status()
                 != io.github.liumaishenjian.ccjava.domain.task.TaskStatus.COMPLETED).count();
@@ -1516,6 +1525,36 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                 skills == null ? io.github.liumaishenjian.ccjava.core.skill.SkillRunCoordinator.disabled()
                         : skills.coordinator(),
                 plugins.runCoordinator(), plugins.runHooks(), correction);
+    }
+
+    /**
+     * 为 NEEDS_VERIFICATION 工件发起显式再审批。
+     *
+     * <p>该入口不执行 Tool，也不直接恢复旧 ExecutionBrief。它保留同一 Plan、Task cohort 与 Evidence
+     * requirement identity，清除旧 Workspace/审批绑定和 reference，并以当前 Workspace 生成新的 review
+     * 快照。只有用户再次批准后才会进入普通 {@link #acceptPlanExecution} 路径；活动 Run、fenced Session
+     * 或其他状态均拒绝，从而保持既有 recovery gate 与 no-replay 边界。</p>
+     *
+     * @return 可供 stdio/TUI 打开审批 picker 的 durable review 事件
+     */
+    public Optional<io.github.liumaishenjian.ccjava.domain.PlanReviewEvent> requestPlanVerificationResume() {
+        synchronized (lifecycleMonitor) {
+            requireOpenLocked();
+            if (activeRun != null || session.isFenced()) return Optional.empty();
+            var store = new io.github.liumaishenjian.ccjava.cli.session.SessionPlanArtifactStore(sessions, session.id());
+            var loaded = store.load(session.id());
+            if (loaded.isEmpty() || loaded.orElseThrow().status()
+                    != io.github.liumaishenjian.ccjava.domain.PlanStatus.NEEDS_VERIFICATION
+                    || loaded.orElseThrow().executionBrief().isEmpty()) return Optional.empty();
+            var current = loaded.orElseThrow();
+            var previousBrief = current.executionBrief().orElseThrow();
+            var reopened = current.reopenApprovalForVerificationResume(java.time.Instant.now());
+            var saved = store.save(reopened, current.revision(), current.contentDigest());
+            pendingVerificationSkipDecisions.clear();
+            return Optional.of(io.github.liumaishenjian.ccjava.domain.PlanReviewEvent.from(
+                    saved, currentWorkspaceDigest(), previousBrief.originalPermissionMode(),
+                    previousBrief.contextPolicy()));
+        }
     }
 
     /**
@@ -1691,7 +1730,7 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                             new io.github.liumaishenjian.ccjava.domain.PlanEvidenceReference(
                                     requirement.requirementId(),
                                     io.github.liumaishenjian.ccjava.domain.PlanEvidenceStatus.FAILED,
-                                    "WORKSPACE_FILE", requirement.requirementId(), Optional.empty(),
+                                    "WORKSPACE_FILE", requirement.locator(), Optional.empty(),
                                     "FILE_MISSING_OR_UNSAFE", now), now);
                 }
             } else {
@@ -1827,9 +1866,8 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                     .collect(java.util.stream.Collectors.joining("\n"));
             String fingerprint = evidenceFingerprint + "\nTASKS\n" + taskFingerprint;
             if (corrections >= MAX_CORRECTIONS || fingerprint.equals(previousFingerprint)) {
-                return incompleteTasks.isEmpty()
-                        ? io.github.liumaishenjian.ccjava.core.FinalAssistantDecision.accept()
-                        : io.github.liumaishenjian.ccjava.core.FinalAssistantDecision.reject();
+                return io.github.liumaishenjian.ccjava.core.FinalAssistantDecision.stop(
+                        io.github.liumaishenjian.ccjava.domain.StopReason.PLAN_VERIFICATION_REQUIRED);
             }
             corrections++;
             previousFingerprint = fingerprint;
@@ -1875,7 +1913,7 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
             for (var failure : failures) {
                 message.append("- evidence requirementId=").append(failure.requirementId())
                         .append(" kind=").append(failure.kind().name())
-                        .append(" locator=").append(safeProjectionValue(failure.locator()))
+                        .append(" exactLocator=").append(safeProjectionValue(failure.locator()))
                         .append(" reason=").append(failure.reason()).append('\n');
             }
             for (var task : incompleteTasks) {
@@ -2073,6 +2111,7 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
             case TIME_LIMIT_REACHED -> io.github.liumaishenjian.ccjava.domain.PlanStatus.TIMED_OUT;
             case TURN_LIMIT_REACHED, TOOL_LIMIT_REACHED, OUTPUT_LIMIT_REACHED, CONTEXT_LIMIT_REACHED ->
                     io.github.liumaishenjian.ccjava.domain.PlanStatus.LIMIT_EXCEEDED;
+            case PLAN_VERIFICATION_REQUIRED -> io.github.liumaishenjian.ccjava.domain.PlanStatus.NEEDS_VERIFICATION;
             default -> io.github.liumaishenjian.ccjava.domain.PlanStatus.FAILED;
         };
     }
@@ -3229,6 +3268,7 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
             case MODEL_ERROR, MODEL_RETRY_EXHAUSTED, INCOMPLETE_MODEL_STREAM,
                     INVALID_MODEL_RESPONSE -> "model_error";
             case TOOL_ERROR, PERMISSION_DENIED, HOOK_BLOCKED, AUTO_REVIEW_CIRCUIT_OPEN -> "tool_error";
+            case PLAN_VERIFICATION_REQUIRED -> "verification_required";
             case INTERNAL_ERROR -> "internal_error";
         };
     }

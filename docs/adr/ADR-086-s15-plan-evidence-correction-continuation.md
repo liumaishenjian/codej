@@ -38,21 +38,27 @@ terminal 与 Surface delivery 的 authority 顺序错误。
 ## 3. 独立设计决策
 
 1. `AgentRuntime` 在无 Tool Call 的最终 Assistant 写入 canonical transcript 前调用
-   `FinalAssistantHandler.decide`。决定为 `ACCEPT`、`REJECT` 或 `CONTINUE`；旧 boolean handler 通过 default
-   method 保持兼容。
+   `FinalAssistantHandler.decide`。决定为 `ACCEPT`、`REJECT`、`CONTINUE` 或携带非成功 StopReason 的 `STOP`；
+   `STOP` 与 `CONTINUE` 都不会写入候选 Assistant，旧 boolean handler 通过 default method 保持兼容。
 2. `CONTINUE` 不写入当前 Assistant、不产生 Run terminal、不执行 Tool，也不创建第二个 Run。Runtime 只进入下一
    Model Turn，继续复用同一 Run ID、预算、deadline、取消、Permission、Approval、Hook 与 Tool Pipeline。
 3. accepted Plan 使用私有 `PlanExecutionCorrectionController`。每次候选 final 到达时，它重新运行确定性 evidence validation，并读取绑定当前 `planId` cohort 的未完成 Task；同 Session 普通 Run 或旧 Plan Task 不参与本次判断。先把最新 Ledger 以 `EXECUTING` revision durable 保存；Evidence 全部满足且当前 cohort 未完成 Task 为空时才接受 final。
 4. blocking correction 由批准 requirement 的封闭 `requirementId/kind/locator/reason` 与当前 planId cohort 未完成 `task-N` ID 构造；两类至少存在一种。不得包含文件正文、Task description/metadata、Tool 输出、异常文本、物理路径、Prompt、Markdown 或 Secret。该有界列表通过 transient System projection 反馈下一 Model Turn，不进入 canonical transcript。
-5. correction 有独立固定上限 2；指纹同时覆盖 Evidence failure 与当前 cohort 未完成 Task ID。达到重复指纹或次数边界时，若只剩 Evidence failure，Run 可停止且 Plan 写 `NEEDS_VERIFICATION`；若当前 cohort 仍有未完成 Task，则拒绝候选 final 并由失败终态保持真实任务状态，不能把 prose、Task 或 Plan 伪装成完成。
+5. correction 有独立固定上限 2；指纹同时覆盖 Evidence failure 与当前 cohort 未完成 Task ID。达到重复指纹或次数边界时，只要 Evidence 或 Task 任一仍未满足，当前候选 prose 都必须被丢弃，并以 `PLAN_VERIFICATION_REQUIRED` typed 非成功终态停止；Plan 写 `NEEDS_VERIFICATION`，保持同一批准工件和显式 resume 入口。Task 是否已全部完成只影响诊断，不得把 Evidence-only failure 降级为正常 Run 完成。
 6. correction 不自动撤销、重复或重放任何成功 Tool。旧 ToolResult 保留在 canonical history，模型只能自行提出新的
    Tool intent，并再次经过统一 Pipeline。取消、模型错误、deadline、limit 与 incomplete stream 沿现有 Run terminal
    进入 durable Plan failure status。
-7. stdio 不在 lifecycle `RunFinished` listener 中直接发布 Surface terminal，而是等待 `application.run()/runPlan()` 返回；此时 Headless `finally` 已释放 active Run，客户端收到 `run.completed` 后立即批准不会命中 `STALE_PLAN_REVIEW`。approved Plan 仍抑制全部模型 text delta，并先发布 `plan.verification.correction|required|completed`；只有 Plan `COMPLETED` 的 terminal 才包含最终 `finalText`。`NEEDS_VERIFICATION` terminal 不含第一份或边界耗尽后的模型完成声明。
+7. stdio 不在 lifecycle `RunFinished` listener 中直接发布 Surface terminal，而是等待 `application.run()/runPlan()` 返回；此时 Headless `finally` 已释放 active Run。approved Plan 仍抑制全部模型 text delta，并先发布 `plan.verification.correction|required|completed`；只有 Plan `COMPLETED` 的 `run.completed` 才包含最终 `finalText`。`NEEDS_VERIFICATION` 必须发布 `run.failed(stopReason=plan_verification_required)`，不含第一份或边界耗尽后的模型完成声明，Surface 不得渲染完成勾选。
 8. TUI 严格校验 `plan.verification.correction` exact schema，包括 `incompleteTaskCount/incompleteTaskIds/failures` 数量一致性；纠正时保持 running，并明确显示“任务或证据尚未收敛”、同一 Run、当前次数和“不会自动重放既有副作用”。evidence required 或失败终态后才回 ready，并显示 actionable 非完成状态。
 9. deliverable 验证继续使用 WorkspaceGuard realpath、16 MiB 上限、读后重检与 SHA-256；verification 继续只接受
    当前 execution message slice 中同名 canonical `SUCCESS` ToolResult。模型 prose、文件名近似和失败 ToolResult
    永不构成证据。
+10. `plan.resume` 是 `NEEDS_VERIFICATION` 后唯一的新 Surface 入口：它不创建 Run、不执行 Tool，而是在 lifecycle
+    lock 内把同一 Plan revision 链显式转回 `AWAITING_APPROVAL`，清除旧 ExecutionBrief、workspace binding 与
+    Evidence references，并按当前 Workspace 生成新的 durable review。TUI 只接受与本地 pending resume requestId
+    和当前 sessionId 同时匹配的 detached `plan.review.requested`；unknown、重复、迟到或跨 Session 事件均 fail closed。
+    再审批后创建新的 execution Run；旧 IN_PROGRESS Task 必须由模型同次提交 `status=IN_PROGRESS` 与可选
+    `active_form` 显式建立新 runId/claim epoch，之后才能继续 mutation，不能由 Runtime 自动恢复或重放副作用。
 
 ## 4. 状态与顺序
 
@@ -63,11 +69,14 @@ candidate final
         -> accept final -> Plan COMPLETED -> verification.completed -> run.completed(finalText)
      -> blocking evidence/task failures, fresh fingerprint, below bound
         -> persist EXECUTING ledger -> correction event -> same Run next model turn
-     -> repeated fingerprint or bound exhausted, evidence-only failure
-        -> accept Run stop only -> Plan NEEDS_VERIFICATION
-        -> verification.required -> run.completed(no finalText)
-     -> repeated fingerprint or bound exhausted, incomplete Tasks remain
-        -> reject candidate final -> failed terminal(no finalText), preserve real Task states
+     -> repeated fingerprint or bound exhausted, evidence and/or Tasks remain incomplete
+        -> discard candidate final -> Plan NEEDS_VERIFICATION
+        -> verification.required -> run.failed(plan_verification_required, no finalText)
+        -> preserve exact Evidence failure and real Task states
+        -> explicit plan.resume (no Run/Tool)
+        -> same Plan AWAITING_APPROVAL with current workspace review
+        -> user reapproval -> new execution Run
+        -> explicit Task recovery claim + new Tool intents through the ordinary Pipeline
 
 cancel/model error/deadline/limit/incomplete stream
   -> Plan failure terminal -> plan.execution.failed -> run terminal(no finalText)
@@ -77,15 +86,17 @@ cancel/model error/deadline/limit/incomplete stream
 
 - Fake/Headless Runtime：中文文件名不一致后，同一 Run 创建精确 locator、重新计算 digest 并完成；第一份 final 不进入
   下一请求或 canonical transcript，错误文件仍存在以证明没有自动回滚或副作用重放。
-- 有界失败：持续缺失产生一次 correction，第二次相同指纹后停止，Plan 为 `NEEDS_VERIFICATION`，模型调用不无限增长。
+- 有界失败：持续缺失产生一次 correction，第二次相同指纹后以 `PLAN_VERIFICATION_REQUIRED` 停止，Plan 为 `NEEDS_VERIFICATION`，无 canonical success prose、无 `Run COMPLETED`，模型调用不无限增长且可显式 resume。
 - Verification Tool：失败/拒绝的 `write_file` 不构成证据；后续 canonical 成功 ToolResult 才使 requirement PASSED。
 - 失败终态：correction 中模型错误进入 `FAILED`；取消进入 `CANCELLED`，已成功写入的文件保持一次且精确 deliverable
   不会被自动创建。
 - stdio：correction payload exact，包含数量匹配的未完成 Task ID 与可为空的 Evidence failures；verification 先于 terminal、未验证 terminal 无 `finalText`、approved `RunFinished` 不重复投影。
 - TUI：protocol 拒绝额外字段；reducer/Ink 保持 running、显示 no-replay notice、未展示 withheld prose，并在
-  `NEEDS_VERIFICATION` 后显示非完成状态。
-- 真实 Java Plan E2E：真实 stdio child 经两次 `write_file` Approval，先生成错误中文文件名，再由同一 Run correction
-  生成精确文件名；两个 Tool 各执行一次，correction、digest evidence、最终文本和 Ink ready 顺序均通过。
+  `NEEDS_VERIFICATION` 后显示非完成状态；detached review 只接受 exact pending request/session correlation，重复、
+  unknown、wrong-session 与迟到事件均不打开审批面板。
+- 真实 Java Plan E2E：一个场景仍证明同一 Run filename correction；另一个真实 stdio→Ink 场景先到
+  `plan.verification.required + run.failed`，再经 `/plan-resume`、同 Plan 再审批、新 Run Task recovery claim、
+  新 `write_file` Approval 与 Evidence Gate 完成。安装分发副本执行同一恢复闭环，Task ID 保持不变。
 
 ## 6. 剩余差距
 

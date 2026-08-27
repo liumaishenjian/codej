@@ -27,6 +27,7 @@ public final class StdioProtocolCodec {
             "run.start",
             "plan.start",
             "plan.review.resolve",
+            "plan.resume",
             "plan.execute",
             "plan.feedback",
             "input.begin",

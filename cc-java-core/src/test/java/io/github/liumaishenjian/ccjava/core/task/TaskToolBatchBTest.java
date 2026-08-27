@@ -33,6 +33,8 @@ class TaskToolBatchBTest {
         assertThat(tools).extracting(tool -> tool.definition().effect())
                 .containsExactly(ToolEffect.WRITE_SESSION_STATE, ToolEffect.WRITE_SESSION_STATE,
                         ToolEffect.READ_SESSION_STATE, ToolEffect.READ_SESSION_STATE);
+        assertThat(fixture.update().definition().description())
+                .contains("recovery_required=true", "status=IN_PROGRESS", "same call");
         assertThat(tools).allSatisfy(tool -> {
             assertThat(tool.definition().source()).isEqualTo(ToolSource.BUILT_IN);
             assertThat(tool.definition().inputSchemaJson()).contains("\"additionalProperties\":false");
@@ -105,6 +107,35 @@ class TaskToolBatchBTest {
                 json("task_id", "task-99", "status", "IN_PROGRESS"));
         assertThat(unknown.status()).isEqualTo(ToolResultStatus.FAILURE);
         assertThat(unknown.error().orElseThrow().code()).isEqualTo(ToolErrorCode.TASK_NOT_FOUND);
+    }
+
+    @Test
+    void repeatedInProgressExplicitlyRecoversTerminatedRootClaim() {
+        Set<RunId> terminatedRuns = new HashSet<>();
+        Fixture fixture = fixture(HookCoordinator.disabled(),
+                (invocation, definition) -> allow(definition), terminatedRuns::contains);
+        fixture.execute("recovery-create", TaskCreateTool.NAME, json("subject", "recover safely"));
+        fixture.execute("recovery-claim", TaskUpdateTool.NAME,
+                json("task_id", "task-1", "status", "IN_PROGRESS"));
+        long previousEpoch = fixture.service().snapshot().task(new TaskId(1)).orElseThrow()
+                .claim().orElseThrow().epoch();
+        terminatedRuns.add(fixture.runId());
+        assertThat(fixture.service().snapshot().task(new TaskId(1)).orElseThrow().recoveryRequired()).isTrue();
+        TaskBoardCapability resumedCapability = new TaskBoardCapability(
+                fixture.capability().boardId(), fixture.capability().ownerSessionId(), fixture.capability().actorId(),
+                fixture.capability().actorSessionId(), new RunId("run-task-batch-b-resumed"), true,
+                fixture.capability().effects(), fixture.capability().taskScope());
+        ToolExecutionOutcome resumed = new TaskUpdateTool(fixture.service(), resumedCapability).execute(
+                invocation(resumedCapability, "recovery-resume", TaskUpdateTool.NAME,
+                        json("task_id", "task-1", "status", "IN_PROGRESS",
+                                "active_form", "正在显式恢复交付物")));
+
+        TaskItemView task = fixture.service().snapshot().task(new TaskId(1)).orElseThrow();
+        assertThat(resumed.error()).isEmpty();
+        assertThat(task.recoveryRequired()).isFalse();
+        assertThat(task.activeForm()).contains("正在显式恢复交付物");
+        assertThat(task.claim().orElseThrow().runId()).isEqualTo(resumedCapability.actorRunId());
+        assertThat(task.claim().orElseThrow().epoch()).isGreaterThan(previousEpoch);
     }
 
     @Test
@@ -382,6 +413,10 @@ class TaskToolBatchBTest {
     }
 
     private static Fixture fixture(HookCoordinator hooks, PermissionGate permission) {
+        return fixture(hooks, permission, ignored -> false);
+    }
+
+    private static Fixture fixture(HookCoordinator hooks, PermissionGate permission, TaskRunState runState) {
         LifecycleDispatcher lifecycle = new LifecycleDispatcher(CLOCK, AgentEventSink.noop());
         AgentIdGenerator ids = new AgentIdGenerator() {
             private final AtomicInteger sequence = new AtomicInteger();
@@ -399,7 +434,7 @@ class TaskToolBatchBTest {
                 new TaskBoardId("board-" + session.id().value()), session.id(),
                 new TaskActorId("root:" + session.id().value()), session.id(), runId, true,
                 Set.of(ToolEffect.READ_SESSION_STATE, ToolEffect.WRITE_SESSION_STATE), Set.of());
-        TaskListService service = new TaskListService(capability.boardId(), session.id(), CLOCK, ignored -> false);
+        TaskListService service = new TaskListService(capability.boardId(), session.id(), CLOCK, runState);
         TaskCreateTool create = new TaskCreateTool(service, capability);
         TaskUpdateTool update = new TaskUpdateTool(service, capability);
         TaskListTool list = new TaskListTool(service, capability);

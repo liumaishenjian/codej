@@ -229,6 +229,9 @@ export class StdioClient {
   #nextCommandSequence = 1;
   #nextEventSequence = 1;
   #nextRequestNumber = 1;
+  #questionnaireRequested = false;
+  #questionnaireEnabled = false;
+  #experienceRequested = false;
   #sessionId: string | undefined;
   #activeRunId: string | undefined;
   #transportClosed = false;
@@ -333,8 +336,26 @@ export class StdioClient {
     return () => this.#events.off('exit', listener);
   }
 
-  public initialize(): string {
-    return this.#send('initialize', {});
+  public initialize(capabilities: {questionnaireV1?: boolean; experienceV1?: boolean} = {}): string {
+    this.#questionnaireRequested = capabilities.questionnaireV1 === true;
+    this.#experienceRequested = capabilities.experienceV1 === true;
+    return this.#send('initialize', capabilities);
+  }
+
+  /** 仅在宿主明确确认后允许发送整批答案。 */
+  public get questionnaireEnabled(): boolean { return this.#questionnaireEnabled; }
+
+  /** 整批提交当前运行的问卷；请求归属和答案语义由后端作最终检查。 */
+  public resolveQuestionnaire(callId: string, answers: readonly import('./protocol.js').QuestionnaireAnswer[]): string {
+    if (!this.#questionnaireEnabled || this.#sessionId === undefined || this.#activeRunId === undefined)
+      throw new Error('当前连接没有可回答的问卷');
+    if (!callId.trim() || callId.length > 128 || answers.length < 1 || answers.length > 4
+      || new Set(answers.map(a => a.questionId)).size !== answers.length
+      || answers.some(a => !a.questionId.trim() || a.questionId.length > 64 || a.optionIds.length > 8
+        || new Set(a.optionIds).size !== a.optionIds.length || a.optionIds.some(id => !id.trim() || id.length > 64)
+        || a.freeText.length > 2000 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(a.freeText)
+        || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(a.freeText))) throw new Error('问卷答案字段无效');
+    return this.#send('question.resolve', {callId, answers}, this.#sessionId, this.#activeRunId);
   }
 
   public startRun(prompt: string): string {
@@ -965,7 +986,14 @@ export class StdioClient {
         }
       }
     }
-    if (event.type === 'initialized') {
+    if (event.type === 'question.requested' && Array.isArray(event.payload.questions) && !this.#questionnaireEnabled)
+      throw new ProtocolViolation('宿主发送未协商问卷');    if (event.type === 'initialized') {      for (const capability of ['questionnaireV1', 'experienceV1']) {
+        const flag = event.payload[capability];
+        const requested = capability === 'questionnaireV1' ? this.#questionnaireRequested : this.#experienceRequested;
+        if ((flag !== undefined && typeof flag !== 'boolean') || (flag === true && !requested))
+          throw new ProtocolViolation('宿主返回未协商能力');
+      }
+      this.#questionnaireEnabled = event.payload.questionnaireV1 === true;
       if (this.#sessionId !== undefined && this.#sessionId !== event.sessionId) {
         this.#pendingFileSuggestions.clear();
       }

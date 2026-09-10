@@ -88,7 +88,8 @@ public final class ToolFailureFingerprintGovernance {
      * <p>同一 Tool 变参成功证明其策略已经改变，因此清除该 Tool 的旧 fingerprint；成功写入
      * Workspace 或改变系统状态只会释放可能由本地内容导致的进程失败。Session state mutation 还可
      * 精确释放 {@code PLAN_GATE_BLOCKED}，因为 review readiness 就由同一 Board 的 Task mutation 改变。
-     * 纯读取、PlanArtifact 写入、用户交互以及其他跨 Tool 的 HTTP/Permission 失败仍须拦截。</p>
+     * 真实证据声明成功还会精确释放审核入口的 PLAN_GATE_BLOCKED；其他 PlanArtifact 写入、
+     * 纯读取、用户交互以及跨 Tool 的 HTTP/Permission 失败仍须拦截。</p>
      *
      * @param call 已由 Adapter 真实执行成功的调用
      * @param effect Tool 声明的最高副作用等级
@@ -104,6 +105,10 @@ public final class ToolFailureFingerprintGovernance {
             String successfulTool,
             ToolEffect effect,
             FailureFingerprint failure) {
+        if (effect == ToolEffect.PLAN_ARTIFACT_WRITE
+                && successfulTool.equals("declare_plan_evidence")
+                && failure.tool().equals("request_plan_review")
+                && failure.code() == ToolErrorCode.PLAN_GATE_BLOCKED) return true;
         if (effect == ToolEffect.WRITE_SESSION_STATE
                 && (successfulTool.equals("task_create") || successfulTool.equals("task_update"))
                 && failure.code() == ToolErrorCode.PLAN_GATE_BLOCKED) return true;

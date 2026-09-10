@@ -49,6 +49,30 @@ class StdioQuestionCoordinatorTest {
         assertThat(disconnected.resolve("disconnect", "safe")).isFalse();
     }
 
+    @Test
+    void questionnaireIsAtomicAndCancelledAnswersCannotCompleteNextCall() throws Exception {
+        var item = new io.github.liumaishenjian.ccjava.domain.UserQuestionItem("q", "题签", "问题", true, List.of(), true);
+        var first = new UserQuestionRequest("batch", List.of(item));
+        var answer = new io.github.liumaishenjian.ccjava.domain.UserQuestionAnswer("batch", List.of(
+                new io.github.liumaishenjian.ccjava.domain.UserQuestionSelection("q", List.of(), "中文😀")));
+        AtomicReference<UserQuestionRequest> emitted = new AtomicReference<>();
+        try (StdioQuestionCoordinator coordinator = new StdioQuestionCoordinator(emitted::set)) {
+            var result = CompletableFuture.supplyAsync(() -> coordinator.ask(first,
+                    io.github.liumaishenjian.ccjava.core.CancellationToken.none()));
+            await(emitted);
+            assertThat(coordinator.resolve("batch", "unknown")).isFalse();
+            assertThat(coordinator.resolve(answer)).isTrue();
+            assertThat(coordinator.resolve(answer)).isFalse();
+            assertThat(result.get(2, TimeUnit.SECONDS)).isEqualTo(answer);
+            emitted.set(null);
+            var cancel = new CancellationSource();
+            var second = CompletableFuture.supplyAsync(() -> coordinator.ask(new UserQuestionRequest("next", List.of(item)), cancel.token()));
+            await(emitted);
+            assertThat(coordinator.resolve(answer)).isFalse();
+            cancel.cancel();
+            assertThatThrownBy(() -> second.get(2, TimeUnit.SECONDS)).hasCauseInstanceOf(IllegalStateException.class);
+        }
+    }
     private static UserQuestionRequest request(String callId) {
         return new UserQuestionRequest(callId, "Choose", List.of(
                 new UserQuestionOption("safe", "Safe", "Staged"),

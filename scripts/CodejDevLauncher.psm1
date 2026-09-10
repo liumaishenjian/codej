@@ -51,7 +51,7 @@ function ConvertFrom-CodejArguments {
             ContextReservedOutputTokens = $script:DefaultContextReservedOutputTokens
             ContextSafetyMarginTokens = $script:DefaultContextSafetyMarginTokens
             ModelDiagnostics = 'off'; ModelDiagnosticsDirectory = $null
-            Rebuild = $false; Doctor = $false; Help = $false
+            Rebuild = $false; Doctor = $false; Help = $false; TuiNext = $false
         }
     }
     $values = @{}
@@ -94,7 +94,7 @@ function ConvertFrom-CodejArguments {
             }
         }
 
-        if ($name -in @('--rebuild', '--doctor', '--help', '--continue')) {
+        if ($name -in @('--rebuild', '--doctor', '--help', '--continue', '--tui-next')) {
             if ($hasInlineValue) {
                 throw "参数 $name 不接受值。"
             }
@@ -189,6 +189,7 @@ function ConvertFrom-CodejArguments {
         ModelDiagnosticsDirectory = if ($values.ContainsKey('--model-diagnostics-dir')) {
             ConvertTo-CodejAbsolutePath -Path $values['--model-diagnostics-dir'] -BasePath $InvocationDirectory
         } else { $null }
+        TuiNext = $flags.ContainsKey('--tui-next')
         Rebuild = $flags.ContainsKey('--rebuild')
         Doctor = $flags.ContainsKey('--doctor')
         Help = $flags.ContainsKey('--help')
@@ -223,6 +224,7 @@ codej - cc-java 源码开发启动器
 说明：
   未指定 --workspace 时，使用执行 codej 时的当前目录。
   --print 是一次性非交互 Run；不表示进入 TUI 后预填消息。
+  --tui-next 显式使用新交互界面；默认界面和 --print 保持原行为。
   --timeout 默认 30m，作为 --print 的总 Run 硬限制；普通交互与 Plan 不装配总 Run deadline。
   --continue、--resume 和 --fork 选择同一 Workspace 下的持久 Session。
   默认启用 256000 Token Context 管线；可用 --context-maximum-input-tokens、

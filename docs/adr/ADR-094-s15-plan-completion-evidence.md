@@ -1,0 +1,19 @@
+# ADR-094：计划审核与执行终态使用同一证据契约
+
+- 状态：Proposed
+- Stage：S15；CLI-05/CLI-09 L2、PLAN-01 L1保持不变
+- 基线：AUTH-SRC-2026-07-29-A，2026-09-10，Observed（源码职责）
+
+只读复核参考 ExitPlanModeTool/ExitPlanModeV2Tool.ts 的计划提交、退出规划与权限审核职责；参考没有证明本项目的Evidence Ledger算法，因此不声称复制同一证据机制。计划审核不代表执行完毕，真实结果与最终状态应向用户可见；不复制参考源码或Prompt。
+
+问题：执行控制器在completionSatisfied=false而逐项失败列表为空时接受final，但持久化终态另判NEEDS_VERIFICATION，造成已生成文本结果被隐藏。空要求不是验证通过；Task进度也不能替代交付证据。
+
+决策：审核前至少声明一项required证据，复用declare_plan_evidence与宿主已有reviewBlockReason Gate。允许无文件的查询计划声明VERIFICATION并绑定实际注册的查询或命令工具；批准后由真实成功ToolResult验证，不要求提前联网或生成虚假文件。模型缺失声明时获得确定性纠正原因。执行控制器与持久化收口共用completionSatisfied与当前Task完成判定；旧空ledger计划终止为PLAN_VERIFICATION_REQUIRED，不再假成功或尝试无意义自动重放。
+
+UI：隐藏正常Task及内部计划编排调用行，保留失败、实际工具结果和独立审核面板；verification.required必须显示明确失败/待验证提示，不能空白结束。对用户已有成功查询结果单独恢复到可读文件，不更改原session或伪造验证记录。以上UI和文件恢复由主任务实施。
+
+验证：缺失required证据不能审核；声明真实工具验证后可审核；无文件查询依真实成功ToolResult完整交付；空ledger旧计划typed停止；已有合法证据、审批、失败纠正和取消回归。此次不扩展plan-*菜单，不增加第二AgentLoop，不放宽权限。
+
+补充恢复边界：缺证据审核失败会进入既有重复失败治理。只有实际成功的declare_plan_evidence且效应为PLAN_ARTIFACT_WRITE，才释放request_plan_review的PLAN_GATE_BLOCKED指纹；普通Markdown写入、错误effect、其他Tool及Web/Permission拒绝均不释放。防止用户在同一Run补齐证据后仍被REPEATED_FAILURE永久挡住。
+
+后端证据：target/adr094-verified-final.log相关回归通过，包含真实run_command无文件文本交付、缺声明→声明→审核恢复、历史空ledger typed停止、Task状态不替代独立验证以及精确失败指纹恢复负向检查。旧成功Plan Fake补真实required声明；两个stdio成功交接用例补真实list_files验证，没有伪造ToolResult或放松完成条件。

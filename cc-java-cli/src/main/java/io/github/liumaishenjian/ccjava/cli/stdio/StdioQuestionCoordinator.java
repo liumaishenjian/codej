@@ -12,7 +12,7 @@ import java.util.function.Consumer;
  * 把同步 Plan ask-user Tool 桥接为 stdio callId-correlated 选择器。
  *
  * <p>同一连接至多等待一个问题；取消、关闭、迟到 callId 或未知 optionId 都失败关闭。
- * 协调器不接受自由文本，也不把原始 Tool JSON 交给事件层。</p>
+ * 协调器校验整批答案，不把原始 Tool JSON 交给事件层。</p>
  *
  * @since 0.1.0
  */
@@ -57,15 +57,21 @@ final class StdioQuestionCoordinator implements UserQuestionHandler, AutoCloseab
 
     /** 仅完成匹配 callId 且属于已声明选项的首次答案。 */
     boolean resolve(String callId, String optionId) {
-        synchronized (lock) {
-            if (pending == null || !pending.request().callId().equals(callId)
-                    || pending.request().options().stream().noneMatch(option -> option.optionId().equals(optionId))) {
-                return false;
-            }
-            return pending.answer().complete(new UserQuestionAnswer(callId, optionId));
-        }
+        return resolve(new UserQuestionAnswer(callId, optionId));
     }
 
+    /** 原子接受一次完整且属于待决请求的答案。 */
+    boolean resolve(UserQuestionAnswer answer) {
+        synchronized (lock) {
+            if (pending != null && pending.request().questions().isEmpty() && answer.answers().size() == 1) {
+                var selection = answer.answers().getFirst();
+                if (!selection.questionId().equals("question") || selection.optionIds().size() != 1 || !selection.freeText().isEmpty()) return false;
+                answer = new UserQuestionAnswer(answer.callId(), selection.optionIds().getFirst());
+            }
+            if (pending == null || !pending.request().accepts(answer)) return false;
+            return pending.answer().complete(answer);
+        }
+    }
     private void fail(String callId) {
         synchronized (lock) {
             if (pending != null && pending.request().callId().equals(callId)) {

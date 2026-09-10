@@ -41,6 +41,83 @@ class DurablePlanExecutionHandoffTest {
     @TempDir Path temporary;
 
     @Test
+    void textQueryDeclaresRealCommandEvidenceAndDeliversWithoutCreatingAFile() throws Exception {
+        Path workspace = Files.createDirectory(temporary.resolve("text-query"));
+        AtomicInteger calls = new AtomicInteger();
+        AtomicInteger approvals = new AtomicInteger();
+        var requests = new ArrayList<io.github.liumaishenjian.ccjava.domain.ModelRequest>();
+        try (var runtime = new HeadlessRuntimeSession(request -> {
+            requests.add(request);
+            return switch (calls.getAndIncrement()) {
+                case 0 -> ModelTurn.tools(List.of(new ToolCall("draft-query", "revise_plan_artifact",
+                        new JsonObject(Map.of("markdown", "# 文本查询\n\n批准后运行只读命令并将结果直接回答用户。")))));
+                case 1 -> ModelTurn.tools(List.of(new ToolCall("missing-requirement-review", "request_plan_review", JsonObject.empty())));
+                case 2 -> {
+
+                    yield ModelTurn.tools(List.of(completionRequirement(), new ToolCall("valid-review", "request_plan_review", JsonObject.empty())));
+                }
+                case 3 -> ModelTurn.text("等待用户审核");
+                case 4 -> ModelTurn.tools(List.of(new ToolCall("query-command", "run_command", new JsonObject(Map.of(
+                        "command", "[Console]::Out.WriteLine('query-result-seven-days'); exit 0", "timeoutSeconds", 10)))));
+                default -> ModelTurn.text("七日查询结果已获取：query-result-seven-days");
+            };
+        }, AgentEventSink.noop(), options(workspace, temporary.resolve("text-query-sessions"), SessionOpenRequest.create()),
+                (invocation, definition, outcome) -> { approvals.incrementAndGet(); return io.github.liumaishenjian.ccjava.domain.ApprovalResponse.allowOnce(); })) {
+            runtime.open();
+            var planned = runtime.runPlan("只交付文本查询结果");
+            var diagnostics = requests.stream().flatMap(r -> r.messages().stream()).filter(io.github.liumaishenjian.ccjava.domain.ToolResultMessage.class::isInstance).map(io.github.liumaishenjian.ccjava.domain.ToolResultMessage.class::cast).map(m -> m.result().callId() + ":" + m.result().status() + ":" + m.result().error().map(e -> e.code().name()).orElse("NONE")).toList();
+            assertThat(planned.stopReason().name()).withFailMessage("turns=%s;tool-statuses=%s", requests.size(), diagnostics).isEqualTo("COMPLETED");
+            var blocked = requests.get(2).messages().stream()
+                    .filter(io.github.liumaishenjian.ccjava.domain.ToolResultMessage.class::isInstance)
+                    .map(io.github.liumaishenjian.ccjava.domain.ToolResultMessage.class::cast).map(io.github.liumaishenjian.ccjava.domain.ToolResultMessage::result)
+                    .filter(r -> r.callId().equals("missing-requirement-review")).findFirst().orElseThrow();
+            assertThat(blocked.error().orElseThrow().code().name()).isEqualTo("PLAN_GATE_BLOCKED");
+            assertThat(blocked.error().orElseThrow().details().string("reason").orElseThrow()).contains("declare_plan_evidence");
+            var plan = runtime.planArtifact().orElseThrow();
+            assertThat(plan.evidenceLedger().requirements()).allMatch(r -> r.kind() == io.github.liumaishenjian.ccjava.domain.PlanEvidenceKind.VERIFICATION && r.locator().equals("run_command"));
+            assertThat(approvals).hasValue(0);
+            var accepted = runtime.acceptPlanExecution(plan.planId(), plan.revision(), plan.contentDigest(), runtime.currentWorkspaceDigest(),
+                    PlanReviewDecision.APPROVE_USER, PlanContextPolicy.KEEP, "");
+            var result = runtime.runAcceptedPlan(accepted);
+            assertThat(result.stopReason().name()).isEqualTo("COMPLETED");
+            assertThat(result.finalText().orElseThrow()).contains("query-result-seven-days");
+            assertThat(approvals).hasValue(1);
+            var completed = runtime.planArtifact().orElseThrow();
+            assertThat(completed.status()).isEqualTo(PlanStatus.COMPLETED);
+            assertThat(completed.evidenceLedger().references()).singleElement().satisfies(r -> {
+                assertThat(r.sourceReference()).isEqualTo("query-command");
+                assertThat(r.reasonCode()).isEqualTo("TOOL_SUCCEEDED");
+            });
+            try (var files = Files.list(workspace)) { assertThat(files.filter(Files::isRegularFile).toList()).isEmpty(); }
+        }
+    }
+
+    @Test
+    void legacyEmptyLedgerStopsWithTypedVerificationFailureInsteadOfSuccessfulFinal() throws Exception {
+        Path workspace = Files.createDirectory(temporary.resolve("legacy-empty"));
+        AtomicInteger calls = new AtomicInteger();
+        try (var runtime = new HeadlessRuntimeSession(planThenFinish(calls, "# 旧计划\n\n检查后回答", false),
+                AgentEventSink.noop(), options(workspace, temporary.resolve("legacy-empty-sessions"), SessionOpenRequest.create()))) {
+            runtime.open(); runtime.runPlan("准备旧格式fixture");
+            var current = runtime.planArtifact().orElseThrow();
+            // 仅在独立临时Fixture的真实持久化入口构造历史空ledger；不增加生产迁移/绕过接口。
+            var field = HeadlessRuntimeSession.class.getDeclaredField("sessions"); field.setAccessible(true);
+            var sessions = (io.github.liumaishenjian.ccjava.cli.session.FileSessionStore) field.get(runtime);
+            var empty = io.github.liumaishenjian.ccjava.domain.PlanEvidenceLedger.planning(current.sessionId(), current.planId(), java.time.Instant.now());
+            var legacy = sessions.savePlanArtifact(current.withEvidenceLedger(empty, PlanStatus.AWAITING_APPROVAL, java.time.Instant.now()), current.revision(), current.contentDigest());
+            var accepted = runtime.acceptPlanExecution(legacy.planId(), legacy.revision(), legacy.contentDigest(), runtime.currentWorkspaceDigest(),
+                    PlanReviewDecision.APPROVE_USER, PlanContextPolicy.KEEP, "");
+            int before = calls.get();
+            var result = runtime.runAcceptedPlan(accepted);
+            assertThat(result.stopReason().name()).isEqualTo("PLAN_VERIFICATION_REQUIRED");
+            assertThat(result.finalText()).isEmpty();
+            assertThat(calls.get() - before).isEqualTo(1);
+            assertThat(runtime.planArtifact().orElseThrow().status()).isEqualTo(PlanStatus.NEEDS_VERIFICATION);
+            assertThat(runtime.planArtifact().orElseThrow().evidenceLedger().references()).isEmpty();
+        }
+    }
+
+    @Test
     void approveAutoAtomicallyBindsArtifactAndExecutesMarkdownThroughNormalPipeline() throws Exception {
         Path workspace = Files.createDirectory(temporary.resolve("workspace-auto"));
         Path root = temporary.resolve("sessions-auto");
@@ -105,7 +182,7 @@ class DurablePlanExecutionHandoffTest {
             return switch (calls.getAndIncrement()) {
             case 0 -> ModelTurn.tools(List.of(new ToolCall("create", "revise_plan_artifact",
                     new JsonObject(Map.of("markdown", markdown)))));
-            case 1 -> ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review",
+            case 1 -> ModelTurn.tools(List.of(completionRequirement(), new ToolCall("review", "request_plan_review",
                     JsonObject.empty())));
             default -> ModelTurn.text("done");
             };
@@ -120,7 +197,7 @@ class DurablePlanExecutionHandoffTest {
             assertThat(accepted.brief().approvalReviewer()).isEqualTo(ApprovalReviewer.USER);
             assertThat(accepted.brief().contextPolicy()).isEqualTo(PlanContextPolicy.CLEAR);
             runtime.runAcceptedPlan(accepted);
-            var executionMessages = requests.getLast().messages();
+            var executionMessages = requests.get(3).messages();
             assertThat(executionMessages).hasSize(3);
             assertThat(executionMessages.get(1).toString()).contains(markdown);
             assertThat(executionMessages.getLast().toString())
@@ -432,7 +509,7 @@ class DurablePlanExecutionHandoffTest {
         ModelGateway model = request -> switch (calls.getAndIncrement()) {
             case 0 -> ModelTurn.tools(List.of(new ToolCall("create", "revise_plan_artifact",
                     new JsonObject(Map.of("markdown", markdown)))));
-            case 1 -> ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review",
+            case 1 -> ModelTurn.tools(List.of(completionRequirement(), new ToolCall("review", "request_plan_review",
                     JsonObject.empty())));
             default -> ModelTurn.text("done");
         };
@@ -555,7 +632,7 @@ class DurablePlanExecutionHandoffTest {
                     ? ModelTurn.tools(List.of(new ToolCall("tests", "declare_plan_evidence",
                             new JsonObject(Map.of("requirementId", "tests", "kind", "VERIFICATION",
                                     "locator", "run_command", "label", "tests pass", "required", true)))))
-                    : ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review",
+                    : ModelTurn.tools(List.of(completionRequirement(), new ToolCall("review", "request_plan_review",
                             JsonObject.empty())));
             case 2 -> twoRequirements
                     ? ModelTurn.tools(List.of(new ToolCall("lint", "declare_plan_evidence",
@@ -576,5 +653,11 @@ class DurablePlanExecutionHandoffTest {
                 List.of(), open, root, Optional.empty(),
                 io.github.liumaishenjian.ccjava.domain.ModelDiagnosticMode.OFF, Optional.empty(),
                 ExecutionBackendPreference.LOCAL, ExecutionShell.WINDOWS_PLATFORM);
+    }
+    /** 为只关注审批/交接的Fixture声明真实命令验证要求，不预先伪造成功证据。 */
+    private static ToolCall completionRequirement() {
+        return new ToolCall("completion-requirement", "declare_plan_evidence", new JsonObject(Map.of(
+                "requirementId", "completion-check", "kind", "VERIFICATION", "locator", "run_command",
+                "label", "执行阶段真实命令成功", "required", true)));
     }
 }

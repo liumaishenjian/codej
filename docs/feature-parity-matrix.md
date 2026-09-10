@@ -1,5 +1,7 @@
 # codej 功能对照矩阵与能力路线
 
+2026-09-10：feat/tui-redesign 已接通真实核心交互（ADR-091/092）：对话、工具与Shell审批、协商式完整问卷、单入口/plan审核执行；见 [验收证据](evidence/S15-tui-next-core.md)。CLI-01/03/04/05/09保持L2，TOOL-11/PLAN-01保持L1，S15/P7仍OPEN。ADR-093又修复无审核工件的空白成功：最多一次同Run纠正，未生成计划则明确失败；真实青岛天气规划已返回审核面板。等级不变，新入口待维护者验收，不替换默认安装。
+
 > 文档状态：Active Baseline
 >
 > 参考版本：R2026.03
@@ -888,3 +890,12 @@ Exit blockers:
 ```
 
 这个报告随每个版本提交，确保项目始终知道“现在在哪、差什么、为什么做下一步”。
+
+### 2026-09-10 新TUI计划最终交付修复
+
+ADR-094统一计划最终Assistant接受与持久化完成条件；审核需要required证据，
+文本查询可由真实成功工具结果验收，旧空证据计划明确失败。
+新TUI隐藏正常内部任务/计划编排调用行，保留失败、真实操作与审核面板，
+并呈现verification.required，避免“更新任务”后空白结束。
+真实Provider天气计划已从审核走到最终正文可见及Plan COMPLETED；详见S15-tui-next-core证据。
+CLI-05/CLI-09保持L2，PLAN-01保持L1；无Capability等级变化，S15仍OPEN。

@@ -2303,7 +2303,7 @@ class HeadlessRuntimeSessionTest {
         ModelGateway model = request -> switch (calls.getAndIncrement()) {
             case 0 -> ModelTurn.tools(List.of(new ToolCall("create", "revise_plan_artifact",
                     new JsonObject(Map.of("markdown", "# Plan\n\nWait for review.\n")))));
-            case 1 -> ModelTurn.tools(List.of(new ToolCall(
+            case 1 -> ModelTurn.tools(List.of(completionRequirement(), new ToolCall(
                     "review", "request_plan_review", JsonObject.empty())));
             case 2 -> ModelTurn.text("plan ready for review");
             default -> {
@@ -2422,6 +2422,71 @@ class HeadlessRuntimeSessionTest {
     }
 
     @Test
+    void planWithoutReviewRetriesOnceThenFailsWithoutInventingArtifact() throws Exception {
+        var requests = new java.util.ArrayList<ModelRequest>();
+        try (var runtime = new HeadlessRuntimeSession(request -> {
+            requests.add(request);
+            return ModelTurn.text("Cannot access live weather. {\"private\":true}");
+        }, AgentEventSink.noop(), testOptions(temporaryWorkspace, Duration.ofSeconds(5)))) {
+            runtime.open();
+            assertThat(runtime.runPlan("制定查询青岛天气的计划").stopReason()).isEqualTo(StopReason.INVALID_MODEL_RESPONSE);
+            assertThat(requests).hasSize(2);
+            assertThat(requests.get(1).runId()).isEqualTo(requests.getFirst().runId());
+            assertThat(requests.get(1).messages().toString()).contains("不要求提前执行实际查询或修改")
+                    .doesNotContain("Cannot access live weather", "private");
+            assertThat(runtime.planArtifact()).isEmpty();
+            assertThat(requests).allSatisfy(r -> assertThat(r.toolDefinitions()).extracting(t -> t.name())
+                    .doesNotContain("write_file", "run_command"));
+        }
+    }
+
+    @Test
+    void correctedPlanCreatesReviewWithinSameRunWithoutExecutingIt() throws Exception {
+        var requests = new java.util.ArrayList<ModelRequest>();
+        var events = new java.util.ArrayList<AgentEventEnvelope>();
+        try (var runtime = new HeadlessRuntimeSession(request -> {
+            requests.add(request);
+            return switch (requests.size()) {
+                case 1 -> ModelTurn.text("当前不能查询实时天气");
+                case 2 -> ModelTurn.tools(List.of(new ToolCall("weather-plan", "revise_plan_artifact",
+                        new JsonObject(Map.of("markdown", "# 查询计划\n\n批准后按可用能力查询青岛天气并核对日期和来源。")))));
+                case 3 -> ModelTurn.tools(List.of(completionRequirement(), new ToolCall("weather-review", "request_plan_review", JsonObject.empty())));
+                default -> ModelTurn.text("计划准备审核");
+            };
+        }, events::add, testOptions(temporaryWorkspace, Duration.ofSeconds(5)))) {
+            runtime.open();
+            assertThat(runtime.runPlan("制定查询青岛天气的计划").stopReason()).isEqualTo(StopReason.COMPLETED);
+            assertThat(requests).hasSize(4);
+            assertThat(requests).allSatisfy(r -> assertThat(r.runId()).isEqualTo(requests.getFirst().runId()));
+            assertThat(runtime.planArtifact().orElseThrow().status()).isEqualTo(io.github.liumaishenjian.ccjava.domain.PlanStatus.AWAITING_APPROVAL);
+            assertThat(events.stream().filter(e -> e.event() instanceof io.github.liumaishenjian.ccjava.domain.PlanReviewEvent).count()).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void draftOnlyIsNotAReviewAndCorrectionStillHonoursCancellation() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        try (var runtime = new HeadlessRuntimeSession(request -> calls.getAndIncrement() == 0
+                ? ModelTurn.tools(List.of(new ToolCall("draft", "revise_plan_artifact", new JsonObject(Map.of("markdown", "# 草稿\n\n等待审核")))))
+                : ModelTurn.text("结束"), AgentEventSink.noop(), testOptions(temporaryWorkspace, Duration.ofSeconds(5)))) {
+            runtime.open();
+            assertThat(runtime.runPlan("先写草稿").stopReason()).isEqualTo(StopReason.INVALID_MODEL_RESPONSE);
+            assertThat(calls).hasValue(3);
+            assertThat(runtime.planArtifact().orElseThrow().status()).isEqualTo(io.github.liumaishenjian.ccjava.domain.PlanStatus.DRAFT);
+        }
+        AtomicInteger cancelledCalls = new AtomicInteger();
+        var reference = new AtomicReference<HeadlessRuntimeSession>();
+        try (var runtime = new HeadlessRuntimeSession(request -> {
+            if (cancelledCalls.incrementAndGet() == 2) reference.get().cancelActive();
+            return ModelTurn.text("仍无计划");
+        }, AgentEventSink.noop(), testOptions(temporaryWorkspace, Duration.ofSeconds(5)))) {
+            reference.set(runtime); runtime.open();
+            assertThat(runtime.runPlan("取消纠正").stopReason()).isEqualTo(StopReason.USER_CANCELLED);
+            assertThat(cancelledCalls).hasValue(2);
+        }
+    }
+
+    @Test
     void continuousPlanHidesAndRejectsWorkspaceMutationWithoutExecutingIt() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         List<ModelRequest> requests = new CopyOnWriteArrayList<>();
@@ -2436,7 +2501,9 @@ class HeadlessRuntimeSessionTest {
         try (HeadlessRuntimeSession runtime = new HeadlessRuntimeSession(
                 model, AgentEventSink.noop(), testOptions(temporaryWorkspace, Duration.ofSeconds(5)))) {
             runtime.open();
-            assertThat(runtime.runPlan("do not mutate").stopReason()).isEqualTo(StopReason.COMPLETED);
+            // 非法写入仍被拒绝；没有审核工件时不能把安全停止误报为计划完成。
+            assertThat(runtime.runPlan("do not mutate").stopReason()).isEqualTo(StopReason.INVALID_MODEL_RESPONSE);
+            assertThat(calls).hasValue(3);
             assertThat(Files.exists(temporaryWorkspace.resolve("created.txt"))).isFalse();
             assertThat(requests.getFirst().toolDefinitions()).extracting(definition -> definition.name())
                     .doesNotContain("write_file", "run_command");
@@ -2583,5 +2650,11 @@ class HeadlessRuntimeSessionTest {
             assertThat(telemetry.toString())
                     .doesNotContain("private prompt", "answer", "provider-model");
         }
+    }
+    /** 为只关注审批/交接的Fixture声明真实命令验证要求，不预先伪造成功证据。 */
+    private static ToolCall completionRequirement() {
+        return new ToolCall("completion-requirement", "declare_plan_evidence", new JsonObject(Map.of(
+                "requirementId", "completion-check", "kind", "VERIFICATION", "locator", "run_command",
+                "label", "执行阶段真实命令成功", "required", true)));
     }
 }

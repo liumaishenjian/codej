@@ -2280,3 +2280,15 @@ Session Task Panel 只读取独立 Task artifact：历史 Plan failure 不改变
 约 5 秒 auto-hide。真实 Java Fixture 先经
 `write_file` 创建错误中文文件名，correction 后再次经过 Approval/Pipeline 创建精确 locator；两个 Tool 各执行一次，
 第一份 final 不出现在 stdio event、TUI 或下一 canonical request。
+
+## S15 新界面核心适配器（ADR-091/092，2026-09-10）
+
+experience/runtime.ts只将stdio事件投影为UI状态，按request/session/run/ordinal关联；
+experience/runtime-app.tsx负责输入和当前面板焦点，runtime-screen.tsx复用已认可视图基础。
+Markdown交给已有Marked解析。preview:tui的演示时序与真实运行隔离。
+初始化协商questionnaireV1/experienceV1，旧连接继续原协议；新question.requested携带结构化多题，
+resolveQuestionnaire只提交整批答案，Java协调器仍绑定Session/Run/callId并经统一Pipeline。
+新工具ask_user_questions仅在协商支持的Surface注册；旧ask_plan_question兼容。
+工具正文仅投影有界显示数据，参数来自白名单摘要；疑似敏感正文启发式隐藏不构成通用脱敏保证。
+Plan继续复用现有原子review接口，生成run结束前禁止确认，批准固定APPROVE_USER+KEEP。
+拒绝、取消、断连或迟到事件不能绕过既有Java权限和执行管线。范围限定见PRD 11.1A。

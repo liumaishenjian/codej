@@ -135,7 +135,7 @@ class TaskToolProductionCompositionTest {
                         new JsonObject(Map.of("subject", "生成精确命名的工作簿。")))));
                 case 1 -> ModelTurn.tools(List.of(new ToolCall("plan", "revise_plan_artifact",
                         new JsonObject(Map.of("markdown", cleanMarkdown)))));
-                case 2 -> ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review", JsonObject.empty())));
+                case 2 -> ModelTurn.tools(List.of(completionRequirement(), new ToolCall("review", "request_plan_review", JsonObject.empty())));
                 case 3 -> ModelTurn.text("规划完成");
                 default -> throw new IllegalStateException("Plan Markdown 边界流程不得额外调用模型");
             };
@@ -178,7 +178,7 @@ class TaskToolProductionCompositionTest {
             return switch (calls.getAndIncrement()) {
                 case 0 -> ModelTurn.tools(List.of(new ToolCall("plan", "revise_plan_artifact",
                         new JsonObject(Map.of("markdown", markdown)))));
-                case 1 -> ModelTurn.tools(List.of(new ToolCall("premature-review", "request_plan_review",
+                case 1 -> ModelTurn.tools(List.of(completionRequirement(), new ToolCall("premature-review", "request_plan_review",
                         JsonObject.empty())));
                 case 2 -> ModelTurn.tools(List.of(new ToolCall("task-zh-1", "task_create",
                         new JsonObject(Map.of("subject", "创建中文产物。")))));
@@ -252,7 +252,7 @@ class TaskToolProductionCompositionTest {
                                 Map.of("codej.plan_id", "plan-forged"))))));
                 case 4 -> ModelTurn.tools(List.of(new ToolCall("execution", "task_create",
                         new JsonObject(Map.of("subject", "开发规划模块。")))));
-                case 5 -> ModelTurn.tools(List.of(new ToolCall("review-ready", "request_plan_review",
+                case 5 -> ModelTurn.tools(List.of(completionRequirement(), new ToolCall("review-ready", "request_plan_review",
                         JsonObject.empty())));
                 case 6 -> ModelTurn.text("规划完成");
                 default -> throw new IllegalStateException("identity cohort 流程不得额外调用模型");
@@ -563,5 +563,11 @@ class TaskToolProductionCompositionTest {
                 HeadlessRuntimeSession.HeadlessMemoryLayout.disabled(),
                 HeadlessRuntimeSession.HeadlessInstructionLayout.production(() -> home),
                 null, true, WebSearchRuntimeResources.disabled());
+    }
+    /** 任务审批Fixture也必须声明独立执行验证，任务完成不代替工具结果。 */
+    private static ToolCall completionRequirement() {
+        return new ToolCall("task-plan-evidence", "declare_plan_evidence", new JsonObject(Map.of(
+                "requirementId", "completion-check", "kind", "VERIFICATION", "locator", "run_command",
+                "label", "执行阶段真实命令成功", "required", true)));
     }
 }

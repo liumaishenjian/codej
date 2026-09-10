@@ -18,6 +18,24 @@ import org.junit.jupiter.api.Test;
 
 class ToolFailureFingerprintGovernanceTest {
     @Test
+    void successfulEvidenceDeclarationReleasesOnlyReviewReadinessFailure() {
+        var governance = new ToolFailureFingerprintGovernance();
+        var review = new ToolCall("review", "request_plan_review", JsonObject.empty());
+        var other = new ToolCall("other", "other_plan_tool", JsonObject.empty());
+        var denied = new ToolCall("denied", "web_search", new JsonObject(Map.of("query", "query")));
+        governance.record(review, ToolError.of(ToolErrorCode.PLAN_GATE_BLOCKED, "evidence missing"));
+        governance.record(other, ToolError.of(ToolErrorCode.PLAN_GATE_BLOCKED, "unrelated gate"));
+        governance.record(denied, ToolError.of(ToolErrorCode.WEB_SEARCH_FORBIDDEN, "forbidden"));
+        governance.recordSuccess(new ToolCall("markdown", "revise_plan_artifact", JsonObject.empty()), ToolEffect.PLAN_ARTIFACT_WRITE);
+        assertThat(governance.repeated(review)).isTrue();
+        governance.recordSuccess(new ToolCall("declaration", "declare_plan_evidence", JsonObject.empty()), ToolEffect.READ_WORKSPACE);
+        assertThat(governance.repeated(review)).isTrue();
+        governance.recordSuccess(new ToolCall("declaration", "declare_plan_evidence", JsonObject.empty()), ToolEffect.PLAN_ARTIFACT_WRITE);
+        assertThat(governance.repeated(review)).isFalse();
+        assertThat(governance.repeated(other)).isTrue();
+        assertThat(governance.repeated(denied)).isTrue();
+    }
+    @Test
     void canonicalizesObjectKeysButAllowsChangedArgumentsAndCategories() {
         ToolFailureFingerprintGovernance governance = new ToolFailureFingerprintGovernance();
         ToolCall first = call("one", ordered("query", "same", "limit", 5));

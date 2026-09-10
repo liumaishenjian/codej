@@ -223,7 +223,7 @@
     }
   </style>
 </head>
-<body data-matrix-digest="38636e62209e" data-state-digest="381cf71dd94e" data-code-digest="53f7642c2927">
+<body data-matrix-digest="6e8ef790dd28" data-state-digest="dadb82552d40" data-code-digest="1649ced79aae">
   <main class="shell">
     <section class="hero">
       <p class="eyebrow">Reference-driven Java Agent Runtime</p>
@@ -232,7 +232,7 @@
       <div class="hero-meta">
         <span class="chip"><span class="dot"></span>当前 S15 · Independent Innovation</span>
         <span class="chip">Stage Exit · OPEN</span>
-        <span class="chip">更新 · 2026-08-28</span>
+        <span class="chip">更新 · 2026-09-10</span>
         <a class="chip" href="feature-parity-matrix.md">打开权威功能矩阵 ↗</a>
       </div>
     </section>
@@ -263,7 +263,7 @@
 
     <section class="panel callout">
       <strong>Next allowed action</strong>
-      <p>保留 SUB-11 Team Board、PLAN/PERM-05 真实质量、双 Provider BYOK、跨平台安装与 S15 L4 Eval 等既有差距。</p>
+      <p>维护者验收--tui-next核心交互；复杂历史/鼠标/完整Markdown/配置与plan扩展命令不在本批。S15质量与跨平台差距继续OPEN。</p>
     </section>
 
     <section class="panel" id="gates">
@@ -330,13 +330,13 @@
         </div>
       </div>
       <dl class="evidence-grid">
-        <div class="evidence-item"><dt>Last change</dt><dd>ADR-086/088 第十次 corrective 完成两项 high-priority recovery review：Session switch/initialized replacement 清除 detached Plan pending/picker，旧 Session 迟到事件 fail closed；PlanVerificationResumeReview 以最小 permission/context durable marker 支持首次事件丢失或 Runtime restart 后同 Plan/revision 幂等 re-surface，普通 AWAITING_APPROVAL 不重开、不创建 Run、不推进 revision、不重放 Tool。此前 recovery-required Task 同次 reclaim + active_form、terminal callback 前 READY 与三个确定性顺序回归保持通过。Capability Level 无变化，TASK-01..05 维持 L2、PLAN-01 维持 L1，S15 保持 OPEN。</dd></div>
+        <div class="evidence-item"><dt>Last change</dt><dd>ADR094统一计划验收终态并补缺证据审核Gate与精确纠正恢复；新TUI隐藏正常内部任务/计划行，未验收明确提示。后端136项0失败1skip、TUI339项通过；真实天气计划最终正文可见及COMPLETED。无Capability等级变化。 提交前仅清理测试EOF空白，无行为或等级变化。</dd></div>
         <div class="evidence-item"><dt>Evidence stage</dt><dd><code>S15</code></dd></div>
-        <div class="evidence-item"><dt>Evidence class</dt><dd><code>WORKTREE_VERIFIED</code></dd></div>
+        <div class="evidence-item"><dt>Evidence class</dt><dd><code>WORKTREE_PARTIALLY_VERIFIED</code></dd></div>
         <div class="evidence-item"><dt>Code commit</dt><dd><code>UNCOMMITTED</code></dd></div>
-        <div class="evidence-item"><dt>Standard command</dt><dd><code>.\mvnw.cmd clean verify；npm.cmd --prefix cc-java-tui run check；npm.cmd --prefix cc-java-tui run test:real-java；.\scripts\TestInstalledPlanTuiE2E.ps1；.\scripts\TestCodejDevLauncher.ps1；java scripts/ProgressDashboard.java；java scripts/ProgressDashboard.java --check；java scripts/ProgressDashboard.java --self-test；git diff --check</code></dd></div>
-        <div class="evidence-item"><dt>Result</dt><dd>未提交工作树修复 Plan/Task/Evidence 终态与恢复边界：持续缺失以 PLAN_VERIFICATION_REQUIRED/run.failed 且无 finalText/run.completed 停止；/plan-resume 以 durable marker 支持 transport/restart 后同 revision 幂等 re-surface，普通 review 不重开且不自动重放；Session replacement 清旧 pending/picker；Task recovery 显式 reclaim；terminal callback 可立即提交下一 Run 或 detached resume。此前定向 stdio/Plan 77/77、Task 16/16、Fixture 3/3，最新 durable/restart Java 67/67、TUI reducer 28/28；完整 clean verify 199 reports/1292 tests/37 skips（CLI 545/16 skips），TUI 17 files/302 tests，真实 Java/Ink 6/6，安装 Plan E2E 1/1，launcher 61 assertions。Capability Level 不变，S15 保持 OPEN。</dd></div>
-        <div class="evidence-item"><dt>Source digests</dt><dd><code>matrix 38636e62209e</code><br><code>state 381cf71dd94e</code><br><code>code/build 53f7642c2927</code></dd></div>
+        <div class="evidence-item"><dt>Standard command</dt><dd><code>npm.cmd --prefix cc-java-tui run build；vitest（含新真实Java E2E，排除旧两个显式安装/Plan入口）；相关Java test；StartCodejDev.ps1 --tui-next；ProgressDashboard --check / --self-test</code></dd></div>
+        <div class="evidence-item"><dt>Result</dt><dd>原ADR091/092/093证据保留；ADR094后端136项0失败1skip、TUI339项通过；真实Provider经审核及真实查询到最终正文可见、Plan COMPLETED，PTY退出0。已有Javadoc全仓警告限制保留。</dd></div>
+        <div class="evidence-item"><dt>Source digests</dt><dd><code>matrix 6e8ef790dd28</code><br><code>state dadb82552d40</code><br><code>code/build 1649ced79aae</code></dd></div>
       </dl>
     </section>
 

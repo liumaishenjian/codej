@@ -76,6 +76,14 @@ try {
     Assert-True (($providerControl.ProviderControlArguments -join '|') -eq 'auth|list|--json') 'provider control commands pass through without TUI parsing'
     Assert-True ($empty.ContextMaximumInputTokens -eq 256000 -and $empty.ContextReservedOutputTokens -eq 8192 -and $empty.ContextSafetyMarginTokens -eq 4096) 'interactive defaults enable the 256k context pipeline'
 
+    Assert-True (-not $empty.TuiNext) 'new frontend is opt-in'
+    $next = ConvertFrom-CodejArguments -Arguments @('--tui-next', '--workspace', '中文 workspace') -InvocationDirectory $temp
+    Assert-True ($next.TuiNext -and $next.Workspace -eq [IO.Path]::GetFullPath((Join-Path $temp '中文 workspace'))) 'new frontend preserves explicit Unicode workspace'
+    $nextPrint = ConvertFrom-CodejArguments -Arguments @('--tui-next', '--print', 'hello') -InvocationDirectory $temp
+    Assert-True ($nextPrint.Print -eq 'hello' -and $nextPrint.TuiNext) 'print remains available with frontend selector'
+    Assert-Throws { ConvertFrom-CodejArguments -Arguments @('--tui-next', '--tui-next') -InvocationDirectory $temp } '不能重复'
+    Assert-Throws { ConvertFrom-CodejArguments -Arguments @('--tui-next=true') -InvocationDirectory $temp } '不接受值'
+
     $parsed = ConvertFrom-CodejArguments -Arguments @('--workspace', '目录 with spaces', '--model=x', '--timeout', '30s', '--print', 'hello') -InvocationDirectory $temp
     Assert-True ($parsed.Workspace -eq [IO.Path]::GetFullPath((Join-Path $temp '目录 with spaces'))) 'workspace pair syntax'
     Assert-True ($parsed.Model -eq 'x' -and $parsed.Timeout -eq '30s' -and $parsed.Print -eq 'hello') 'value parameters'

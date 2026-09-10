@@ -555,7 +555,36 @@ function validatePlanReview(payload: Readonly<Record<string, unknown>>): void {
   }
 }
 
+export interface QuestionnaireAnswer {
+  readonly questionId: string;
+  readonly optionIds: readonly string[];
+  readonly freeText: string;
+}
+
 function validateUserQuestion(payload: Readonly<Record<string, unknown>>): void {
+  if ('questions' in payload) {
+    if (!hasExactFields(payload, new Set(['callId', 'questions'])) || typeof payload.callId !== 'string'
+      || !payload.callId.trim() || payload.callId.length > 128 || !Array.isArray(payload.questions)
+      || payload.questions.length < 1 || payload.questions.length > 4) throw new ProtocolViolation('问卷投影无效');
+    const ids = new Set<string>();
+    const text = (s: unknown, max: number): s is string => typeof s === 'string' && s.trim().length > 0
+      && s.length <= max && !/[\u0000-\u001f\u007f-\u009f]/u.test(s);
+    for (const q of payload.questions) {
+      if (!isRecord(q) || !hasExactFields(q, new Set(['id', 'title', 'question', 'multiSelect', 'options', 'allowFreeText']))
+        || !text(q.id, 64) || ids.has(q.id) || !text(q.title, 120) || !text(q.question, 1000)
+        || typeof q.multiSelect !== 'boolean' || typeof q.allowFreeText !== 'boolean' || !Array.isArray(q.options)
+        || q.options.length > 8 || (q.options.length === 0 && !q.allowFreeText)) throw new ProtocolViolation('问卷题目无效');
+      ids.add(q.id);
+      const choices = new Set<string>();
+      for (const o of q.options) {
+        if (!isRecord(o) || !hasExactFields(o, new Set(['optionId', 'label', 'description']))
+          || !text(o.optionId, 64) || choices.has(o.optionId) || !text(o.label, 120) || !text(o.description, 500))
+          throw new ProtocolViolation('问卷选项无效');
+        choices.add(o.optionId);
+      }
+    }
+    return;
+  }
   if (!hasExactFields(payload, new Set(['callId', 'question', 'options']))
     || typeof payload.callId !== 'string' || payload.callId.trim().length === 0
     || payload.callId.length > MAX_IDENTIFIER_CHARS

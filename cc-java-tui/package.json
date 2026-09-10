@@ -7,6 +7,7 @@
     "node": ">=22"
   },
   "scripts": {
+    "preview:tui": "tsx src/experience/main.tsx",
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/index.tsx",
     "test": "vitest run --exclude test/real-java-plan-e2e.test.ts --exclude test/installed-plan-e2e.test.ts",

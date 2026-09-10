@@ -13,7 +13,7 @@ import io.github.liumaishenjian.ccjava.domain.UserQuestionRequest;
  */
 @FunctionalInterface
 public interface UserQuestionHandler {
-    /** 发布问题并等待同一 callId 的封闭选项答案。 */
+    /** 发布问题并等待同一 callId 的单题或整批答案；取消时不得伪造答案。 */
     UserQuestionAnswer ask(UserQuestionRequest request, CancellationToken cancellationToken);
 
     /** 返回不支持交互的失败关闭实现。 */

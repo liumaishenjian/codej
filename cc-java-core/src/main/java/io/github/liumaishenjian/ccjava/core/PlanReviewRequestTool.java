@@ -104,7 +104,7 @@ public final class PlanReviewRequestTool implements AgentTool {
                     "Plan review prerequisites are not satisfied",
                     new JsonObject(Map.of(
                             "reason", reason,
-                            "action", "maintain_execution_tasks_then_retry_review"))));
+                            "action", "repair_review_prerequisites_then_retry"))));
         }
         PlanArtifact candidate = current.nextRevision(current.markdownContent(),
                 PlanStatus.AWAITING_APPROVAL, clock.instant());

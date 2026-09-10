@@ -126,7 +126,10 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                     + "The Markdown itself must contain only user-readable goals, steps, verification and risks: never copy "
                     + "internal Task or Plan identifiers, cohort labels, runtime fields or Tool bookkeeping into headings, prose or code spans. "
                     + "Provide only Markdown when revising and no arguments when requesting review. When the plan and Task List "
-                    + "agree, call request_plan_review. Do not return JSON, executable step payloads, workspace digests, or hidden "
+                    + "agree, declare at least one required completion evidence item with declare_plan_evidence before request_plan_review. "
+                    + "For a text-only query, use kind VERIFICATION and locator equal to an actually registered query or execution tool "
+                    + "that will provide the result after approval; no artificial output file is necessary. Task completion is not query evidence. "
+                    + "Declaring evidence does not execute it or grant permission. Then call request_plan_review. Do not return JSON, executable step payloads, workspace digests, or hidden "
                     + "objective/title/detail triples. Workspace writes, process execution, and undeclared extension "
                     + "tools are unavailable while planning.";
 
@@ -920,6 +923,8 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                 Optional.of(options.model()), io.github.liumaishenjian.ccjava.domain.PermissionMode.PLAN,
                 current.configuration().approvalReviewer(), current.configuration().permissionRules(),
                 enabled, Map.of(), current.configuration().compactAnchors(), RuntimeDiagnosticsVerbosity.SUMMARY);
+        // 每个规划 Run 独立拥有一次纠正额度；提醒只参与模型请求投影，不建立第二份 transcript。
+        var missingReviewCorrection = new java.util.concurrent.atomic.AtomicBoolean();
         io.github.liumaishenjian.ccjava.core.instructions.InstructionContextService planInstructions =
                 new io.github.liumaishenjian.ccjava.core.instructions.InstructionContextService() {
                     @Override
@@ -929,7 +934,14 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                         List<io.github.liumaishenjian.ccjava.domain.AgentMessage> messages =
                                 new java.util.ArrayList<>(request.messages());
                         messages.add(1, new io.github.liumaishenjian.ccjava.domain.SystemMessage(
-                                PLAN_RUNTIME_INSTRUCTIONS + taskBoardReminder(true)));
+                                PLAN_RUNTIME_INSTRUCTIONS + taskBoardReminder(true)
+                                        + (missingReviewCorrection.get() ? """
+
+                                        本轮尚未形成供用户审核的计划，因此不能按成功结束。请使用当前规划工具保存计划工件，再请求用户审核。
+                                        规划阶段只需明确拟采取的步骤、验收方式和受限条件；不要求提前执行实际查询或修改。
+                                        不要声称未提供的工具可用。需要联网等能力时，将其列为批准后依当时可用能力及权限执行的步骤。
+                                        若确实无法形成可审核计划，不要伪造执行结果；本轮将以未完成结束。
+                                        """ : "")));
                         return new io.github.liumaishenjian.ccjava.domain.ModelRequest(
                                 request.sessionId(), request.runId(), request.turnNumber(), messages,
                                 request.toolDefinitions());
@@ -944,9 +956,13 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                     }
                 };
         io.github.liumaishenjian.ccjava.core.FinalAssistantHandler finalHandler =
-                (sessionId, runId, assistant) -> {
-                    var artifact = planning.review().reviewArtifact();
-                    artifact.ifPresent(value -> {
+                new io.github.liumaishenjian.ccjava.core.FinalAssistantHandler() {
+                    @Override
+                    public boolean handle(io.github.liumaishenjian.ccjava.domain.SessionId sessionId,
+                            io.github.liumaishenjian.ccjava.domain.RunId runId,
+                            io.github.liumaishenjian.ccjava.domain.AssistantMessage assistant) {
+                        var artifact = planning.review().reviewArtifact();
+                        if (artifact.isEmpty()) return false;
                         io.github.liumaishenjian.ccjava.domain.PermissionMode original =
                                 scope.get().configuration().permissionMode() ==
                                         io.github.liumaishenjian.ccjava.domain.PermissionMode.PLAN
@@ -954,9 +970,21 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                                         : scope.get().configuration().permissionMode();
                         lifecycle.dispatch(session, runId,
                                 io.github.liumaishenjian.ccjava.domain.PlanReviewEvent.from(
-                                        value, currentWorkspaceDigest(), original, suggestedPlanContextPolicy()));
-                    });
-                    return true;
+                                        artifact.orElseThrow(), currentWorkspaceDigest(), original, suggestedPlanContextPolicy()));
+                        return true;
+                    }
+
+                    @Override
+                    public io.github.liumaishenjian.ccjava.core.FinalAssistantDecision decide(
+                            io.github.liumaishenjian.ccjava.domain.SessionId sessionId,
+                            io.github.liumaishenjian.ccjava.domain.RunId runId,
+                            io.github.liumaishenjian.ccjava.domain.AssistantMessage assistant) {
+                        if (handle(sessionId, runId, assistant))
+                            return io.github.liumaishenjian.ccjava.core.FinalAssistantDecision.accept();
+                        return missingReviewCorrection.compareAndSet(false, true)
+                                ? io.github.liumaishenjian.ccjava.core.FinalAssistantDecision.continueRun()
+                                : io.github.liumaishenjian.ccjava.core.FinalAssistantDecision.reject();
+                    }
                 };
         return HeadlessRuntimeScope.create(planConfiguration, options.model(), configuredGateway,
                 contextPreparation, candidates, sessions, checkpoints, lifecycle, ids, approvalHandler,
@@ -972,6 +1000,20 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         synchronized (lifecycleMonitor) {
             if (session != null) throw new IllegalStateException("Session 打开后不能替换 verification skip 端口");
             verificationSkipCoordinator = Objects.requireNonNull(coordinator, "coordinator 不能为空");
+        }
+    }
+
+    /** 在 Session 打开前启用已协商的整批问卷工具。 */
+    public void enableQuestionnaires() {
+        synchronized (lifecycleMonitor) {
+            if (session != null) throw new IllegalStateException("Session 打开后不能改变问卷能力");
+            questionnairesEnabled = true;
+            var current = scope.get().configuration();
+            var enabled = new java.util.ArrayList<>(current.enabledBuiltinTools());
+            if (!enabled.contains(io.github.liumaishenjian.ccjava.core.AskUserQuestionsTool.NAME)) enabled.add(io.github.liumaishenjian.ccjava.core.AskUserQuestionsTool.NAME);
+            scope.set(buildScope(new RuntimeConfiguration(current.modelName(), current.permissionMode(),
+                    current.approvalReviewer(), current.permissionRules(), enabled, current.toolConfigurations(),
+                    current.compactAnchors(), current.diagnosticsVerbosity())));
         }
     }
 
@@ -1385,6 +1427,10 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
      * 既不能满足 readiness，也不能阻断当前 Plan。该契约不解析 Markdown，也不根据 Task 标题猜测语义。</p>
      */
     private Optional<String> planReviewTaskBlockReason() {
+        var artifact = planArtifact();
+        if (artifact.isEmpty() || artifact.orElseThrow().evidenceLedger().requirements().stream().noneMatch(
+                io.github.liumaishenjian.ccjava.domain.PlanEvidenceRequirement::required))
+            return Optional.of("Declare required completion evidence with declare_plan_evidence before review; text-only queries may use VERIFICATION with a registered query/execution tool.");
         if (!durableTaskTools) return Optional.empty();
         if (taskBoardSnapshot().isEmpty()) return Optional.of("TASK_BOARD_UNAVAILABLE");
         return incompletePlanTasks().isEmpty()
@@ -1693,6 +1739,10 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         }
     }
 
+    /** 终态处理与持久化共同使用证据和任务判定，避免空要求被误判为成功。 */
+    private boolean planCompletionSatisfied(io.github.liumaishenjian.ccjava.domain.PlanEvidenceLedger ledger) {
+        return ledger.completionSatisfied() && incompletePlanTasks().isEmpty();
+    }
     private void recordDurablePlanTerminal(AgentRunResult result, int executionMessageStart) {
         if (result.stopReason() != io.github.liumaishenjian.ccjava.domain.StopReason.COMPLETED) {
             recordDurablePlanFailure(planFailureStatus(result.stopReason()));
@@ -1702,8 +1752,7 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         var current = store.load(session.id()).orElseThrow();
         if (current.status() != io.github.liumaishenjian.ccjava.domain.PlanStatus.EXECUTING) return;
         var validated = validatePlanEvidence(current, result.runId(), executionMessageStart);
-        io.github.liumaishenjian.ccjava.domain.PlanStatus status = validated.completionSatisfied()
-                && incompletePlanTasks().isEmpty()
+        io.github.liumaishenjian.ccjava.domain.PlanStatus status = planCompletionSatisfied(validated)
                 ? io.github.liumaishenjian.ccjava.domain.PlanStatus.COMPLETED
                 : io.github.liumaishenjian.ccjava.domain.PlanStatus.NEEDS_VERIFICATION;
         var terminal = current.withEvidenceLedger(validated, status, java.time.Instant.now());
@@ -1857,12 +1906,14 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                 current = store.save(revised, current.revision(), current.contentDigest());
             }
             var incompleteTasks = incompletePlanTasks();
-            if (validated.completionSatisfied() && incompleteTasks.isEmpty()) {
+            if (planCompletionSatisfied(validated)) {
                 return io.github.liumaishenjian.ccjava.core.FinalAssistantDecision.accept();
             }
             var failures = blockingFailures(validated);
-            if (failures.isEmpty() && incompleteTasks.isEmpty()) {
-                return io.github.liumaishenjian.ccjava.core.FinalAssistantDecision.accept();
+            if (validated.requirements().stream().noneMatch(io.github.liumaishenjian.ccjava.domain.PlanEvidenceRequirement::required)) {
+                // 已批准的要求为空，执行期不能擅自扩充批准对象或把Task完成冒充证据。
+                return io.github.liumaishenjian.ccjava.core.FinalAssistantDecision.stop(
+                        io.github.liumaishenjian.ccjava.domain.StopReason.PLAN_VERIFICATION_REQUIRED);
             }
             String evidenceFingerprint = failures.stream()
                     .map(item -> item.requirementId() + "|" + item.kind().name() + "|" + item.locator()
@@ -2778,6 +2829,8 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         return extensions.hooks();
     }
 
+    private boolean questionnairesEnabled;
+
     ToolRegistry builtinToolRegistry() {
         var skillTools = skills == null
                 ? java.util.stream.Stream.<io.github.liumaishenjian.ccjava.core.AgentTool>empty()
@@ -2789,6 +2842,8 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                                 taskTools.stream()),
                         skillTools)
                 .filter(tool -> tool.definition().source() == ToolSource.BUILT_IN);
+        if (questionnairesEnabled) base = java.util.stream.Stream.concat(base,
+                java.util.stream.Stream.of(new io.github.liumaishenjian.ccjava.core.AskUserQuestionsTool(userQuestionHandler)));
         return new ToolRegistry(agentSupervisor == null ? base.toList()
                 : java.util.stream.Stream.concat(base,
                         java.util.stream.Stream.of(new io.github.liumaishenjian.ccjava.core.subagent.DelegateAgentTool(
@@ -3027,6 +3082,8 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                 java.util.stream.Stream.concat(workspaceBootstrap.tools().stream(), webSearchTool.stream()),
                 effectiveTaskTools.stream());
         var base = java.util.stream.Stream.concat(builtins, external);
+        if (questionnairesEnabled) base = java.util.stream.Stream.concat(base,
+                java.util.stream.Stream.of(new io.github.liumaishenjian.ccjava.core.AskUserQuestionsTool(userQuestionHandler)));
         return agentSupervisor == null ? base.toList()
                 : java.util.stream.Stream.concat(base,
                         java.util.stream.Stream.of(new io.github.liumaishenjian.ccjava.core.subagent.DelegateAgentTool(

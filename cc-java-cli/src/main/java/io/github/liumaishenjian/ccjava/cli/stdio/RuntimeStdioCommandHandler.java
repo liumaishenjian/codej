@@ -446,6 +446,9 @@ public final class RuntimeStdioCommandHandler
         };
     }
 
+    private boolean questionnaireV1;
+    private boolean experienceV1;
+
     private StdioProtocol.Disposition initialize(
             StdioProtocol.Command command,
             StdioProtocol.EventEmitter events) throws StdioProtocolException {
@@ -457,8 +460,16 @@ public final class RuntimeStdioCommandHandler
                         command,
                         "initialize 不能携带 Session 或 Run");
             }
+            for (String capability : java.util.List.of("questionnaireV1", "experienceV1")) {
+                JsonNode flag = command.payload().get(capability);
+                if (flag != null && !flag.isBoolean()) throw protocolError("INVALID_PAYLOAD", command, "能力标记必须为 boolean");
+            }
+            questionnaireV1 = command.payload().has("questionnaireV1") && command.payload().get("questionnaireV1").booleanValue();
+            experienceV1 = command.payload().has("experienceV1") && command.payload().get("experienceV1").booleanValue();
+
             application.setChildTaskObserver(report -> emitBackgroundTaskTerminal(events, report));
             application.installUserQuestionHandler(questions);
+            if (questionnaireV1) application.enableQuestionnaires();
             application.open();
             fileMentions = new io.github.liumaishenjian.ccjava.cli.mentions.FileMentionService(
                     application.workspaceGuard());
@@ -468,6 +479,8 @@ public final class RuntimeStdioCommandHandler
         }
         ObjectNode payload = codec.objectNode();
         payload.put("protocolVersion", StdioProtocol.VERSION);
+        if (questionnaireV1) payload.put("questionnaireV1", true);
+        if (experienceV1) payload.put("experienceV1", true);
         var sessionOpen = application.sessionOpenResult();
         payload.put("openMode", sessionOpen.mode().name().toLowerCase(Locale.ROOT));
         payload.put("readOnly", sessionOpen.readOnly());
@@ -1941,7 +1954,33 @@ public final class RuntimeStdioCommandHandler
                     || !activeRun.runId.value().equals(command.runId().orElseThrow())) {
                 throw protocolError("INVALID_STATE", command, "question.resolve 与活动 Run 不匹配");
             }
-            JsonNode rawCallId = command.payload().get("callId");
+            if (command.payload().has("answers")) {
+                if (!questionnaireV1) throw protocolError("INVALID_PAYLOAD", command, "未协商问卷能力");
+                try {
+                    JsonNode batch = command.payload().get("answers");
+                    JsonNode id = command.payload().get("callId");
+                    if (command.payload().size() != 2 || id == null || !id.isString() || !batch.isArray()
+                            || batch.size() < 1 || batch.size() > 4) throw new IllegalArgumentException();
+                    var answers = new java.util.ArrayList<io.github.liumaishenjian.ccjava.domain.UserQuestionSelection>();
+                    for (JsonNode raw : batch) {
+                        if (!raw.isObject() || raw.size() != 3 || raw.get("questionId") == null || !raw.get("questionId").isString()
+                                || raw.get("optionIds") == null || !raw.get("optionIds").isArray()
+                                || raw.get("freeText") == null || !raw.get("freeText").isString()) throw new IllegalArgumentException();
+                        var ids = new java.util.ArrayList<String>();
+                        for (JsonNode option : raw.get("optionIds")) {
+                            if (!option.isString()) throw new IllegalArgumentException();
+                            ids.add(option.stringValue());
+                        }
+                        answers.add(new io.github.liumaishenjian.ccjava.domain.UserQuestionSelection(
+                                raw.get("questionId").stringValue(), ids, raw.get("freeText").stringValue()));
+                    }
+                    var answer = new io.github.liumaishenjian.ccjava.domain.UserQuestionAnswer(id.stringValue(), answers);
+                    if (!questions.resolve(answer)) throw protocolError("STALE_QUESTION", command, "问题不存在、已结束或答案不匹配");
+                    return StdioProtocol.Disposition.CONTINUE;
+                } catch (IllegalArgumentException | NullPointerException invalid) {
+                    throw protocolError("INVALID_PAYLOAD", command, "问卷答案字段无效");
+                }
+            }            JsonNode rawCallId = command.payload().get("callId");
             JsonNode rawOptionId = command.payload().get("optionId");
             if (command.payload().size() != 2 || rawCallId == null || !rawCallId.isString()
                     || rawCallId.stringValue().isBlank() || rawCallId.stringValue().length() > 128
@@ -1969,7 +2008,25 @@ public final class RuntimeStdioCommandHandler
         }
         ObjectNode payload = codec.objectNode();
         payload.put("callId", request.callId());
-        payload.put("question", request.question());
+        if (questionnaireV1) {
+            var items = request.questions().isEmpty()
+                    ? java.util.List.of(new io.github.liumaishenjian.ccjava.domain.UserQuestionItem(
+                            "question", "问题", request.question(), false, request.options(), false))
+                    : request.questions();
+            ArrayNode batch = codec.arrayNode();
+            for (var q : items) {
+                ObjectNode item = codec.objectNode();
+                item.put("id", q.id()); item.put("title", q.title()); item.put("question", q.question());
+                item.put("multiSelect", q.multiSelect()); item.put("allowFreeText", q.allowFreeText());
+                ArrayNode choices = codec.arrayNode();
+                for (var o : q.options()) {
+                    ObjectNode choice = codec.objectNode(); choice.put("optionId", o.optionId());
+                    choice.put("label", o.label()); choice.put("description", o.description()); choices.add(choice);
+                }
+                item.set("options", choices); batch.add(item);
+            }
+            payload.set("questions", batch); emit(run, "question.requested", payload); return;
+        }        payload.put("question", request.question());
         ArrayNode options = codec.arrayNode();
         request.options().forEach(option -> {
             ObjectNode item = codec.objectNode();
@@ -2153,6 +2210,10 @@ public final class RuntimeStdioCommandHandler
         if (envelope.event() instanceof LifecycleEvent.RunStarted) {
             ObjectNode payload = codec.objectNode();
             payload.put("promptChars", run.promptChars);
+            if (experienceV1) {
+                application.runtimeConfiguration().modelName()
+                        .ifPresent(model -> payload.put("requestModel", boundedInline(model, 256)));
+            }
             emit(run, "run.started", payload);
             if (run.approvedPlanExecution) {
                 // 批准前后复用同一 Session Task Board；在首个执行模型回合前通过同一 writer 投影，
@@ -2162,6 +2223,7 @@ public final class RuntimeStdioCommandHandler
         } else if (envelope.event() instanceof LifecycleEvent.ModelTurnStarted started) {
             ObjectNode payload = codec.objectNode();
             payload.put("turn", started.turnNumber());
+            run.modelTurn = started.turnNumber();
             emit(run, "model.turn.started", payload);
         } else if (envelope.event() instanceof LifecycleEvent.ModelAttemptStarted started) {
             ObjectNode payload = codec.objectNode();
@@ -2203,6 +2265,11 @@ public final class RuntimeStdioCommandHandler
             payload.put("ordinal", before.ordinal());
             payload.put("toolName", before.call().name());
             payload.put("status", "started");
+            if (experienceV1) {
+                if (before.call().id().length() <= 512) payload.put("callId", before.call().id());
+                payload.put("turn", run.modelTurn);
+                safeToolActivity(before.call()).ifPresent(value -> payload.put("parametersPreview", value));
+            }
             safeToolMode(before.call()).ifPresent(mode -> {
                 run.toolModes.put(before.ordinal(), mode);
                 payload.put("mode", mode);
@@ -2214,6 +2281,15 @@ public final class RuntimeStdioCommandHandler
             payload.put("ordinal", after.ordinal());
             payload.put("toolName", after.result().toolName());
             payload.put("status", after.result().status().name().toLowerCase());
+            if (experienceV1) {
+                if (after.result().callId().length() <= 512) payload.put("callId", after.result().callId());
+                boolean contentRedacted = new io.github.liumaishenjian.ccjava.tools.local.memory.SecretCandidatePolicy()
+                        .isSecretCandidate(after.result().content());
+                payload.put("contentRedacted", contentRedacted);
+                payload.put("content", contentRedacted ? "" : boundedToolContent(after.result().content()));
+                payload.put("contentTruncated", after.result().content()
+                        .codePointCount(0, after.result().content().length()) > 4096);
+            }
             payload.put("returnedCharacters", after.result().metadata().returnedCharacters());
             payload.put("returnedItems", after.result().metadata().returnedItems());
             payload.put("truncated", after.result().metadata().truncated());
@@ -2491,6 +2567,29 @@ public final class RuntimeStdioCommandHandler
             case "declare_plan_evidence" -> Optional.of("登记计划验证要求");
             default -> Optional.empty();
         };
+    }
+
+    /**
+     * 对已由唯一管线规范化的结果生成瞬时终端预览；不影响模型收到的正文。
+     *
+     * <p>最多读取 4096 个码点，JSON 最坏转义仍留在 64 KiB 行预算内；去除终端控制字符，
+     * 保留换行和制表。该限制独立于 Tool 自身的语义截断，不能称为完整输出。</p>
+     *
+     * @param content 管线输出正文，不接受原始工具参数
+     * @return 有界、无 C0/C1 终端控制字符的正文预览
+     */
+    static String boundedToolContent(String content) {
+        Objects.requireNonNull(content, "content 不能为空");
+        StringBuilder preview = new StringBuilder();
+        int offset = 0;
+        for (int count = 0; offset < content.length() && count < 4096; count++) {
+            int point = content.codePointAt(offset);
+            offset += Character.charCount(point);
+            if (!Character.isISOControl(point) || point == '\n' || point == '\r' || point == '\t') {
+                preview.appendCodePoint(point);
+            }
+        }
+        return preview.toString();
     }
 
     private static String summaryWithTarget(
@@ -2979,6 +3078,7 @@ public final class RuntimeStdioCommandHandler
         private final Map<Integer, String> toolModes = new LinkedHashMap<>();
         private final CommandStartGate commandStart = new CommandStartGate();
         private RunId runId;
+        private int modelTurn;
         private boolean suppressModelText;
         private boolean approvedPlanExecution;
         private HeadlessRuntimeSession.PlanExecutionAcceptance planAcceptance;

@@ -62,6 +62,57 @@ class RuntimeStdioCommandHandlerTest {
                 temporaryRoot.resolve("sessions"));
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"run.start", "plan.start"})
+    void negotiatedQuestionnaireUsesOriginalToolResultsInOrdinaryAndPlanRuns(String start) throws Exception {
+        StdioProtocolCodec codec = new StdioProtocolCodec();
+        CopyOnWriteArrayList<CapturedEvent> events = new CopyOnWriteArrayList<>();
+        StdioProtocol.EventEmitter emitter = (type, requestId, sessionId, runId, payload) ->
+                events.add(new CapturedEvent(type, sessionId, runId, payload.deepCopy()));
+        AtomicInteger calls = new AtomicInteger();
+        var q = java.util.Map.of("id", "q", "title", "问题", "question", "请输入补充", "multiSelect", false,
+                "allowFreeText", true, "options", List.of());
+        try (RuntimeStdioCommandHandler handler = new RuntimeStdioCommandHandler(request -> {
+            if (calls.getAndIncrement() == 0) {
+                assertThat(request.toolDefinitions()).anyMatch(t -> t.name().equals("ask_user_questions"));
+                return ModelTurn.tools(List.of(
+                        new ToolCall("batch", "ask_user_questions", new JsonObject(java.util.Map.of("questions", List.of(q)))),
+                        new ToolCall("batch-two", "ask_user_questions", new JsonObject(java.util.Map.of("questions", List.of(q))))));
+            }
+            var results = request.messages().stream().filter(io.github.liumaishenjian.ccjava.domain.ToolResultMessage.class::isInstance)
+                    .map(io.github.liumaishenjian.ccjava.domain.ToolResultMessage.class::cast).map(io.github.liumaishenjian.ccjava.domain.ToolResultMessage::result)
+                    .filter(r -> r.toolName().equals("ask_user_questions")).toList();
+            assertThat(results).extracting(io.github.liumaishenjian.ccjava.domain.ToolResult::callId).containsExactly("batch", "batch-two");
+            assertThat(results).allMatch(r -> r.status() == io.github.liumaishenjian.ccjava.domain.ToolResultStatus.SUCCESS && r.content().contains("中文答案"));
+            // 此用例验证规划中的问卷主链；完整规划成功还必须保存工件并提交审核。
+            if (start.equals("plan.start") && calls.get() == 2) return ModelTurn.tools(List.of(new ToolCall(
+                    "question-plan", "revise_plan_artifact", new JsonObject(java.util.Map.of("markdown", "# 根据用户答案形成的计划\n\n批准后执行用户选择的方案。")))));
+            if (start.equals("plan.start") && calls.get() == 3) return ModelTurn.tools(List.of(completionRequirement(), new ToolCall(
+                    "question-review", "request_plan_review", JsonObject.empty())));
+            return ModelTurn.text("完成");
+        }, testOptions())) {
+            handler.handle(codec.decodeCommand("{\"version\":0,\"type\":\"initialize\",\"requestId\":\"init\",\"sequence\":1,\"payload\":{\"questionnaireV1\":true}}"), emitter);
+            assertThat(events.getFirst().payload().get("questionnaireV1").booleanValue()).isTrue();
+            String session = events.getFirst().sessionId().orElseThrow();
+            handler.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"%s\",\"requestId\":\"run\",\"sessionId\":\"%s\",\"sequence\":2,\"payload\":{\"prompt\":\"提问\"}}").formatted(start, session)), emitter);
+            var question = awaitEvent(events, "question.requested");
+            assertThat(question.payload().has("question")).isFalse();
+            assertThat(question.payload().get("questions").size()).isEqualTo(1);
+            String answer = ("{\"version\":0,\"type\":\"question.resolve\",\"requestId\":\"answer\",\"sessionId\":\"%s\",\"runId\":\"%s\",\"sequence\":3,\"payload\":{\"callId\":\"batch\",\"answers\":[{\"questionId\":\"q\",\"optionIds\":[],\"freeText\":\"中文答案\"}]}}").formatted(session, question.runId().orElseThrow());
+            assertThatThrownBy(() -> handler.handle(codec.decodeCommand(answer.replace("\"questionId\":\"q\"", "\"questionId\":\"unknown\"")), emitter)).isInstanceOf(StdioProtocolException.class);
+            handler.handle(codec.decodeCommand(answer), emitter);
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+            while (events.stream().filter(e -> e.type().equals("question.requested")).count() < 2 && System.nanoTime() < deadline) Thread.sleep(5);
+            assertThat(events.stream().filter(e -> e.type().equals("question.requested")).count()).isEqualTo(2);
+            assertThatThrownBy(() -> handler.handle(codec.decodeCommand(answer), emitter)).isInstanceOf(StdioProtocolException.class);
+            handler.handle(codec.decodeCommand(answer.replace("\"callId\":\"batch\"", "\"callId\":\"batch-two\"")), emitter);
+            awaitTerminal(events);
+            assertThat(calls.get()).isEqualTo(start.equals("plan.start") ? 4 : 2);
+            if (start.equals("plan.start")) assertThat(events).anyMatch(e -> e.type().equals("plan.review.requested"));
+            assertThatThrownBy(() -> handler.handle(codec.decodeCommand(answer), emitter)).isInstanceOf(StdioProtocolException.class);
+            assertThat(events).anyMatch(e -> e.type().equals("tool.completed") && e.payload().get("toolName").stringValue().equals("ask_user_questions"));
+        }
+    }
     @Test
     void terminalCallbackImmediateSubmissionSeesReadyAndStartsExactlyOnce() throws Exception {
         StdioProtocolCodec codec = new StdioProtocolCodec();
@@ -225,7 +276,7 @@ class RuntimeStdioCommandHandlerTest {
                                     java.util.Map.of("optionId", "fast", "label", "Fast", "description", "Direct")))))));
                     case 1 -> ModelTurn.tools(List.of(new ToolCall("update-stdio", "revise_plan_artifact",
                             new JsonObject(java.util.Map.of("markdown", markdown)))));
-                    case 2 -> ModelTurn.tools(List.of(new ToolCall("review-stdio", "request_plan_review",
+                    case 2 -> ModelTurn.tools(List.of(completionRequirement(), new ToolCall("review-stdio", "request_plan_review",
                             JsonObject.empty())));
                     default -> ModelTurn.text("{\"internal\":\"must-not-leak\"}");
                 }, testOptions())) {
@@ -271,9 +322,10 @@ class RuntimeStdioCommandHandlerTest {
                 switch (calls.getAndIncrement()) {
                     case 0 -> ModelTurn.tools(List.of(new ToolCall("update-review", "revise_plan_artifact",
                             new JsonObject(java.util.Map.of("markdown", markdown)))));
-                    case 1 -> ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review",
+                    case 1 -> ModelTurn.tools(List.of(new ToolCall("list-evidence", "declare_plan_evidence", new JsonObject(java.util.Map.of("requirementId", "listing", "kind", "VERIFICATION", "locator", "list_files", "label", "目录查询成功", "required", true))), new ToolCall("review", "request_plan_review",
                             JsonObject.empty())));
                     case 2 -> ModelTurn.text("plan complete");
+                    case 3 -> ModelTurn.tools(List.of(new ToolCall("listing", "list_files", JsonObject.empty())));
                     default -> ModelTurn.text("execution complete");
                 }, testOptions())) {
             handler.handle(codec.decodeCommand(
@@ -482,7 +534,7 @@ class RuntimeStdioCommandHandlerTest {
                 switch (calls.getAndIncrement()) {
                     case 0 -> ModelTurn.tools(List.of(new ToolCall("update-failure", "revise_plan_artifact",
                             new JsonObject(java.util.Map.of("markdown", markdown)))));
-                    case 1 -> ModelTurn.tools(List.of(new ToolCall("review-failure", "request_plan_review",
+                    case 1 -> ModelTurn.tools(List.of(completionRequirement(), new ToolCall("review-failure", "request_plan_review",
                             JsonObject.empty())));
                     case 2 -> ModelTurn.text("plan ready");
                     default -> throw new io.github.liumaishenjian.ccjava.core.ModelGatewayException(
@@ -551,13 +603,13 @@ class RuntimeStdioCommandHandlerTest {
                     .map(io.github.liumaishenjian.ccjava.domain.UserMessage.class::cast)
                     .anyMatch(message -> message.content().contains("Implement the approved plan"));
             if (executing) {
-                executionCalls.incrementAndGet();
+                if (executionCalls.incrementAndGet() == 1) return ModelTurn.tools(List.of(new ToolCall("listing", "list_files", JsonObject.empty())));
                 return ModelTurn.text("execution complete");
             }
             return switch (planningCalls.getAndIncrement()) {
                 case 0 -> ModelTurn.tools(List.of(new ToolCall("update", "revise_plan_artifact",
                         new JsonObject(java.util.Map.of("markdown", markdown)))));
-                case 1 -> ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review",
+                case 1 -> ModelTurn.tools(List.of(new ToolCall("list-evidence", "declare_plan_evidence", new JsonObject(java.util.Map.of("requirementId", "listing", "kind", "VERIFICATION", "locator", "list_files", "label", "目录查询成功", "required", true))), new ToolCall("review", "request_plan_review",
                         JsonObject.empty())));
                 default -> ModelTurn.text("planning complete");
             };
@@ -605,7 +657,7 @@ class RuntimeStdioCommandHandlerTest {
                     .filter(event -> event.type().equals("run.completed")).count() == completedBeforeExecution) {
                 Thread.sleep(10);
             }
-            assertThat(executionCalls).hasValue(1);
+            assertThat(executionCalls).hasValue(2);
             int acceptedIndex = java.util.stream.IntStream.range(0, events.size())
                     .filter(index -> events.get(index).type().equals("plan.execution.accepted"))
                     .findFirst().orElseThrow();
@@ -637,7 +689,7 @@ class RuntimeStdioCommandHandlerTest {
             return switch (planningCalls.getAndIncrement()) {
                 case 0 -> ModelTurn.tools(List.of(new ToolCall("update", "revise_plan_artifact",
                         new JsonObject(java.util.Map.of("markdown", markdown)))));
-                case 1 -> ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review",
+                case 1 -> ModelTurn.tools(List.of(completionRequirement(), new ToolCall("review", "request_plan_review",
                         JsonObject.empty())));
                 default -> ModelTurn.text("planning complete");
             };
@@ -2535,5 +2587,11 @@ class RuntimeStdioCommandHandlerTest {
                 ObjectNode payload) {
             this(type, "unavailable", sessionId, runId, payload);
         }
+    }
+    /** 为只关注审批/交接的Fixture声明真实命令验证要求，不预先伪造成功证据。 */
+    private static ToolCall completionRequirement() {
+        return new ToolCall("completion-requirement", "declare_plan_evidence", new JsonObject(java.util.Map.of(
+                "requirementId", "completion-check", "kind", "VERIFICATION", "locator", "run_command",
+                "label", "执行阶段真实命令成功", "required", true)));
     }
 }

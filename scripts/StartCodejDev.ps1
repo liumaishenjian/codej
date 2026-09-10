@@ -138,7 +138,13 @@ else {
 [Console]::Error.WriteLine("[codej] Starting cc-java for workspace: $($options.Workspace)")
 Push-Location $tuiDirectory
 try {
-    & npm.cmd --silent run dev
+    # 新界面的模式与目录只交给 Node，不能成为 Java CLI 的未知参数。
+    if ($options.TuiNext -and $null -eq $options.Print) {
+        & npm.cmd --silent run dev -- --tui-next --workspace $options.Workspace
+    }
+    else {
+        & npm.cmd --silent run dev
+    }
     exit $LASTEXITCODE
 }
 finally {

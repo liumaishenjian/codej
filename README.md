@@ -6,6 +6,10 @@
 
 [官网](https://codej.sixmai.top) · [安装](#安装) · [技术架构](#技术架构) · [使用文档](./docs/product-requirements.md) · [Apache-2.0](./LICENSE)
 
+## 前端重设计验收版
+
+本分支已接通真实对话、工具审批、完整问卷及 /plan 确认执行。使用 scripts/StartCodejDev.ps1 --tui-next 启动；默认安装入口未替换。离线演示保留 preview:tui。完整路径、按键与验证限制见 [核心流程验收指南](docs/evidence/S15-tui-next-core.md)。
+
 ## 安装
 
 当前提供 Windows x64 与 Linux x64 自包含发行包，已内置 Java 和 Node.js Runtime。macOS 发行包尚未提供。

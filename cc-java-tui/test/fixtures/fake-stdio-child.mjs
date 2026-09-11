@@ -21,7 +21,12 @@ reader.on('line', line => {
       return;
     }
     sessionId = 'session-1';
-    emit('initialized', command.requestId, {protocolVersion: 0}, sessionId);
+    const capabilities = mode === 'legacy-no-directed-chunks' ? {} : {
+      ...(command.payload.questionnaireV1 === true ? {questionnaireV1: true} : {}),
+      ...(command.payload.experienceV1 === true ? {experienceV1: true} : {}),
+      ...(command.payload.directedChunkInputV1 === true ? {directedChunkInputV1: true} : {}),
+    };
+    emit('initialized', command.requestId, {protocolVersion: 0, ...capabilities}, sessionId);
   } else if (command.type === 'file.suggest') {
     if (mode === 'suggest-error') {
       emit('protocol.error', command.requestId, {code: 'FILE_SUGGEST_UNAVAILABLE'}, sessionId);
@@ -46,7 +51,9 @@ reader.on('line', line => {
       emit('file.suggestions', command.requestId, {query: command.payload.query, candidates}, sessionId);
     }
   } else if (command.type === 'input.begin') {
-    inputAssembly = {requestId: command.requestId, inputId: command.payload.inputId, chunks: []};
+    inputAssembly = {requestId: command.requestId, inputId: command.payload.inputId,
+      targetType: command.payload.targetType ?? 'run.start',
+      verificationCorrection: command.payload.verificationCorrection === true, chunks: []};
     if (mode === 'chunk-error-begin') {
       emit('protocol.error', command.requestId, {code: 'INPUT_BEGIN_REJECTED'}, sessionId);
       inputAssembly = undefined;
@@ -67,9 +74,10 @@ reader.on('line', line => {
     if (inputAssembly === undefined) return;
     command = {
       ...command,
-      type: 'run.start',
+      type: inputAssembly.targetType,
       requestId: inputAssembly.requestId,
-      payload: {prompt: inputAssembly.chunks.join('')},
+      payload: {prompt: inputAssembly.chunks.join(''),
+        ...(inputAssembly.verificationCorrection ? {verificationCorrection: true} : {})},
     };
     inputAssembly = undefined;
   }
@@ -87,7 +95,7 @@ reader.on('line', line => {
     }
     return;
   }
-  if (command.type === 'run.start') {
+  if (command.type === 'run.start' || command.type === 'plan.start') {
     if (mode === 'run-disconnect') process.exit(17);
     if (mode === 'run-no-ack') return;
     if (mode === 'run-late-ack' || mode === 'run-late-rejected') {
@@ -148,11 +156,11 @@ reader.on('line', line => {
     activeRunId = 'run-1';
     if (mode === 'steering-race') {
       timer = setTimeout(() => {
-        emit('run.started', command.requestId, {promptChars: command.payload.prompt.length}, sessionId, activeRunId);
+        emit('run.started', command.requestId, {promptChars: command.payload.prompt.length, verificationCorrection: command.payload.verificationCorrection === true, commandType: command.type}, sessionId, activeRunId);
       }, 40);
       return;
     }
-    emit('run.started', command.requestId, {promptChars: command.payload.prompt.length}, sessionId, activeRunId);
+    emit('run.started', command.requestId, {promptChars: command.payload.prompt.length, verificationCorrection: command.payload.verificationCorrection === true, commandType: command.type}, sessionId, activeRunId);
     if (mode === 'crash') {
       process.exit(17);
     }

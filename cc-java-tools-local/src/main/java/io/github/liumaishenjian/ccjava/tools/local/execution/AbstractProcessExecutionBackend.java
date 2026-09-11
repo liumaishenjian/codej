@@ -195,6 +195,15 @@ abstract class AbstractProcessExecutionBackend implements ExecutionBackend {
                 byte[] stdin) {
             this(argv, hostCwd, environment, stdin, Optional.empty());
         }
+
+        /** 内部诊断不得展开 argv、环境值、stdin 或清理 identity。 */
+        @Override
+        public String toString() {
+            return "Plan[argumentCount=" + argv.size()
+                    + ", environmentEntryCount=" + environment.size()
+                    + ", stdinBytes=" + stdin.length
+                    + ", cleanupIdentityPresent=" + cleanupIdentity.isPresent() + "]";
+        }
     }
 
     private static final class Output {

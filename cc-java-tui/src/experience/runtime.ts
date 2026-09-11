@@ -8,7 +8,7 @@ export interface QuestionsPanel {kind: 'questions'; event: ProtocolEvent; callId
 export interface PlanPanel {kind: 'plan'; event: ProtocolEvent; planId: string; revision: number; contentDigest: string; workspaceDigest: string; markdown: string}
 export type Pending = ApprovalPanel | QuestionsPanel | PlanPanel;
 export interface Message {kind: 'user' | 'assistant' | 'notice'; id: string; run: string; turn: number; text: string}
-export interface ToolRecord {kind: 'tool'; id: string; run: string; turn: number; ordinal: number; name: string; activity: string; status: 'running' | 'completed' | 'failed' | 'cancelled'; output: string; preview: string; shell: string; directory: string; truncated: boolean; failure: string}
+export interface ToolRecord {kind: 'tool'; id: string; run: string; turn: number; ordinal: number; name: string; activity: string; status: 'running' | 'completed' | 'failed' | 'cancelled'; output: string; preview: string; shell: string; directory: string; truncated: boolean; failure: string; failureReasonCode: string; recoveredByOrdinal: number}
 export type RecordBlock = Message | ToolRecord;
 export interface RuntimeSnapshot {
   connection: 'connecting' | 'ready' | 'closed';
@@ -18,11 +18,13 @@ export interface RuntimeSnapshot {
   notice: string; activity: string; startedAt: number; revision: number; questionnaire: boolean;
 }
 export interface RuntimeClient {
-  initialize(options?: {questionnaireV1?: boolean; experienceV1?: boolean}): string;
+  initialize(options?: {questionnaireV1?: boolean; experienceV1?: boolean; directedChunkInputV1?: boolean}): string;
   onEvent(listener: (event: ProtocolEvent) => void): () => void;
   onFailure(listener: (message: string) => void): () => void;
   onRunHandshake?: StdioClient['onRunHandshake'];
-  startRun(prompt: string): string; startPlan(prompt: string): string; cancelRun(): string;
+  startRun(prompt: string): string;
+  startPlan(prompt: string, options?: {readonly verificationCorrection?: boolean}): string;
+  cancelRun(): string;
   resolveApproval: StdioClient['resolveApproval'];
   resolveQuestion: StdioClient['resolveQuestion'];
   resolveQuestionnaire?(callId: string, answers: readonly Answer[]): string;
@@ -57,7 +59,11 @@ export class ExperienceRuntime {
         this.patch({notice: '运行启动尚未确认。不会自动重试，请等待宿主结果或退出。'});
       }
     }));
-    try {this.#init = this.#client.initialize({questionnaireV1: true, experienceV1: true});}
+    try {this.#init = this.#client.initialize({
+      questionnaireV1: true,
+      experienceV1: true,
+      directedChunkInputV1: true,
+    });}
     catch {this.fail('无法初始化 Java 连接。');}
   }
   dispose(): void {this.#disposed = true; for (const cleanup of this.#cleanup) cleanup(); this.#cleanup = []; this.#listeners.clear(); this.#decisions.clear();}
@@ -83,11 +89,16 @@ export class ExperienceRuntime {
       this.patch({mode: 'plan', showPlan: !!this.state.plan, notice: this.state.plan ? '' : '已进入计划模式。请输入需要规划的任务。'}); return true;
     }
     if (prompt.startsWith('/') && !prompt.startsWith('/plan ')) {this.patch({notice: '此界面仅提供 /plan 和 /help。'}); return false;}
-    const planning = prompt.startsWith('/plan ') || this.state.mode === 'plan';
-    const task = prompt.startsWith('/plan ') ? prompt.slice(6).trim() : prompt;
+    const explicitPlanTask = prompt.startsWith('/plan ');
+    const planning = explicitPlanTask || this.state.mode === 'plan';
+    const task = explicitPlanTask ? prompt.slice(6).trim() : prompt;
     if (!task) return false;
     try {
-      const request = planning ? this.#client.startPlan(task) : this.#client.startRun(task);
+      const request = planning
+        ? explicitPlanTask
+          ? this.#client.startPlan(task, {verificationCorrection: true})
+          : this.#client.startPlan(task)
+        : this.#client.startRun(task);
       this.#request = request; this.#run = ''; this.#turn = 0; this.#cancelWanted = false; this.#execution = false; this.#completionNotice = '';
       this.patch({status: 'starting', showPlan: false, pending: undefined, notice: '', startedAt: Date.now(), activity: planning ? '正在规划' : '正在思考', mode: planning ? 'plan' : 'chat',
         blocks: [...this.state.blocks, {kind: 'user', id: 'user-' + ++this.#serial, run: request, turn: 0, text: task}]});
@@ -244,8 +255,8 @@ export class ExperienceRuntime {
     const p = event.payload; const ordinal = count(p, 'ordinal'); const id = this.#run + ':tool:' + ordinal;
     const previous = this.state.blocks.find(block => block.kind === 'tool' && block.id === id) as ToolRecord | undefined;
     const tool: ToolRecord = previous ? {...previous} : {kind: 'tool', id, run: this.#run, turn: count(p, 'turn') || this.#turn, ordinal,
-      name: text(p, 'toolName'), activity: '', status: 'running', output: '', preview: '', shell: '', directory: '', truncated: false, failure: ''};
-    if (event.type === 'tool.started') {tool.activity = text(p, 'activity'); tool.preview = text(p, 'parametersPreview') || text(p, 'preview'); tool.shell = text(p, 'shell'); tool.directory = text(p, 'workingDirectory');}
+      name: text(p, 'toolName'), activity: '', status: 'running', output: '', preview: '', shell: '', directory: '', truncated: false, failure: '', failureReasonCode: '', recoveredByOrdinal: 0};
+    if (event.type === 'tool.started') {tool.activity = text(p, 'activity'); tool.preview = text(p, 'command') || text(p, 'parametersPreview') || text(p, 'preview'); tool.shell = text(p, 'shell'); tool.directory = text(p, 'workingDirectory');}
     if (event.type === 'tool.output') {tool.output = bounded(tool.output + text(p, 'text')); tool.truncated ||= tool.output.includes('[界面内容已截断]');}
     if (event.type === 'tool.completed' || event.type === 'tool.failed') {
       tool.status = event.type === 'tool.completed' ? 'completed' : 'failed';
@@ -254,10 +265,22 @@ export class ExperienceRuntime {
       if (p.contentRedacted === true) tool.output = '内容含敏感信息，未在终端展开';
       tool.truncated ||= p.truncated === true || p.outputTruncated === true || p.contentTruncated === true;
       tool.failure = text(p, 'errorCode');
+      tool.failureReasonCode = text(p, 'failureReasonCode');
       if (typeof p.exitCode === 'number') tool.failure = '退出码 ' + p.exitCode;
       for (const [key, pending] of this.#decisions) if (pending.kind === 'approval' && pending.ordinal === ordinal) this.#decisions.delete(key);
     }
-    this.patch({blocks: previous ? this.state.blocks.map(block => block.id === id ? tool : block) : [...this.state.blocks, tool], activity: tool.activity || '正在处理工具'});
+    let blocks = previous ? this.state.blocks.map(block => block.id === id ? tool : block) : [...this.state.blocks, tool];
+    const recoveredFailureOrdinal = count(p, 'recoveredFailureOrdinal');
+    if (event.type === 'tool.completed' && recoveredFailureOrdinal > 0) {
+      const recoveredId = this.#run + ':tool:' + recoveredFailureOrdinal;
+      blocks = blocks.map(block => block.kind === 'tool'
+        && block.id === recoveredId
+        && block.name === 'declare_plan_evidence'
+        && block.status === 'failed'
+        && block.failureReasonCode === 'verification_tool_unavailable'
+        ? {...block, recoveredByOrdinal: ordinal} : block);
+    }
+    this.patch({blocks, activity: tool.activity || '正在处理工具'});
   }
   private finish(notice: string, pending?: PlanPanel): void {
     const cancelled = this.#cancelWanted; this.#request = ''; this.#run = ''; this.#decisions.clear(); this.#cancelWanted = false;

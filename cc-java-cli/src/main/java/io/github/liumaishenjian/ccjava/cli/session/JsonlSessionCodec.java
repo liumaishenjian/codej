@@ -623,13 +623,18 @@ final class JsonlSessionCodec {
                     }
                     if (planArtifact.isPresent()) {
                         PlanArtifact previous = planArtifact.orElseThrow();
-                        if (!previous.planId().equals(candidate.planId())
-                                || !previous.createdAt().equals(candidate.createdAt())
-                                || candidate.revision() != previous.revision() + 1
-                                || candidate.updatedAt().isBefore(previous.updatedAt())
-                                || !PlanLifecyclePolicy.validTransition(previous.status(), candidate.status())) {
+                        boolean rotatedIdentity = !previous.planId().equals(candidate.planId());
+                        boolean validRotation = rotatedIdentity
+                                && PlanLifecyclePolicy.validIdentityRotation(previous, candidate);
+                        boolean validRevision = !rotatedIdentity
+                                && previous.createdAt().equals(candidate.createdAt())
+                                && candidate.revision() == previous.revision() + 1
+                                && !candidate.updatedAt().isBefore(previous.updatedAt())
+                                && PlanLifecyclePolicy.validTransition(previous.status(), candidate.status());
+                        if (!validRotation && !validRevision) {
                             throw invalid("INVALID_RECORD", "PlanArtifact revision、时间或状态链无效");
                         }
+                        if (validRotation) plan = Optional.empty();
                     } else if (candidate.revision() != 1
                             || !PlanLifecyclePolicy.validInitial(candidate.status())) {
                         throw invalid("INVALID_RECORD", "PlanArtifact 首个 revision 或状态无效");

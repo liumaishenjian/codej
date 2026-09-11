@@ -54,8 +54,19 @@ export function runtimeFrame(state: RuntimeSnapshot, ui: RuntimeUi, width: numbe
     if (block.kind !== 'tool') continue;
     if (planningToolTitles[block.name] && block.status !== 'failed') continue;
     if (planningToolTitles[block.name]) {
+      const unavailable = block.failureReasonCode === 'verification_tool_unavailable';
+      const recovered = unavailable && block.recoveredByOrdinal > block.ordinal;
+      const summary = recovered ? '已修正验证方式，继续规划'
+        : unavailable ? '验证方式使用了当前不可用的工具'
+        : block.status === 'running' ? '正在处理…'
+        : block.status === 'failed' ? failure(block)
+        : block.status === 'cancelled' ? '已取消' : '完成';
       body.add([span('● ', block.status === 'failed' ? palette.red : undefined), span(planningToolTitles[block.name]!, undefined, true)]);
-      body.add([span('  └ ' + (block.status === 'running' ? '正在处理…' : block.status === 'failed' ? failure(block) : block.status === 'cancelled' ? '已取消' : '完成'), block.status === 'failed' ? palette.red : palette.muted)]);
+      body.add([span('  └ ' + summary, block.status === 'failed' && !recovered ? palette.red : palette.muted)]);
+      if (ui.expanded && unavailable) {
+        body.add(muted('    原声明：失败（验证工具不可用）'));
+        if (recovered) body.add(muted('    后续声明：修正成功'));
+      }
       body.blank(); continue;
     }
     const group: ToolRecord[] = [block];

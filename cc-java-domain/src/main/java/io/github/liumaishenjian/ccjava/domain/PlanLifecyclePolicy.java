@@ -79,6 +79,54 @@ public final class PlanLifecyclePolicy {
                 || terminalFailure(checked);
     }
 
+    /**
+     * 判断旧 revision 链是否已经结束到可以由用户显式开启全新 Plan identity。
+     *
+     * <p>{@link PlanStatus#DIGEST_CONFLICT} 虽会封闭当前 revision 链，但仍表示工作区身份冲突需要
+     * 用户先核对，不能被新计划静默覆盖。其他完成、拒绝或执行失败终态没有待恢复副作用，可在完整
+     * CAS 下保留历史并轮换为新的 revision 1 DRAFT。</p>
+     *
+     * @param status 当前 durable Plan 状态
+     * @return 允许开启全新 identity 时为 {@code true}
+     */
+    public static boolean replaceableTerminal(PlanStatus status) {
+        PlanStatus checked = Objects.requireNonNull(status, "status 不能为空");
+        return terminal(checked) && checked != PlanStatus.DIGEST_CONFLICT;
+    }
+
+    /**
+     * 判断旧终态到全新 Plan identity 的替换是否为干净首版。
+     *
+     * <p>新工件不能继承旧 Evidence、执行摘要或验证恢复标记，且创建时间不得早于旧终态更新时间。
+     * 写入、journal 重放与 manifest 恢复必须共用该判断，避免只在当前进程接受、重启后却拒绝。</p>
+     *
+     * @param previous 当前已提交的旧终态工件
+     * @param candidate 待提交的新 identity 首版
+     * @return 满足全新 revision 1 DRAFT 不变量时为 {@code true}
+     */
+    public static boolean validIdentityRotation(PlanArtifact previous, PlanArtifact candidate) {
+        PlanArtifact old = Objects.requireNonNull(previous, "previous 不能为空");
+        PlanArtifact fresh = Objects.requireNonNull(candidate, "candidate 不能为空");
+        return replaceableTerminal(old.status())
+                && old.sessionId().equals(fresh.sessionId())
+                && !old.planId().equals(fresh.planId())
+                && fresh.revision() == 1
+                && fresh.status() == PlanStatus.DRAFT
+                && fresh.createdAt().equals(fresh.updatedAt())
+                && !fresh.createdAt().isBefore(old.updatedAt())
+                && fresh.executionBrief().isEmpty()
+                && fresh.verificationResumeReview().isEmpty()
+                && fresh.evidenceLedger().sessionId().equals(fresh.sessionId())
+                && fresh.evidenceLedger().planId().equals(fresh.planId())
+                && fresh.evidenceLedger().approvedPlanRevision() == 0
+                && fresh.evidenceLedger().executionBriefDigest().isEmpty()
+                && fresh.evidenceLedger().approvedWorkspaceDigest().isEmpty()
+                && fresh.evidenceLedger().requirements().isEmpty()
+                && fresh.evidenceLedger().references().isEmpty()
+                && fresh.evidenceLedger().createdAt().equals(fresh.createdAt())
+                && fresh.evidenceLedger().updatedAt().equals(fresh.updatedAt());
+    }
+
     private static boolean terminalFailure(PlanStatus status) {
         return status == PlanStatus.FAILED
                 || status == PlanStatus.CANCELLED

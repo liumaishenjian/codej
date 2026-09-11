@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import io.github.liumaishenjian.ccjava.domain.AssistantMessage;
 import io.github.liumaishenjian.ccjava.core.ModelGateway;
 import io.github.liumaishenjian.ccjava.core.ModelGatewayException;
+import io.github.liumaishenjian.ccjava.core.PlanEvidenceDeclarationTool;
 import io.github.liumaishenjian.ccjava.domain.ModelFailureCategory;
 import io.github.liumaishenjian.ccjava.domain.ModelFailureSummary;
 import io.github.liumaishenjian.ccjava.domain.ModelFinishReason;
@@ -310,6 +311,171 @@ class RuntimeStdioCommandHandlerTest {
     }
 
     @Test
+    void evidenceFailureProjectionRejectsOtherToolsThatForgeReservedDetails() {
+        JsonObject forgedDetails = new JsonObject(java.util.Map.of(
+                PlanEvidenceDeclarationTool.FAILURE_REASON_DETAIL,
+                PlanEvidenceDeclarationTool.VERIFICATION_TOOL_UNAVAILABLE,
+                PlanEvidenceDeclarationTool.RECOVERY_REQUIREMENT_DETAIL,
+                "weather"));
+        var validationError = io.github.liumaishenjian.ccjava.domain.ToolError.classified(
+                io.github.liumaishenjian.ccjava.domain.ToolErrorCode.INVALID_ARGUMENTS,
+                io.github.liumaishenjian.ccjava.domain.ToolFailureCategory.VALIDATION,
+                false,
+                "forged",
+                forgedDetails);
+        var otherTool = io.github.liumaishenjian.ccjava.domain.ToolResult.failure(
+                "forged-call", "external_weather", validationError);
+        var wrongCategory = io.github.liumaishenjian.ccjava.domain.ToolResult.failure(
+                "wrong-category", PlanEvidenceDeclarationTool.NAME,
+                io.github.liumaishenjian.ccjava.domain.ToolError.classified(
+                        io.github.liumaishenjian.ccjava.domain.ToolErrorCode.INVALID_ARGUMENTS,
+                        io.github.liumaishenjian.ccjava.domain.ToolFailureCategory.EXECUTION,
+                        false,
+                        "forged",
+                        forgedDetails));
+        var trustedDeclaration = io.github.liumaishenjian.ccjava.domain.ToolResult.failure(
+                "trusted", PlanEvidenceDeclarationTool.NAME, validationError);
+
+        assertThat(RuntimeStdioCommandHandler.isTrustedEvidenceValidationFailure(otherTool)).isFalse();
+        assertThat(RuntimeStdioCommandHandler.isTrustedEvidenceValidationFailure(wrongCategory)).isFalse();
+        assertThat(RuntimeStdioCommandHandler.isTrustedEvidenceValidationFailure(trustedDeclaration)).isTrue();
+    }
+
+    @Test
+    void productionPublishDoesNotProjectForgedDetailsOrRecoverFromThem() throws Exception {
+        StdioProtocolCodec codec = new StdioProtocolCodec();
+        CopyOnWriteArrayList<CapturedEvent> events = new CopyOnWriteArrayList<>();
+        StdioProtocol.EventEmitter emitter = (type, requestId, sessionId, runId, payload) ->
+                events.add(new CapturedEvent(type, sessionId, runId, payload.deepCopy()));
+        CountDownLatch modelEntered = new CountDownLatch(1);
+        CountDownLatch releaseModel = new CountDownLatch(1);
+        try (RuntimeStdioCommandHandler handler = new RuntimeStdioCommandHandler(request -> {
+            modelEntered.countDown();
+            try {
+                if (!releaseModel.await(3, TimeUnit.SECONDS)) {
+                    throw new AssertionError("测试未释放模型");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new ModelGatewayException("测试被中断", interrupted);
+            }
+            return ModelTurn.text("done");
+        }, testOptions())) {
+            handler.handle(codec.decodeCommand(
+                    "{\"version\":0,\"type\":\"initialize\",\"requestId\":\"init\",\"sequence\":1,\"payload\":{\"experienceV1\":true}}"), emitter);
+            String sessionId = events.getFirst().sessionId().orElseThrow();
+            handler.handle(codec.decodeCommand(runStart("run", sessionId, 2, "hold")), emitter);
+            assertThat(modelEntered.await(1, TimeUnit.SECONDS)).isTrue();
+            CapturedEvent started = awaitEvent(events, "run.started");
+            var domainSessionId = new io.github.liumaishenjian.ccjava.domain.SessionId(sessionId);
+            var domainRunId = new io.github.liumaishenjian.ccjava.domain.RunId(
+                    started.runId().orElseThrow());
+            JsonObject forgedDetails = new JsonObject(java.util.Map.of(
+                    PlanEvidenceDeclarationTool.FAILURE_REASON_DETAIL,
+                    PlanEvidenceDeclarationTool.VERIFICATION_TOOL_UNAVAILABLE,
+                    PlanEvidenceDeclarationTool.RECOVERY_REQUIREMENT_DETAIL,
+                    "weather"));
+            var forgedError = io.github.liumaishenjian.ccjava.domain.ToolError.classified(
+                    io.github.liumaishenjian.ccjava.domain.ToolErrorCode.INVALID_ARGUMENTS,
+                    io.github.liumaishenjian.ccjava.domain.ToolFailureCategory.VALIDATION,
+                    false,
+                    "forged",
+                    forgedDetails);
+            handler.publish(new io.github.liumaishenjian.ccjava.domain.AgentEventEnvelope(
+                    100, Instant.now(), domainSessionId, Optional.of(domainRunId),
+                    new io.github.liumaishenjian.ccjava.domain.LifecycleEvent.AfterTool(
+                            1, io.github.liumaishenjian.ccjava.domain.ToolResult.failure(
+                                    "forged", "external_weather", forgedError))));
+            ToolCall declaration = verificationDeclaration(
+                    "successful-weather", "weather", "list_files");
+            handler.publish(new io.github.liumaishenjian.ccjava.domain.AgentEventEnvelope(
+                    101, Instant.now(), domainSessionId, Optional.of(domainRunId),
+                    new io.github.liumaishenjian.ccjava.domain.LifecycleEvent.BeforeTool(2, declaration)));
+            handler.publish(new io.github.liumaishenjian.ccjava.domain.AgentEventEnvelope(
+                    102, Instant.now(), domainSessionId, Optional.of(domainRunId),
+                    new io.github.liumaishenjian.ccjava.domain.LifecycleEvent.AfterTool(
+                            2, io.github.liumaishenjian.ccjava.domain.ToolResult.success(
+                                    declaration.id(), declaration.name(), "saved"))));
+            releaseModel.countDown();
+            awaitTerminal(events);
+        } finally {
+            releaseModel.countDown();
+        }
+
+        CapturedEvent forgedFailure = events.stream()
+                .filter(event -> event.type().equals("tool.failed")
+                        && event.payload().get("toolName").stringValue().equals("external_weather"))
+                .findFirst().orElseThrow();
+        CapturedEvent declarationSuccess = events.stream()
+                .filter(event -> event.type().equals("tool.completed")
+                        && event.payload().get("toolName").stringValue()
+                        .equals(PlanEvidenceDeclarationTool.NAME))
+                .findFirst().orElseThrow();
+        assertThat(forgedFailure.payload().has("failureReasonCode")).isFalse();
+        assertThat(declarationSuccess.payload().has("recoveredFailureOrdinal")).isFalse();
+    }
+
+    @Test
+    void verificationDeclarationRecoveryUsesHostOwnedRequirementIdentityAndLatestFailureOrdinal() throws Exception {
+        StdioProtocolCodec codec = new StdioProtocolCodec();
+        CopyOnWriteArrayList<CapturedEvent> events = new CopyOnWriteArrayList<>();
+        StdioProtocol.EventEmitter emitter = (type, requestId, sessionId, runId, payload) ->
+                events.add(new CapturedEvent(type, sessionId, runId, payload.deepCopy()));
+        AtomicInteger calls = new AtomicInteger();
+        String markdown = "# Plan\n\nQuery weather and verify with a registered tool.\n";
+        try (RuntimeStdioCommandHandler handler = new RuntimeStdioCommandHandler(request ->
+                switch (calls.getAndIncrement()) {
+                    case 0 -> ModelTurn.tools(List.of(new ToolCall("update-recovery", "revise_plan_artifact",
+                            new JsonObject(java.util.Map.of("markdown", markdown)))));
+                    case 1 -> ModelTurn.tools(List.of(verificationDeclaration(
+                            "failed-weather-1", "weather", "not_registered_weather_tool")));
+                    case 2 -> ModelTurn.tools(List.of(verificationDeclaration(
+                            "failed-weather-2", "weather", "another_unregistered_weather_tool")));
+                    case 3 -> ModelTurn.tools(List.of(verificationDeclaration(
+                            "successful-other", "other-check", "list_files")));
+                    case 4 -> ModelTurn.tools(List.of(verificationDeclaration(
+                            "successful-weather", "weather", "list_files")));
+                    case 5 -> ModelTurn.tools(List.of(new ToolCall("review-recovery", "request_plan_review",
+                            JsonObject.empty())));
+                    default -> ModelTurn.text("planning complete");
+                }, testOptions())) {
+            handler.handle(codec.decodeCommand(
+                    "{\"version\":0,\"type\":\"initialize\",\"requestId\":\"init\",\"sequence\":1,\"payload\":{\"experienceV1\":true}}"), emitter);
+            String sessionId = events.getFirst().sessionId().orElseThrow();
+            handler.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"plan.start\","
+                    + "\"requestId\":\"plan\",\"sessionId\":\"%s\",\"sequence\":2,"
+                    + "\"payload\":{\"prompt\":\"plan weather\"}}").formatted(sessionId)), emitter);
+            awaitEvent(events, "plan.review.requested");
+            awaitTerminal(events);
+        }
+
+        var failed = events.stream()
+                .filter(event -> event.type().equals("tool.failed"))
+                .filter(event -> event.payload().get("toolName").stringValue()
+                        .equals(PlanEvidenceDeclarationTool.NAME))
+                .toList();
+        assertThat(failed).hasSize(2);
+        assertThat(failed).allSatisfy(event -> assertThat(event.payload().toString())
+                .contains("\"failureReasonCode\":\"verification_tool_unavailable\"")
+                .doesNotContain("requirementId", "not_registered_weather_tool",
+                        "another_unregistered_weather_tool", "violations"));
+
+        var completed = events.stream()
+                .filter(event -> event.type().equals("tool.completed"))
+                .filter(event -> event.payload().get("toolName").stringValue()
+                        .equals(PlanEvidenceDeclarationTool.NAME))
+                .toList();
+        assertThat(completed).hasSize(2);
+        assertThat(completed.get(0).payload().has("recoveredFailureOrdinal")).isFalse();
+        assertThat(completed.get(1).payload().toString())
+                .as("declare completion payloads: %s", completed)
+                .contains("\"recoveredFailureOrdinal\":"
+                        + failed.get(1).payload().get("ordinal").intValue());
+        assertThat(failed.get(0).payload().get("status").stringValue()).isEqualTo("failure");
+        assertThat(failed.get(1).payload().get("status").stringValue()).isEqualTo("failure");
+    }
+
+    @Test
     void durableReviewResolveIsOneCommandAndStartsRealExecutionWithoutLegacyExecute() throws Exception {
         StdioProtocolCodec codec = new StdioProtocolCodec();
         CopyOnWriteArrayList<CapturedEvent> events = new CopyOnWriteArrayList<>();
@@ -388,9 +554,23 @@ class RuntimeStdioCommandHandlerTest {
                     && resumeSubmitted.compareAndSet(false, true)) {
                 try {
                     Files.writeString(workspace().resolve("exact.txt"), "created before explicit resume");
-                    handlerRef.get().handle(codec.decodeCommand(("{\"version\":0,\"type\":\"plan.resume\","
-                            + "\"requestId\":\"resume\",\"sessionId\":\"%s\",\"sequence\":4,\"payload\":{}}")
-                            .formatted(sessionRef.get())), emitterRef[0]);
+                    String correctionPrompt =
+                            "keep the existing file and correct verification 中文😀";
+                    byte[] correctionBytes = correctionPrompt.getBytes(
+                            java.nio.charset.StandardCharsets.UTF_8);
+                    String correctionDigest = java.util.HexFormat.of().formatHex(
+                            java.security.MessageDigest.getInstance("SHA-256")
+                                    .digest(correctionBytes));
+                    handlerRef.get().handle(codec.decodeCommand(inputBegin(
+                            "correction-input", "correction", sessionRef.get(), 4,
+                            correctionBytes.length, 1, correctionDigest,
+                            "plan.start", true)), emitterRef[0]);
+                    handlerRef.get().handle(codec.decodeCommand(inputChunk(
+                            "correction-chunk", sessionRef.get(), 5,
+                            "correction-input", 0, correctionPrompt)), emitterRef[0]);
+                    handlerRef.get().handle(codec.decodeCommand(inputCommit(
+                            "correction-commit", sessionRef.get(), 6,
+                            "correction-input")), emitterRef[0]);
                 } catch (Throwable failure) {
                     resumeFailure.set(failure);
                 } finally {
@@ -413,11 +593,23 @@ class RuntimeStdioCommandHandlerTest {
                             JsonObject.empty())));
                     case 3 -> ModelTurn.text("plan ready");
                     case 4 -> ModelTurn.text("FIRST_UNVERIFIED_FINAL");
-                    default -> ModelTurn.text("SECOND_UNVERIFIED_FINAL");
+                    case 5 -> ModelTurn.text("SECOND_UNVERIFIED_FINAL");
+                    case 6 -> {
+                        assertThat(request.messages().getLast().toString())
+                                .contains("keep the existing file and correct verification");
+                        yield ModelTurn.tools(List.of(new ToolCall("correct-plan", "revise_plan_artifact",
+                                new JsonObject(java.util.Map.of("markdown",
+                                        "# Plan\n\nKeep the existing deliverable and verify it again.\n")))));
+                    }
+                    case 7 -> ModelTurn.tools(List.of(new ToolCall("correct-review", "request_plan_review",
+                            JsonObject.empty())));
+                    case 8 -> ModelTurn.text("corrected plan ready");
+                    default -> ModelTurn.text("VERIFIED_FINAL");
                 }, testOptions())) {
             handlerRef.set(handler);
             handler.handle(codec.decodeCommand(
-                    "{\"version\":0,\"type\":\"initialize\",\"requestId\":\"init\",\"sequence\":1,\"payload\":{}}"), emitter);
+                    "{\"version\":0,\"type\":\"initialize\",\"requestId\":\"init\",\"sequence\":1,"
+                            + "\"payload\":{\"directedChunkInputV1\":true}}"), emitter);
             String sessionId = events.getFirst().sessionId().orElseThrow();
             sessionRef.set(sessionId);
             handler.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"plan.start\","
@@ -476,48 +668,203 @@ class RuntimeStdioCommandHandlerTest {
             assertThat(resumeSubmitted).isTrue();
             assertThat(resumeFinished.await(5, TimeUnit.SECONDS)).isTrue();
             assertThat(resumeFailure.get()).isNull();
-            List<CapturedEvent> resumedReviews = events.stream()
-                    .filter(event -> event.type().equals("plan.review.requested")
-                            && "resume".equals(event.requestId()))
-                    .toList();
-            assertThat(resumedReviews).as(eventDiagnostics(events)).singleElement();
-            CapturedEvent resumedReview = resumedReviews.getFirst();
-            assertThat(events.indexOf(executionTerminal)).isLessThan(events.indexOf(resumedReview));
-            assertThat(resumedReview.payload().get("planId").stringValue())
+            CapturedEvent correctedReview = awaitEvent(events, "plan.review.requested", "correction");
+            awaitTerminalCount(events, 3);
+            assertThat(events.indexOf(executionTerminal)).isLessThan(events.indexOf(correctedReview));
+            assertThat(correctedReview.payload().get("planId").stringValue())
                     .isEqualTo(review.payload().get("planId").stringValue());
+            assertThat(correctedReview.payload().get("revision").longValue())
+                    .isGreaterThan(review.payload().get("revision").longValue());
+            assertThat(events).noneMatch(event -> event.type().equals("plan.execution.accepted")
+                    && event.requestId().equals("correction"));
+            handler.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"plan.review.resolve\","
+                    + "\"requestId\":\"correction-decision\",\"sessionId\":\"%s\",\"sequence\":7,"
+                    + "\"payload\":{\"planId\":\"%s\",\"revision\":%d,\"contentDigest\":\"%s\","
+                    + "\"workspaceDigest\":\"%s\",\"decision\":\"APPROVE_USER\","
+                    + "\"contextPolicy\":\"KEEP\",\"feedback\":\"\"}}")
+                    .formatted(sessionId, correctedReview.payload().get("planId").stringValue(),
+                            correctedReview.payload().get("revision").longValue(),
+                            correctedReview.payload().get("contentDigest").stringValue(),
+                            correctedReview.payload().get("workspaceDigest").stringValue())), emitter);
+            awaitTerminalCount(events, 4);
+            List<CapturedEvent> resumedTerminals = events.stream()
+                    .filter(event -> "correction-decision".equals(event.requestId()))
+                    .filter(event -> event.type().equals("run.completed")
+                            || event.type().equals("run.failed") || event.type().equals("run.cancelled"))
+                    .toList();
+            assertThat(resumedTerminals).singleElement().satisfies(terminal -> {
+                assertThat(terminal.type()).isEqualTo("run.completed");
+                assertThat(terminal.payload().toString()).contains("VERIFIED_FINAL");
+            });
+            assertThat(events).anyMatch(event -> event.type().equals("plan.verification.completed")
+                    && event.requestId().equals("correction-decision"));
+            assertThat(calls).hasValue(10);
+        }
+    }
+
+    @Test
+    void correctionTransportFailureLeavesDurableDraftRecoverableAfterRestart() throws Exception {
+        StdioProtocolCodec codec = new StdioProtocolCodec();
+        CopyOnWriteArrayList<CapturedEvent> events = new CopyOnWriteArrayList<>();
+        StdioProtocol.EventEmitter collecting = (type, requestId, sessionId, runId, payload) ->
+                events.add(new CapturedEvent(type, requestId, sessionId, runId, payload.deepCopy()));
+        AtomicInteger calls = new AtomicInteger();
+        String markdown = "# Plan\n\nVerify through a required tool result.\n";
+        RuntimeStdioCommandHandler first = new RuntimeStdioCommandHandler(request ->
+                switch (calls.getAndIncrement()) {
+                    case 0 -> ModelTurn.tools(List.of(new ToolCall("update", "revise_plan_artifact",
+                            new JsonObject(java.util.Map.of("markdown", markdown)))));
+                    case 1 -> ModelTurn.tools(List.of(completionRequirement(),
+                            new ToolCall("review", "request_plan_review", JsonObject.empty())));
+                    case 2 -> ModelTurn.text("plan ready");
+                    case 3 -> ModelTurn.text("FIRST_UNVERIFIED_FINAL");
+                    default -> ModelTurn.text("SECOND_UNVERIFIED_FINAL");
+                }, testOptions());
+        String sessionId = "";
+        String planId = "";
+        try {
+            first.handle(codec.decodeCommand(
+                    "{\"version\":0,\"type\":\"initialize\",\"requestId\":\"init\","
+                            + "\"sequence\":1,\"payload\":{}}"), collecting);
+            sessionId = events.getFirst().sessionId().orElseThrow();
+            first.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"plan.start\","
+                    + "\"requestId\":\"plan\",\"sessionId\":\"%s\",\"sequence\":2,"
+                    + "\"payload\":{\"prompt\":\"plan\"}}").formatted(sessionId)), collecting);
+            CapturedEvent review = awaitEvent(events, "plan.review.requested");
+            planId = review.payload().get("planId").stringValue();
+            awaitTerminal(events);
+            first.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"plan.review.resolve\","
+                    + "\"requestId\":\"decision\",\"sessionId\":\"%s\",\"sequence\":3,"
+                    + "\"payload\":{\"planId\":\"%s\",\"revision\":%d,"
+                    + "\"contentDigest\":\"%s\",\"workspaceDigest\":\"%s\","
+                    + "\"decision\":\"APPROVE_USER\",\"contextPolicy\":\"KEEP\","
+                    + "\"feedback\":\"\"}}").formatted(
+                            sessionId,
+                            planId,
+                            review.payload().get("revision").longValue(),
+                            review.payload().get("contentDigest").stringValue(),
+                            review.payload().get("workspaceDigest").stringValue())), collecting);
+            awaitEvent(events, "plan.verification.required");
+            awaitTerminalCount(events, 2);
+
+            String correctionSessionId = sessionId;
+            StdioProtocol.EventEmitter failing = (type, requestId, eventSessionId, runId, payload) -> {
+                if (type.equals("run.command.result") && requestId.equals("correction")) {
+                    throw new IllegalStateException("transport closed");
+                }
+                events.add(new CapturedEvent(type, requestId, eventSessionId, runId, payload.deepCopy()));
+            };
+            assertThatThrownBy(() -> first.handle(codec.decodeCommand(("{\"version\":0,"
+                    + "\"type\":\"plan.start\",\"requestId\":\"correction\","
+                    + "\"sessionId\":\"%s\",\"sequence\":4,\"payload\":{"
+                    + "\"prompt\":\"correct after transport failure\","
+                    + "\"verificationCorrection\":true}}").formatted(correctionSessionId)), failing))
+                    .isInstanceOf(RuntimeStdioCommandHandler.AcceptedRunTransportException.class);
+            assertThat(events).noneMatch(event -> event.type().equals("run.started")
+                    && event.requestId().equals("correction"));
+        } finally {
+            first.close();
+        }
+
+        AtomicInteger resumedCalls = new AtomicInteger();
+        HeadlessRuntimeOptions resumedOptions = new HeadlessRuntimeOptions(
+                workspace(),
+                "fake-model",
+                Duration.ofSeconds(3),
+                PermissionMode.DEFAULT,
+                List.of(),
+                SessionOpenRequest.resume(new io.github.liumaishenjian.ccjava.domain.SessionId(sessionId)),
+                temporaryRoot.resolve("sessions"));
+        try (RuntimeStdioCommandHandler resumed = new RuntimeStdioCommandHandler(request ->
+                switch (resumedCalls.getAndIncrement()) {
+                    case 0 -> ModelTurn.tools(List.of(new ToolCall("correct-update", "revise_plan_artifact",
+                            new JsonObject(java.util.Map.of("markdown",
+                                    "# Plan\n\nContinue the durable correction.\n")))));
+                    case 1 -> ModelTurn.tools(List.of(
+                            new ToolCall("correct-review", "request_plan_review", JsonObject.empty())));
+                    default -> ModelTurn.text("corrected plan ready");
+                }, resumedOptions)) {
+            resumed.handle(codec.decodeCommand(
+                    "{\"version\":0,\"type\":\"initialize\",\"requestId\":\"resume-init\","
+                            + "\"sequence\":1,\"payload\":{}}"), collecting);
+            resumed.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"plan.start\","
+                    + "\"requestId\":\"resume-plan\",\"sessionId\":\"%s\",\"sequence\":2,"
+                    + "\"payload\":{\"prompt\":\"continue durable correction\"}}").formatted(sessionId)),
+                    collecting);
+            CapturedEvent recovered = awaitEvent(events, "plan.review.requested", "resume-plan");
+            awaitEvent(events, "run.completed", "resume-plan");
+            assertThat(recovered.payload().get("planId").stringValue()).isEqualTo(planId);
+            assertThat(resumedCalls).hasValue(3);
+        }
+    }
+
+    @Test
+    void repeatedPlanResumeReprojectsSameDurableReviewWithoutStartingRun() throws Exception {
+        StdioProtocolCodec codec = new StdioProtocolCodec();
+        CopyOnWriteArrayList<CapturedEvent> events = new CopyOnWriteArrayList<>();
+        StdioProtocol.EventEmitter emitter = (type, requestId, sessionId, runId, payload) ->
+                events.add(new CapturedEvent(type, requestId, sessionId, runId, payload.deepCopy()));
+        AtomicInteger calls = new AtomicInteger();
+        String markdown = "# Plan\n\nCreate a missing deliverable.\n";
+        String digest = io.github.liumaishenjian.ccjava.domain.PlanArtifact.digest(markdown);
+        try (RuntimeStdioCommandHandler handler = new RuntimeStdioCommandHandler(request ->
+                switch (calls.getAndIncrement()) {
+                    case 0 -> ModelTurn.tools(List.of(new ToolCall("resume-plan", "revise_plan_artifact",
+                            new JsonObject(java.util.Map.of("markdown", markdown)))));
+                    case 1 -> ModelTurn.tools(List.of(new ToolCall("resume-evidence", "declare_plan_evidence",
+                            new JsonObject(java.util.Map.of("requirementId", "missing-file", "kind", "DELIVERABLE",
+                                    "locator", "resume-missing.txt", "label", "missing file", "required", true)))));
+                    case 2 -> ModelTurn.tools(List.of(new ToolCall("resume-review", "request_plan_review",
+                            JsonObject.empty())));
+                    case 3 -> ModelTurn.text("plan ready");
+                    case 4 -> ModelTurn.text("FIRST_UNVERIFIED_FINAL");
+                    default -> ModelTurn.text("SECOND_UNVERIFIED_FINAL");
+                }, testOptions())) {
+            handler.handle(codec.decodeCommand(
+                    "{\"version\":0,\"type\":\"initialize\",\"requestId\":\"init\",\"sequence\":1,\"payload\":{}}"), emitter);
+            String sessionId = events.getFirst().sessionId().orElseThrow();
+            handler.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"plan.start\","
+                    + "\"requestId\":\"plan\",\"sessionId\":\"%s\",\"sequence\":2,"
+                    + "\"payload\":{\"prompt\":\"plan\"}}")
+                    .formatted(sessionId)), emitter);
+            CapturedEvent originalReview = awaitEvent(events, "plan.review.requested");
+            awaitTerminal(events);
+            handler.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"plan.review.resolve\","
+                    + "\"requestId\":\"decision\",\"sessionId\":\"%s\",\"sequence\":3,"
+                    + "\"payload\":{\"planId\":\"%s\",\"revision\":%d,\"contentDigest\":\"%s\","
+                    + "\"workspaceDigest\":\"%s\",\"decision\":\"APPROVE_USER\","
+                    + "\"contextPolicy\":\"KEEP\",\"feedback\":\"\"}}")
+                    .formatted(sessionId,
+                            originalReview.payload().get("planId").stringValue(),
+                            originalReview.payload().get("revision").longValue(),
+                            digest,
+                            originalReview.payload().get("workspaceDigest").stringValue())), emitter);
+            awaitEvent(events, "plan.verification.required");
+            awaitTerminalCount(events, 2);
+            long startedBeforeResume = events.stream()
+                    .filter(event -> event.type().equals("run.started")).count();
+
+            handler.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"plan.resume\","
+                    + "\"requestId\":\"resume\",\"sessionId\":\"%s\",\"sequence\":4,\"payload\":{}}")
+                    .formatted(sessionId)), emitter);
+            CapturedEvent resumedReview = awaitEvent(events, "plan.review.requested", "resume");
             handler.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"plan.resume\","
                     + "\"requestId\":\"resume-retry\",\"sessionId\":\"%s\",\"sequence\":5,\"payload\":{}}")
                     .formatted(sessionId)), emitter);
-            CapturedEvent retriedReview = events.stream()
-                    .filter(event -> event.type().equals("plan.review.requested")
-                            && event.requestId().equals("resume-retry"))
-                    .findFirst().orElseThrow(() -> new AssertionError(eventDiagnostics(events)));
+            CapturedEvent retriedReview = awaitEvent(events, "plan.review.requested", "resume-retry");
+
+            assertThat(resumedReview.payload().get("planId").stringValue())
+                    .isEqualTo(originalReview.payload().get("planId").stringValue());
             assertThat(retriedReview.payload().get("planId").stringValue())
                     .isEqualTo(resumedReview.payload().get("planId").stringValue());
             assertThat(retriedReview.payload().get("revision").longValue())
                     .isEqualTo(resumedReview.payload().get("revision").longValue());
             assertThat(retriedReview.payload().get("contentDigest").stringValue())
                     .isEqualTo(resumedReview.payload().get("contentDigest").stringValue());
-            handler.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"plan.review.resolve\","
-                    + "\"requestId\":\"resume-decision\",\"sessionId\":\"%s\",\"sequence\":6,"
-                    + "\"payload\":{\"planId\":\"%s\",\"revision\":%d,\"contentDigest\":\"%s\","
-                    + "\"workspaceDigest\":\"%s\",\"decision\":\"APPROVE_USER\","
-                    + "\"contextPolicy\":\"KEEP\",\"feedback\":\"continue safely\"}}")
-                    .formatted(sessionId, resumedReview.payload().get("planId").stringValue(),
-                            resumedReview.payload().get("revision").longValue(),
-                            resumedReview.payload().get("contentDigest").stringValue(),
-                            resumedReview.payload().get("workspaceDigest").stringValue())), emitter);
-            awaitTerminalCount(events, 3);
-            List<CapturedEvent> resumedTerminals = events.stream()
-                    .filter(event -> "resume-decision".equals(event.requestId()))
-                    .filter(event -> event.type().equals("run.completed")
-                            || event.type().equals("run.failed") || event.type().equals("run.cancelled"))
-                    .toList();
-            assertThat(resumedTerminals).singleElement().satisfies(terminal -> {
-                assertThat(terminal.type()).isEqualTo("run.completed");
-                assertThat(terminal.payload().toString()).contains("SECOND_UNVERIFIED_FINAL");
-            });
-            assertThat(calls).hasValue(7);
+            assertThat(events.stream().filter(event -> event.type().equals("run.started")).count())
+                    .isEqualTo(startedBeforeResume);
+            assertThat(calls).hasValue(6);
+            assertThat(workspace().resolve("resume-missing.txt")).doesNotExist();
         }
     }
 
@@ -922,6 +1269,107 @@ class RuntimeStdioCommandHandlerTest {
         assertThat(failed.payload().toString())
                 .contains("\"argumentChangeRequired\":true", "invalid_arguments", "validation")
                 .doesNotContain("PRIVATE_QUERY", "PROMPT_SECRET", "violations", "preferredField", "removeFields");
+    }
+
+    @Test
+    void startupAllowedCommandStillPublishesTrustedDisplayMetadataWithoutApproval()
+            throws Exception {
+        String command = CommandShell.current() == CommandShell.WINDOWS_POWERSHELL
+                ? "Write-Output 'metadata-ok'"
+                : "printf 'metadata-ok\\n'";
+        Path workspace = workspace();
+        HeadlessRuntimeOptions options = new HeadlessRuntimeOptions(
+                workspace,
+                "fake-model",
+                Duration.ofSeconds(3),
+                PermissionMode.DEFAULT,
+                List.of(new io.github.liumaishenjian.ccjava.domain.PermissionRule(
+                        io.github.liumaishenjian.ccjava.domain.PermissionRuleSource.STARTUP,
+                        io.github.liumaishenjian.ccjava.domain.PermissionDecision.ALLOW,
+                        new io.github.liumaishenjian.ccjava.domain.PermissionSelector(
+                                "run_command",
+                                io.github.liumaishenjian.ccjava.domain.ToolSource.BUILT_IN,
+                                command))),
+                SessionOpenRequest.create(),
+                temporaryRoot.resolve("sessions"));
+        CopyOnWriteArrayList<CapturedEvent> events = new CopyOnWriteArrayList<>();
+        StdioProtocol.EventEmitter emitter = (type, requestId, sessionId, runId, payload) ->
+                events.add(new CapturedEvent(type, sessionId, runId, payload.deepCopy()));
+        AtomicInteger turns = new AtomicInteger();
+        StdioProtocolCodec codec = new StdioProtocolCodec();
+
+        try (RuntimeStdioCommandHandler handler = new RuntimeStdioCommandHandler(
+                ignored -> turns.getAndIncrement() == 0
+                        ? ModelTurn.tools(List.of(new ToolCall(
+                                "call-command",
+                                "run_command",
+                                new JsonObject(java.util.Map.of("command", command)))))
+                        : ModelTurn.text("done"),
+                options)) {
+            handler.handle(codec.decodeCommand(
+                    "{\"version\":0,\"type\":\"initialize\",\"requestId\":\"init\","
+                            + "\"sequence\":1,\"payload\":{\"experienceV1\":true}}"), emitter);
+            String sessionId = events.getFirst().sessionId().orElseThrow();
+            handler.handle(codec.decodeCommand(runStart(
+                    "run", sessionId, 2, "run allowed command")), emitter);
+            awaitTerminal(events);
+        }
+
+        assertThat(events).noneMatch(event -> event.type().equals("approval.requested"));
+        CapturedEvent started = events.stream()
+                .filter(event -> event.type().equals("tool.started"))
+                .findFirst().orElseThrow();
+        assertThat(started.payload().get("command").stringValue()).isEqualTo(command);
+        assertThat(started.payload().get("shell").stringValue())
+                .isEqualTo(CommandShell.current().id());
+        assertThat(started.payload().get("workingDirectory").stringValue()).isEqualTo(".");
+    }
+
+    @Test
+    void commandApprovalAndStartedEventShareExecutionSourcedMetadata()
+            throws Exception {
+        String command = CommandShell.current() == CommandShell.WINDOWS_POWERSHELL
+                ? "Write-Output 'approval-metadata-ok'"
+                : "printf 'approval-metadata-ok\\n'";
+        CopyOnWriteArrayList<CapturedEvent> events = new CopyOnWriteArrayList<>();
+        StdioProtocol.EventEmitter emitter = (type, requestId, sessionId, runId, payload) ->
+                events.add(new CapturedEvent(type, sessionId, runId, payload.deepCopy()));
+        AtomicInteger turns = new AtomicInteger();
+        StdioProtocolCodec codec = new StdioProtocolCodec();
+
+        try (RuntimeStdioCommandHandler handler = new RuntimeStdioCommandHandler(
+                ignored -> turns.getAndIncrement() == 0
+                        ? ModelTurn.tools(List.of(new ToolCall(
+                                "call-command",
+                                "run_command",
+                                new JsonObject(java.util.Map.of("command", command)))))
+                        : ModelTurn.text("done"),
+                testOptions())) {
+            handler.handle(codec.decodeCommand(
+                    "{\"version\":0,\"type\":\"initialize\",\"requestId\":\"init\","
+                            + "\"sequence\":1,\"payload\":{\"experienceV1\":true}}"), emitter);
+            String sessionId = events.getFirst().sessionId().orElseThrow();
+            handler.handle(codec.decodeCommand(runStart(
+                    "run", sessionId, 2, "run approved command")), emitter);
+            CapturedEvent approval = awaitEvent(events, "approval.requested");
+            CapturedEvent started = events.stream()
+                    .filter(event -> event.type().equals("tool.started"))
+                    .findFirst().orElseThrow();
+            assertThat(started.payload().get("command").stringValue())
+                    .isEqualTo(approval.payload().get("command").stringValue());
+            assertThat(started.payload().get("shell").stringValue())
+                    .isEqualTo(approval.payload().get("shell").stringValue());
+            assertThat(started.payload().get("workingDirectory").stringValue())
+                    .isEqualTo(approval.payload().get("workingDirectory").stringValue());
+            handler.handle(codec.decodeCommand(("{\"version\":0,\"type\":\"approval.resolve\","
+                    + "\"requestId\":\"approve\",\"sessionId\":\"%s\",\"runId\":\"%s\","
+                    + "\"sequence\":3,\"payload\":{\"approvalId\":\"%s\","
+                    + "\"decision\":\"allow_once\"}}").formatted(
+                            sessionId,
+                            approval.runId().orElseThrow(),
+                            approval.payload().get("approvalId").stringValue())), emitter);
+            awaitTerminal(events);
+        }
     }
 
     @Test
@@ -1969,6 +2417,71 @@ class RuntimeStdioCommandHandlerTest {
     }
 
     @Test
+    void rejectsInvalidChunkedTargetAndCorrectionIntentBeforeCreatingAssembly() throws Exception {
+        StdioProtocolCodec codec = new StdioProtocolCodec();
+        CopyOnWriteArrayList<CapturedEvent> events = new CopyOnWriteArrayList<>();
+        StdioProtocol.EventEmitter emitter = (type, requestId, sessionId, runId, payload) ->
+                events.add(new CapturedEvent(type, sessionId, runId, payload.deepCopy()));
+        AtomicInteger modelCalls = new AtomicInteger();
+        try (RuntimeStdioCommandHandler handler = new RuntimeStdioCommandHandler(request -> {
+            modelCalls.incrementAndGet();
+            return ModelTurn.text("unexpected");
+        }, testOptions())) {
+            handler.handle(codec.decodeCommand(
+                    "{\"version\":0,\"type\":\"initialize\",\"requestId\":\"init\",\"sequence\":1,"
+                            + "\"payload\":{\"directedChunkInputV1\":true}}"), emitter);
+            String sessionId = events.getFirst().sessionId().orElseThrow();
+
+            for (String command : List.of(
+                    inputBegin("bad-target", "bad-target", sessionId, 2, 3, 1,
+                            sha256("abc"), "task.start", false),
+                    inputBegin("run-correction", "run-correction", sessionId, 3, 3, 1,
+                            sha256("abc"), "run.start", true),
+                    "{\"version\":0,\"type\":\"input.begin\",\"requestId\":\"bad-boolean\","
+                            + "\"sessionId\":\"" + sessionId + "\",\"sequence\":4,\"payload\":{"
+                            + "\"inputId\":\"bad-boolean\",\"byteCount\":3,\"chunkCount\":1,"
+                            + "\"sha256\":\"" + sha256("abc") + "\",\"targetType\":\"plan.start\","
+                            + "\"verificationCorrection\":\"true\"}}")) {
+                assertThatThrownBy(() -> handler.handle(codec.decodeCommand(command), emitter))
+                        .isInstanceOfSatisfying(StdioProtocolException.class, failure ->
+                                assertThat(failure.code()).isEqualTo("INVALID_PAYLOAD"));
+            }
+
+            assertThat(modelCalls).hasValue(0);
+            assertThat(events).noneMatch(RuntimeStdioCommandHandlerTest::isTerminal);
+        }
+    }
+
+    @Test
+    void requiresNegotiatedCapabilityForDirectedChunksButKeepsLegacyRunAssembly() throws Exception {
+        StdioProtocolCodec codec = new StdioProtocolCodec();
+        CopyOnWriteArrayList<CapturedEvent> events = new CopyOnWriteArrayList<>();
+        StdioProtocol.EventEmitter emitter = (type, requestId, sessionId, runId, payload) ->
+                events.add(new CapturedEvent(type, sessionId, runId, payload.deepCopy()));
+        AtomicInteger modelCalls = new AtomicInteger();
+        try (RuntimeStdioCommandHandler handler = new RuntimeStdioCommandHandler(request -> {
+            modelCalls.incrementAndGet();
+            return ModelTurn.text("unexpected");
+        }, testOptions())) {
+            handler.handle(codec.decodeCommand(
+                    "{\"version\":0,\"type\":\"initialize\",\"requestId\":\"init\","
+                            + "\"sequence\":1,\"payload\":{}}"), emitter);
+            String sessionId = events.getFirst().sessionId().orElseThrow();
+
+            assertThatThrownBy(() -> handler.handle(codec.decodeCommand(inputBegin(
+                    "directed", "directed", sessionId, 2, 3, 1, sha256("abc"),
+                    "plan.start", true)), emitter))
+                    .isInstanceOfSatisfying(StdioProtocolException.class, failure ->
+                            assertThat(failure.code()).isEqualTo("CAPABILITY_REQUIRED"));
+
+            handler.handle(codec.decodeCommand(inputBegin(
+                    "legacy", "legacy", sessionId, 3, 3, 1, sha256("abc"))), emitter);
+            assertThat(modelCalls).hasValue(0);
+            assertThat(events).noneMatch(RuntimeStdioCommandHandlerTest::isTerminal);
+        }
+    }
+
+    @Test
     void atomicallyCommitsLargeUtf8InputAndRejectsTamperingBeforeRun() throws Exception {
         StdioProtocolCodec codec = new StdioProtocolCodec();
         CopyOnWriteArrayList<CapturedEvent> events = new CopyOnWriteArrayList<>();
@@ -2054,6 +2567,24 @@ class RuntimeStdioCommandHandlerTest {
                 + "\",\"sessionId\":\"" + sessionId + "\",\"sequence\":" + sequence
                 + ",\"payload\":{\"inputId\":\"" + id + "\",\"byteCount\":" + bytes
                 + ",\"chunkCount\":" + chunks + ",\"sha256\":\"" + digest + "\"}}";
+    }
+
+    private static String inputBegin(
+            String id,
+            String requestId,
+            String sessionId,
+            long sequence,
+            int bytes,
+            int chunks,
+            String digest,
+            String targetType,
+            boolean verificationCorrection) {
+        return "{\"version\":0,\"type\":\"input.begin\",\"requestId\":\"" + requestId
+                + "\",\"sessionId\":\"" + sessionId + "\",\"sequence\":" + sequence
+                + ",\"payload\":{\"inputId\":\"" + id + "\",\"byteCount\":" + bytes
+                + ",\"chunkCount\":" + chunks + ",\"sha256\":\"" + digest
+                + "\",\"targetType\":\"" + targetType + "\",\"verificationCorrection\":"
+                + verificationCorrection + "}}";
     }
 
     private static String inputChunk(String requestId, String sessionId, long sequence, String id, int ordinal, String text) {
@@ -2574,6 +3105,19 @@ class RuntimeStdioCommandHandlerTest {
         throw new AssertionError("未收到 stdio 事件: " + type);
     }
 
+    private CapturedEvent awaitEvent(List<CapturedEvent> events, String type, String requestId)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(3).toNanos();
+        while (System.nanoTime() < deadline) {
+            Optional<CapturedEvent> matched = events.stream()
+                    .filter(event -> event.type().equals(type) && event.requestId().equals(requestId))
+                    .findFirst();
+            if (matched.isPresent()) return matched.orElseThrow();
+            Thread.sleep(10);
+        }
+        throw new AssertionError("未收到 stdio 事件: " + type + " requestId=" + requestId);
+    }
+
     private record CapturedEvent(
             String type,
             String requestId,
@@ -2588,6 +3132,15 @@ class RuntimeStdioCommandHandlerTest {
             this(type, "unavailable", sessionId, runId, payload);
         }
     }
+    private static ToolCall verificationDeclaration(String callId, String requirementId, String locator) {
+        return new ToolCall(callId, PlanEvidenceDeclarationTool.NAME, new JsonObject(java.util.Map.of(
+                "requirementId", requirementId,
+                "kind", "VERIFICATION",
+                "locator", locator,
+                "label", "weather verification",
+                "required", true)));
+    }
+
     /** 为只关注审批/交接的Fixture声明真实命令验证要求，不预先伪造成功证据。 */
     private static ToolCall completionRequirement() {
         return new ToolCall("completion-requirement", "declare_plan_evidence", new JsonObject(java.util.Map.of(

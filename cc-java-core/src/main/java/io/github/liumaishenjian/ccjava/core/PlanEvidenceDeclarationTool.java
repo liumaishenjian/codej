@@ -8,6 +8,9 @@ import io.github.liumaishenjian.ccjava.domain.PlanStatus;
 import io.github.liumaishenjian.ccjava.domain.PlanToolCapability;
 import io.github.liumaishenjian.ccjava.domain.ToolDefinition;
 import io.github.liumaishenjian.ccjava.domain.ToolEffect;
+import io.github.liumaishenjian.ccjava.domain.ToolError;
+import io.github.liumaishenjian.ccjava.domain.ToolErrorCode;
+import io.github.liumaishenjian.ccjava.domain.ToolFailureCategory;
 import io.github.liumaishenjian.ccjava.domain.ToolSource;
 import java.time.Clock;
 import java.time.Duration;
@@ -30,18 +33,22 @@ import java.util.TreeSet;
 public final class PlanEvidenceDeclarationTool implements AgentTool {
     /** 稳定 Tool 名。 */
     public static final String NAME = "declare_plan_evidence";
+    /** 允许 stdio Surface 投影的安全失败原因字段。 */
+    public static final String FAILURE_REASON_DETAIL = "failureReasonCode";
+    /** 验证要求引用的 Tool 不在当前可信注册表中。 */
+    public static final String VERIFICATION_TOOL_UNAVAILABLE = "verification_tool_unavailable";
+    /** 仅供宿主在当前 Run 内关联失败的规范 requirement 身份；不得投影到 Surface。 */
+    public static final String RECOVERY_REQUIREMENT_DETAIL = "recoveryRequirementId";
     private static final Set<String> FIELDS = Set.of("requirementId", "kind", "locator", "label", "required");
-    private static final ToolDefinition DEFINITION = new ToolDefinition(NAME,
-            "Declare or correct one required deliverable or registered-tool verification item for deterministic completion validation.",
-            """
+    private static final String INPUT_SCHEMA = """
             {"type":"object","additionalProperties":false,"required":["requirementId","kind","locator","label","required"],"properties":{"requirementId":{"type":"string","pattern":"^[a-z][a-z0-9-]{0,63}$"},"kind":{"type":"string","enum":["DELIVERABLE","VERIFICATION"]},"locator":{"type":"string","minLength":1,"maxLength":512},"label":{"type":"string","minLength":1,"maxLength":512},"required":{"type":"boolean"}}}
-            """, ToolEffect.PLAN_ARTIFACT_WRITE, ToolSource.BUILT_IN, false, Duration.ofSeconds(5),
-            "text/plain", 256, Set.of(PlanToolCapability.PLAN_ARTIFACT_WRITE));
+            """;
 
     private final PlanArtifactStore store;
     private final io.github.liumaishenjian.ccjava.domain.SessionId sessionId;
     private final Clock clock;
     private final Set<String> trustedVerificationTools;
+    private final ToolDefinition definition;
 
     /**
      * 绑定当前 Session 的 ledger store 与该 Runtime 实际注册的可信验证 Tool。
@@ -63,9 +70,16 @@ public final class PlanEvidenceDeclarationTool implements AgentTool {
             throw new IllegalArgumentException("可信验证 Tool 名无效");
         }
         this.trustedVerificationTools = Set.copyOf(normalized);
+        this.definition = new ToolDefinition(NAME,
+                "Declare or correct one required deliverable or registered-tool verification item for deterministic completion validation. "
+                        + "VERIFICATION locator must be one of the currently registered trusted tools: "
+                        + allowedAlternatives() + ".",
+                INPUT_SCHEMA, ToolEffect.PLAN_ARTIFACT_WRITE, ToolSource.BUILT_IN, false,
+                Duration.ofSeconds(5), "text/plain", 256,
+                Set.of(PlanToolCapability.PLAN_ARTIFACT_WRITE));
     }
 
-    @Override public ToolDefinition definition() { return DEFINITION; }
+    @Override public ToolDefinition definition() { return definition; }
 
     @Override public ToolValidationResult validate(JsonObject arguments) {
         try {
@@ -73,10 +87,10 @@ public final class PlanEvidenceDeclarationTool implements AgentTool {
                 return ToolValidationResult.invalid("字段集合无效");
             }
             PlanEvidenceRequirement requirement = requirement(arguments);
-            if (requirement.kind() == PlanEvidenceKind.VERIFICATION
-                    && !trustedVerificationTools.contains(requirement.locator())) {
+            if (verificationToolUnavailable(requirement)) {
                 return ToolValidationResult.invalid("VERIFICATION locator 未注册为可信 Tool；可用: "
-                        + allowedAlternatives());
+                                + allowedAlternatives(),
+                        unavailableDetails(requirement.requirementId()));
             }
             return ToolValidationResult.validResult();
         } catch (RuntimeException invalid) {
@@ -91,9 +105,11 @@ public final class PlanEvidenceDeclarationTool implements AgentTool {
             throw new PlanArtifactStoreException(PlanArtifactStoreException.Code.INVALID_STATE);
         }
         PlanEvidenceRequirement requirement = requirement(invocation.call().arguments());
-        if (requirement.kind() == PlanEvidenceKind.VERIFICATION
-                && !trustedVerificationTools.contains(requirement.locator())) {
-            throw new IllegalArgumentException("VERIFICATION locator 未注册");
+        if (verificationToolUnavailable(requirement)) {
+            return ToolExecutionOutcome.failure(ToolError.classified(
+                    ToolErrorCode.INVALID_ARGUMENTS, ToolFailureCategory.VALIDATION, false,
+                    "VERIFICATION locator 未注册为可信 Tool",
+                    unavailableDetails(requirement.requirementId())));
         }
         var existingLedger = current.evidenceLedger();
         var ledger = existingLedger.declare(requirement, clock.instant());
@@ -107,8 +123,19 @@ public final class PlanEvidenceDeclarationTool implements AgentTool {
                 + saved.evidenceLedger().requirements().size());
     }
 
+    private boolean verificationToolUnavailable(PlanEvidenceRequirement requirement) {
+        return requirement.kind() == PlanEvidenceKind.VERIFICATION
+                && !trustedVerificationTools.contains(requirement.locator());
+    }
+
+    private static JsonObject unavailableDetails(String requirementId) {
+        return new JsonObject(Map.of(
+                FAILURE_REASON_DETAIL, VERIFICATION_TOOL_UNAVAILABLE,
+                RECOVERY_REQUIREMENT_DETAIL, requirementId));
+    }
+
     private String allowedAlternatives() {
-        List<String> alternatives = trustedVerificationTools.stream().sorted().limit(12).toList();
+        List<String> alternatives = trustedVerificationTools.stream().sorted().toList();
         return alternatives.isEmpty() ? "none" : String.join(", ", alternatives);
     }
 

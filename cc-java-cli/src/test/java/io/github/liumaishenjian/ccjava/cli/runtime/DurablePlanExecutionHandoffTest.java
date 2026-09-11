@@ -288,12 +288,21 @@ class DurablePlanExecutionHandoffTest {
             case 3 -> ModelTurn.text("planning complete");
             case 4 -> ModelTurn.text("unverified first final");
             case 5 -> ModelTurn.text("unverified repeated final");
-            case 6 -> ModelTurn.tools(List.of(new ToolCall("resume-file", "write_file",
+            case 6 -> {
+                assertThat(request.messages().getLast().toString())
+                        .contains("continue exact missing deliverable");
+                yield ModelTurn.tools(List.of(new ToolCall("correct-plan", "revise_plan_artifact",
+                        new JsonObject(Map.of("markdown",
+                                "# Plan\n\nKeep existing work and create `missing.txt` only if still absent.\n")))));
+            }
+            case 7 -> ModelTurn.tools(List.of(new ToolCall("correct-review", "request_plan_review",
+                    JsonObject.empty())));
+            case 8 -> ModelTurn.text("corrected planning complete");
+            case 9 -> ModelTurn.tools(List.of(new ToolCall("resume-file", "write_file",
                     new JsonObject(Map.of("path", "missing.txt", "content", "resumed")))));
             default -> ModelTurn.text("verified after explicit resume");
         };
         PlanArtifact awaiting;
-        io.github.liumaishenjian.ccjava.domain.PlanReviewEvent firstReview;
         SessionId sessionId;
         try (HeadlessRuntimeSession runtime = new HeadlessRuntimeSession(model, events::add,
                 options(workspace, root, SessionOpenRequest.create()),
@@ -318,9 +327,7 @@ class DurablePlanExecutionHandoffTest {
                     .filteredOn(io.github.liumaishenjian.ccjava.domain.LifecycleEvent.PlanVerificationCorrectionRequested.class::isInstance)
                     .hasSize(1);
 
-            firstReview = runtime.requestPlanVerificationResume().orElseThrow();
-            assertThat(firstReview.planId()).isEqualTo(awaiting.planId());
-            assertThat(runtime.planArtifact().orElseThrow().status()).isEqualTo(PlanStatus.AWAITING_APPROVAL);
+            assertThat(runtime.planArtifact().orElseThrow().planId()).isEqualTo(awaiting.planId());
         }
 
         try (HeadlessRuntimeSession resumedRuntime = new HeadlessRuntimeSession(model, events::add,
@@ -328,17 +335,32 @@ class DurablePlanExecutionHandoffTest {
                 (ignoredInvocation, ignoredDefinition, ignoredOutcome) ->
                         io.github.liumaishenjian.ccjava.domain.ApprovalResponse.allowOnce())) {
             assertThat(resumedRuntime.open()).isEqualTo(sessionId);
-            var resurfaced = resumedRuntime.requestPlanVerificationResume().orElseThrow();
-            assertThat(resurfaced.planId()).isEqualTo(firstReview.planId());
-            assertThat(resurfaced.revision()).isEqualTo(firstReview.revision());
-            assertThat(resurfaced.contentDigest()).isEqualTo(firstReview.contentDigest());
-            assertThat(resurfaced.originalPermissionMode()).isEqualTo(firstReview.originalPermissionMode());
-            assertThat(resurfaced.suggestedContextPolicy()).isEqualTo(firstReview.suggestedContextPolicy());
-            assertThat(resumedRuntime.planArtifact().orElseThrow().revision()).isEqualTo(firstReview.revision());
+            assertThat(resumedRuntime.preparePlanVerificationCorrection()).isTrue();
+            assertThat(resumedRuntime.planArtifact().orElseThrow()).satisfies(draft -> {
+                assertThat(draft.planId()).isEqualTo(awaiting.planId());
+                assertThat(draft.status()).isEqualTo(PlanStatus.DRAFT);
+                assertThat(draft.executionBrief()).isEmpty();
+                assertThat(draft.verificationResumeReview()).isEmpty();
+                assertThat(draft.evidenceLedger().requirements()).hasSize(1);
+                assertThat(draft.evidenceLedger().references()).isEmpty();
+            });
+            assertThat(workspace.resolve("missing.txt")).doesNotExist();
 
-            var resumedAcceptance = resumedRuntime.acceptPlanExecution(resurfaced.planId(), resurfaced.revision(),
-                    resurfaced.contentDigest(), resurfaced.workspaceDigest(), PlanReviewDecision.APPROVE_USER,
-                    PlanContextPolicy.KEEP, "continue exact missing deliverable");
+            assertThat(resumedRuntime.runPlan("continue exact missing deliverable").stopReason().name())
+                    .isEqualTo("COMPLETED");
+            var corrected = resumedRuntime.planArtifact().orElseThrow();
+            assertThat(corrected.planId()).isEqualTo(awaiting.planId());
+            assertThat(corrected.status()).isEqualTo(PlanStatus.AWAITING_APPROVAL);
+            assertThat(workspace.resolve("missing.txt")).doesNotExist();
+            var correctedReview = events.stream()
+                    .map(io.github.liumaishenjian.ccjava.domain.AgentEventEnvelope::event)
+                    .filter(io.github.liumaishenjian.ccjava.domain.PlanReviewEvent.class::isInstance)
+                    .map(io.github.liumaishenjian.ccjava.domain.PlanReviewEvent.class::cast)
+                    .reduce((first, second) -> second).orElseThrow();
+            var resumedAcceptance = resumedRuntime.acceptPlanExecution(
+                    corrected.planId(), corrected.revision(), corrected.contentDigest(),
+                    correctedReview.workspaceDigest(), PlanReviewDecision.APPROVE_USER,
+                    PlanContextPolicy.KEEP, "");
             var resumed = resumedRuntime.runAcceptedPlan(resumedAcceptance);
 
             assertThat(resumed.stopReason().name()).isEqualTo("COMPLETED");
@@ -349,7 +371,7 @@ class DurablePlanExecutionHandoffTest {
                 assertThat(artifact.status()).isEqualTo(PlanStatus.COMPLETED);
                 assertThat(artifact.verificationResumeReview()).isEmpty();
             });
-            assertThat(calls).hasValue(8);
+            assertThat(calls).hasValue(11);
         }
     }
 

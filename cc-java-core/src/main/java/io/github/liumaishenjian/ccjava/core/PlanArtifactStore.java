@@ -39,6 +39,24 @@ public interface PlanArtifactStore {
     PlanArtifact save(PlanArtifact artifact, long expectedRevision, String expectedContentDigest);
 
     /**
+     * 在当前工件已经进入不可恢复的终态时，以 CAS 方式开启一个全新 Plan identity。
+     *
+     * <p>该操作不是普通 revision 更新：新工件必须从 revision 1 的 DRAFT 开始，且不能继承旧计划的
+     * Evidence、执行状态或 Task cohort。实现只可替换明确终止且无需恢复的旧工件；任何身份、revision、
+     * digest 或状态漂移都必须失败关闭。默认实现拒绝该操作，持久 Adapter 必须显式提供原子语义。</p>
+     *
+     * @param artifact 全新 identity 的首个 DRAFT 工件
+     * @param expectedPlanId 当前终态工件身份
+     * @param expectedRevision 当前终态工件 revision
+     * @param expectedContentDigest 当前终态工件正文摘要
+     * @return 可靠提交并重读验证后的新工件
+     */
+    default PlanArtifact replaceTerminal(PlanArtifact artifact, String expectedPlanId,
+                                         long expectedRevision, String expectedContentDigest) {
+        throw new PlanArtifactStoreException(PlanArtifactStoreException.Code.INVALID_STATE);
+    }
+
+    /**
      * 仅在本地工件缺失时，根据已经通过 Canonical journal 验证的快照恢复文件。
      *
      * <p>目标存在、损坏或身份冲突都必须失败，不能借恢复覆盖未知字节。</p>

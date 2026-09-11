@@ -39,6 +39,15 @@ public final class SessionPlanArtifactStore implements PlanArtifactStore {
     }
 
     @Override
+    public PlanArtifact replaceTerminal(
+            PlanArtifact artifact, String expectedPlanId,
+            long expectedRevision, String expectedContentDigest) {
+        requireOwner(artifact.sessionId());
+        return sessions.replaceTerminalPlanArtifact(
+                artifact, expectedPlanId, expectedRevision, expectedContentDigest);
+    }
+
+    @Override
     public PlanArtifact restoreMissing(PlanArtifact artifact) {
         requireOwner(artifact.sessionId());
         return sessions.planArtifacts(sessionId).restoreMissing(artifact);

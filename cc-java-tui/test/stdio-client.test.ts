@@ -202,6 +202,56 @@ describe('StdioClient', () => {
     expect(events.some(event => event.type === 'run.command.result')).toBe(false);
   });
 
+  it('显式计划修正的直传与分片都保留同一恢复意图', async () => {
+    for (const prompt of ['短修正', '长修正😀'.repeat(500)]) {
+      const client = createClient('normal', {maxLineBytes: 512});
+      const events: ProtocolEvent[] = [];
+      client.onEvent(event => events.push(event));
+      client.initialize({directedChunkInputV1: true});
+      await waitFor(() => events.some(event => event.type === 'initialized'));
+      const requestId = client.startPlan(prompt, {verificationCorrection: true});
+      await waitFor(() => events.some(event => event.type === 'run.started'));
+      expect(events.find(event => event.type === 'run.started')).toMatchObject({
+        requestId,
+        payload: {promptChars: prompt.length, verificationCorrection: true, commandType: 'plan.start'},
+      });
+      await client.shutdown();
+    }
+  });
+
+  it('旧宿主未确认定向分片时拒绝长 Plan，绝不降级为普通 Run', async () => {
+    const client = createClient('legacy-no-directed-chunks', {maxLineBytes: 512});
+    const events: ProtocolEvent[] = [];
+    client.onEvent(event => events.push(event));
+    client.initialize({directedChunkInputV1: true});
+    await waitFor(() => events.some(event => event.type === 'initialized'));
+
+    expect(() => client.startPlan('长计划😀'.repeat(500), {
+      verificationCorrection: true,
+    })).toThrow('宿主未确认定向 Plan 分片能力');
+    expect(events.some(event => event.type === 'run.started')).toBe(false);
+    expect(client.isClosed()).toBe(false);
+    const runRequest = client.startRun('recovery run');
+    await waitFor(() => events.some(event =>
+      event.type === 'run.started' && event.requestId === runRequest));
+    await client.shutdown();
+  });
+
+  it('新旧宿主未协商定向能力时普通长 Run 仍使用旧分片格式', async () => {
+    for (const mode of ['normal', 'legacy-no-directed-chunks']) {
+      const client = createClient(mode, {maxLineBytes: 512});
+      const events: ProtocolEvent[] = [];
+      client.onEvent(event => events.push(event));
+      client.initialize();
+      await waitFor(() => events.some(event => event.type === 'initialized'));
+      const requestId = client.startRun('普通长输入😀'.repeat(500));
+      await waitFor(() => events.some(event =>
+        event.type === 'run.started' && event.requestId === requestId));
+      expect(client.isClosed()).toBe(false);
+      await client.shutdown();
+    }
+  });
+
   it('按实际 NDJSON 编码大小分块并保持 Unicode 无损', async () => {
     const client = createClient();
     const events: ProtocolEvent[] = [];
@@ -774,7 +824,7 @@ describe('StdioClient', () => {
 function createClient(
   mode = 'normal',
   options: {platform?: NodeJS.Platform; windowsTreeKiller?: (pid: number) => boolean;
-    runHandshakeTimeoutMs?: number} = {},
+    runHandshakeTimeoutMs?: number; maxLineBytes?: number} = {},
 ): StdioClient {
   return new StdioClient({
     executable: process.execPath,

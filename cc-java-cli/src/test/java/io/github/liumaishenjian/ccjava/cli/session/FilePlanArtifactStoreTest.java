@@ -123,6 +123,76 @@ class FilePlanArtifactStoreTest {
     }
 
     @Test
+    void replacesOnlyAnExactlyMatchedRejectedPlanWithANewDraftIdentity() throws IOException {
+        Path directory = Files.createDirectories(root.resolve(SESSION.value()));
+        FilePlanArtifactStore store = new FilePlanArtifactStore(directory, SESSION);
+        PlanArtifact draft = store.save(PlanArtifact.create(
+                "plan-old", SESSION, "# Old", PlanStatus.DRAFT, CREATED), 0, "");
+        PlanArtifact awaiting = store.save(draft.nextRevision(
+                "# Old", PlanStatus.AWAITING_APPROVAL, CREATED.plusSeconds(1)),
+                draft.revision(), draft.contentDigest());
+        PlanArtifact rejected = store.save(awaiting.nextRevision(
+                "# Old", PlanStatus.REJECTED, CREATED.plusSeconds(2)),
+                awaiting.revision(), awaiting.contentDigest());
+        PlanArtifact regressed = PlanArtifact.create(
+                "plan-regressed", SESSION, "# Regressed", PlanStatus.DRAFT, CREATED.plusSeconds(1));
+        assertThatThrownBy(() -> store.replaceTerminal(regressed, rejected.planId(),
+                rejected.revision(), rejected.contentDigest()))
+                .isInstanceOfSatisfying(PlanArtifactStoreException.class,
+                        failure -> assertThat(failure.code()).isEqualTo(
+                                PlanArtifactStoreException.Code.INVALID_STATE));
+
+        PlanArtifact boundBase = PlanArtifact.create(
+                "plan-bound", SESSION, "# Bound", PlanStatus.DRAFT, CREATED.plusSeconds(3));
+        var boundLedger = boundBase.evidenceLedger().bind(
+                1, "a".repeat(64), "b".repeat(64), CREATED.plusSeconds(3));
+        PlanArtifact bound = new PlanArtifact(
+                boundBase.planId(), boundBase.sessionId(), boundBase.revision(),
+                boundBase.markdownContent(), boundBase.contentDigest(), boundBase.status(),
+                boundBase.createdAt(), boundBase.updatedAt(), boundBase.executionBrief(),
+                boundBase.verificationResumeReview(), boundLedger);
+        assertThat(bound.evidenceLedger().requirements()).isEmpty();
+        assertThatThrownBy(() -> store.replaceTerminal(bound, rejected.planId(),
+                rejected.revision(), rejected.contentDigest()))
+                .isInstanceOfSatisfying(PlanArtifactStoreException.class,
+                        failure -> assertThat(failure.code()).isEqualTo(
+                                PlanArtifactStoreException.Code.INVALID_STATE));
+
+        PlanArtifact dirtyBase = PlanArtifact.create(
+                "plan-dirty", SESSION, "# Dirty", PlanStatus.DRAFT, CREATED.plusSeconds(3));
+        var dirtyLedger = dirtyBase.evidenceLedger().declare(
+                new io.github.liumaishenjian.ccjava.domain.PlanEvidenceRequirement(
+                        "inherited", io.github.liumaishenjian.ccjava.domain.PlanEvidenceKind.DELIVERABLE,
+                        "old.txt", "old evidence", true), CREATED.plusSeconds(3));
+        PlanArtifact dirty = new PlanArtifact(
+                dirtyBase.planId(), dirtyBase.sessionId(), dirtyBase.revision(),
+                dirtyBase.markdownContent(), dirtyBase.contentDigest(), dirtyBase.status(),
+                dirtyBase.createdAt(), dirtyBase.updatedAt(), dirtyBase.executionBrief(),
+                dirtyBase.verificationResumeReview(), dirtyLedger);
+        assertThatThrownBy(() -> store.replaceTerminal(dirty, rejected.planId(),
+                rejected.revision(), rejected.contentDigest()))
+                .isInstanceOfSatisfying(PlanArtifactStoreException.class,
+                        failure -> assertThat(failure.code()).isEqualTo(
+                                PlanArtifactStoreException.Code.INVALID_STATE));
+
+        PlanArtifact fresh = PlanArtifact.create(
+                "plan-new", SESSION, "# Fresh", PlanStatus.DRAFT, CREATED.plusSeconds(3));
+        assertThat(store.load(SESSION)).contains(rejected);
+        assertThat(store.replaceTerminal(fresh, rejected.planId(),
+                rejected.revision(), rejected.contentDigest())).isEqualTo(fresh);
+        assertThat(store.load(SESSION)).contains(fresh);
+        assertThat(fresh.revision()).isEqualTo(1);
+        assertThat(fresh.evidenceLedger().requirements()).isEmpty();
+
+        assertThatThrownBy(() -> store.replaceTerminal(
+                PlanArtifact.create("plan-other", SESSION, "# Other", PlanStatus.DRAFT,
+                        CREATED.plusSeconds(4)), rejected.planId(), rejected.revision(), rejected.contentDigest()))
+                .isInstanceOfSatisfying(PlanArtifactStoreException.class,
+                        failure -> assertThat(failure.code()).isEqualTo(
+                                PlanArtifactStoreException.Code.IDENTITY_MISMATCH));
+    }
+
+    @Test
     void rejectsSessionMismatchAndLinkedManifest() throws IOException {
         Path directory = Files.createDirectories(root.resolve(SESSION.value()));
         FilePlanArtifactStore store = new FilePlanArtifactStore(directory, SESSION);

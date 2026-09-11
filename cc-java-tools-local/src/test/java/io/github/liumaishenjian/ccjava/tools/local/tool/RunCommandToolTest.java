@@ -31,6 +31,10 @@ class RunCommandToolTest {
         assertThat(tool.validate(new JsonObject(Map.of(
                 "command", "echo ok",
                 "shell", "other"))).valid()).isFalse();
+        assertThat(tool.validate(new JsonObject(Map.of(
+                "command", "😀".repeat(8_192)))).valid()).isTrue();
+        assertThat(tool.validate(new JsonObject(Map.of(
+                "command", "😀".repeat(8_193)))).valid()).isFalse();
     }
 
     @Test

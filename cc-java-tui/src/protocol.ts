@@ -1205,6 +1205,15 @@ function isSafeDisplayText(
     && !/[\u0000\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value);
 }
 
+const COMMAND_SHELL_IDS = new Set([
+  'powershell',
+  'sh',
+  'linux-sh/wsl2-bwrap',
+  'linux-sh/docker',
+  'windows-native',
+  'macos-sandbox',
+]);
+
 function validateApprovalPreview(
   payload: Readonly<Record<string, unknown>>,
 ): void {
@@ -1264,8 +1273,9 @@ function validateApprovalPreview(
       || typeof payload.command !== 'string'
       || payload.command.trim().length === 0
       || Array.from(payload.command).length > 8_192
+      || hasUnsupportedCommandControl(payload.command)
       || typeof payload.shell !== 'string'
-      || (payload.shell !== 'powershell' && payload.shell !== 'sh')
+      || !COMMAND_SHELL_IDS.has(payload.shell)
       || payload.workingDirectory !== '.'
     ) {
       throw new ProtocolViolation('approval.requested 命令预览无效');
@@ -1291,6 +1301,21 @@ function validateApprovalPreview(
   }
 }
 
+function hasUnsupportedCommandControl(value: string): boolean {
+  return Array.from(value).some(character => {
+    const code = character.codePointAt(0) ?? 0;
+    return (code < 32 && code !== 9 && code !== 10 && code !== 13)
+      || (code >= 127 && code <= 159);
+  });
+}
+
+function hasControl(value: string): boolean {
+  return Array.from(value).some(character => {
+    const code = character.codePointAt(0) ?? 0;
+    return code < 32 || (code >= 127 && code <= 159);
+  });
+}
+
 function validateOptionalToolPresentation(
   type: EventType,
   payload: Readonly<Record<string, unknown>>,
@@ -1301,6 +1326,22 @@ function validateOptionalToolPresentation(
       || Array.from(payload.activity).length > 320
       || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(payload.activity))) {
     throw new ProtocolViolation(`${type} 包含无效 Tool 活动摘要`);
+  }
+  const commandFields = ['command', 'shell', 'workingDirectory'] as const;
+  const hasCommandPresentation = commandFields.some(field => field in payload);
+  if (hasCommandPresentation
+    && (type !== 'tool.started'
+      || payload.toolName !== 'run_command'
+      || !commandFields.every(field => field in payload)
+      || typeof payload.command !== 'string'
+      || payload.command.trim().length === 0
+      || Array.from(payload.command).length > 8_192
+      || hasUnsupportedCommandControl(payload.command)
+      || typeof payload.shell !== 'string'
+      || !COMMAND_SHELL_IDS.has(payload.shell)
+      || hasControl(payload.shell)
+      || payload.workingDirectory !== '.')) {
+    throw new ProtocolViolation(`${type} 包含无效命令显示配置`);
   }
   if (
     'mode' in payload
@@ -1332,6 +1373,20 @@ function validateOptionalToolPresentation(
       || !/^[a-z][a-z0-9_]{0,63}$/.test(payload.truncationReason))
   ) {
     throw new ProtocolViolation(`${type} 包含无效截断原因`);
+  }
+  if ('failureReasonCode' in payload
+    && (type !== 'tool.failed'
+      || payload.toolName !== 'declare_plan_evidence'
+      || payload.failureReasonCode !== 'verification_tool_unavailable')) {
+    throw new ProtocolViolation(`${type} 包含未知安全失败原因`);
+  }
+  if ('recoveredFailureOrdinal' in payload
+    && (type !== 'tool.completed'
+      || payload.toolName !== 'declare_plan_evidence'
+      || !Number.isSafeInteger(payload.recoveredFailureOrdinal)
+      || (payload.recoveredFailureOrdinal as number) < 1
+      || (payload.recoveredFailureOrdinal as number) >= (payload.ordinal as number))) {
+    throw new ProtocolViolation(`${type} 包含无效失败恢复关联`);
   }
 }
 

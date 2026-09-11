@@ -27,6 +27,15 @@ public final class QuestionnairesFixtureMain {
                 Map.of("id", "multi", "title", "多选", "question", "请选择需要的范围", "multiSelect", true, "allowFreeText", true, "options", choices),
                 Map.of("id", "text", "title", "补充", "question", "请输入补充说明", "multiSelect", false, "allowFreeText", true, "options", List.of()));
         try (var handler = new RuntimeStdioCommandHandler(request -> {
+            String latestUser = request.messages().stream()
+                    .filter(UserMessage.class::isInstance)
+                    .map(UserMessage.class::cast)
+                    .map(UserMessage::content)
+                    .reduce((previous, current) -> current)
+                    .orElse("");
+            if (latestUser.contains("下一轮")) {
+                return ModelTurn.text("问卷结束后下一轮仍可继续。");
+            }
             if (calls.getAndIncrement() == 0) return ModelTurn.tools(List.of(new ToolCall("questionnaire-e2e", "ask_user_questions",
                     new JsonObject(Map.of("questions", questions)))));
             var results = request.messages().stream().filter(ToolResultMessage.class::isInstance)

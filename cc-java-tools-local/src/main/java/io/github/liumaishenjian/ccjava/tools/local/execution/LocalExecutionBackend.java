@@ -11,7 +11,6 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.EnumMap;
-import java.util.List;
 import java.util.Objects;
 
 /**
@@ -45,18 +44,21 @@ public final class LocalExecutionBackend extends AbstractProcessExecutionBackend
     @Override
     protected Plan plan(ExecutionRequest request) throws IOException {
         var policy = ExecutionPolicyCompiler.compile(request.policy(), workspace);
-        List<String> argv = switch (request.shell()) {
-            case WINDOWS_PLATFORM, POSIX_PLATFORM -> shell.processArguments(single(request));
-            case FIXED_ARGV -> {
-                var fixed = new ArrayList<String>();
-                fixed.add(request.executable());
-                fixed.addAll(request.arguments());
-                yield fixed;
-            }
-            case LINUX_SH -> throw new IOException(
-                    "Local backend 不接受跨平台 LINUX_SH");
-        };
-        return new Plan(argv, policy.workspace(), policy.environment(), new byte[0]);
+        if (request.shell() == ExecutionShell.LINUX_SH) {
+            throw new IOException("Local backend 不接受跨平台 LINUX_SH");
+        }
+        if (request.shell() == ExecutionShell.FIXED_ARGV) {
+            var fixed = new ArrayList<String>();
+            fixed.add(request.executable());
+            fixed.addAll(request.arguments());
+            return new Plan(fixed, policy.workspace(), policy.environment(), new byte[0]);
+        }
+        var invocation = shell.processInvocation(single(request), policy.environment());
+        return new Plan(
+                invocation.arguments(),
+                policy.workspace(),
+                invocation.environment(),
+                new byte[0]);
     }
 
     private static String single(ExecutionRequest request) throws IOException {

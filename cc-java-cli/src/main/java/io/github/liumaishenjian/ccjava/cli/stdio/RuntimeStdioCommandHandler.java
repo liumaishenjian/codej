@@ -7,6 +7,7 @@ import io.github.liumaishenjian.ccjava.core.ToolCallTelemetry;
 import io.github.liumaishenjian.ccjava.core.ContextPreparationConfig;
 import io.github.liumaishenjian.ccjava.core.CancellationToken;
 import io.github.liumaishenjian.ccjava.core.ModelGateway;
+import io.github.liumaishenjian.ccjava.core.PlanEvidenceDeclarationTool;
 import io.github.liumaishenjian.ccjava.cli.runtime.DoctorReportService;
 import io.github.liumaishenjian.ccjava.cli.runtime.SessionCommandDispatcher;
 import io.github.liumaishenjian.ccjava.cli.runtime.TaskBoardProjection;
@@ -297,6 +298,7 @@ public final class RuntimeStdioCommandHandler
                         Objects.requireNonNull(executionBackend, "executionBackend 不能为空"),
                         Objects.requireNonNull(executionShell, "executionShell 不能为空")),
                 approvals);
+        approvals.bindCommandDisplay(application.commandExecutionDisplay());
     }
 
     /**
@@ -311,6 +313,7 @@ public final class RuntimeStdioCommandHandler
         approvals = new StdioApprovalCoordinator(this::emitApprovalRequest);
         questions = new StdioQuestionCoordinator(this::emitUserQuestion);
         application = Objects.requireNonNull(selectedApplication, "selectedApplication 不能为空");
+        approvals.bindCommandDisplay(application.commandExecutionDisplay());
         this.providerAuth = Objects.requireNonNull(providerAuth, "providerAuth 不能为空");
     }
 
@@ -332,6 +335,7 @@ public final class RuntimeStdioCommandHandler
         if (application == null) {
             throw new IllegalArgumentException("applicationFactory 返回 null");
         }
+        approvals.bindCommandDisplay(application.commandExecutionDisplay());
         this.providerAuth = Objects.requireNonNull(providerAuth, "providerAuth 不能为空");
     }
 
@@ -350,6 +354,7 @@ public final class RuntimeStdioCommandHandler
         if (application == null) {
             throw new IllegalArgumentException("applicationFactory 返回 null");
         }
+        approvals.bindCommandDisplay(application.commandExecutionDisplay());
         providerAuth = null;
     }
     /**
@@ -363,6 +368,7 @@ public final class RuntimeStdioCommandHandler
         approvals = new StdioApprovalCoordinator(this::emitApprovalRequest);
         questions = new StdioQuestionCoordinator(this::emitUserQuestion);
         application = Objects.requireNonNull(selectedApplication, "selectedApplication 不能为空");
+        approvals.bindCommandDisplay(application.commandExecutionDisplay());
         providerAuth = null;
     }
     /**
@@ -398,14 +404,16 @@ public final class RuntimeStdioCommandHandler
             InputAssemblyScheduler assemblyScheduler) {
         this.clock = Objects.requireNonNull(clock, "clock 不能为空");
         this.assemblyScheduler = Objects.requireNonNull(assemblyScheduler, "assemblyScheduler 不能为空");
+        HeadlessRuntimeOptions runtimeOptions = Objects.requireNonNull(options, "options 不能为空");
         approvals = new StdioApprovalCoordinator(this::emitApprovalRequest);
         questions = new StdioQuestionCoordinator(this::emitUserQuestion);
         providerAuth = null;
         application = new HeadlessRuntimeSession(
                 Objects.requireNonNull(model, "model 不能为空"),
                 this,
-                Objects.requireNonNull(options, "options 不能为空"),
+                runtimeOptions,
                 approvals);
+        approvals.bindCommandDisplay(application.commandExecutionDisplay());
     }
 
     @Override
@@ -448,6 +456,7 @@ public final class RuntimeStdioCommandHandler
 
     private boolean questionnaireV1;
     private boolean experienceV1;
+    private boolean directedChunkInputV1;
 
     private StdioProtocol.Disposition initialize(
             StdioProtocol.Command command,
@@ -460,12 +469,15 @@ public final class RuntimeStdioCommandHandler
                         command,
                         "initialize 不能携带 Session 或 Run");
             }
-            for (String capability : java.util.List.of("questionnaireV1", "experienceV1")) {
+            for (String capability : java.util.List.of(
+                    "questionnaireV1", "experienceV1", "directedChunkInputV1")) {
                 JsonNode flag = command.payload().get(capability);
                 if (flag != null && !flag.isBoolean()) throw protocolError("INVALID_PAYLOAD", command, "能力标记必须为 boolean");
             }
             questionnaireV1 = command.payload().has("questionnaireV1") && command.payload().get("questionnaireV1").booleanValue();
             experienceV1 = command.payload().has("experienceV1") && command.payload().get("experienceV1").booleanValue();
+            directedChunkInputV1 = command.payload().has("directedChunkInputV1")
+                    && command.payload().get("directedChunkInputV1").booleanValue();
 
             application.setChildTaskObserver(report -> emitBackgroundTaskTerminal(events, report));
             application.installUserQuestionHandler(questions);
@@ -481,6 +493,7 @@ public final class RuntimeStdioCommandHandler
         payload.put("protocolVersion", StdioProtocol.VERSION);
         if (questionnaireV1) payload.put("questionnaireV1", true);
         if (experienceV1) payload.put("experienceV1", true);
+        if (directedChunkInputV1) payload.put("directedChunkInputV1", true);
         var sessionOpen = application.sessionOpenResult();
         payload.put("openMode", sessionOpen.mode().name().toLowerCase(Locale.ROOT));
         payload.put("readOnly", sessionOpen.readOnly());
@@ -534,11 +547,20 @@ public final class RuntimeStdioCommandHandler
             StdioProtocol.EventEmitter events,
             String commandType) throws StdioProtocolException {
         String task = requiredPrompt(command);
+        boolean verificationCorrection = verificationCorrectionRequested(command);
         ActiveRun run;
         synchronized (lock) {
             ensureState(State.READY, command);
             requireSession(command);
             requireNoRunId(command);
+            if (verificationCorrection) {
+                try {
+                    application.preparePlanVerificationCorrection();
+                } catch (RuntimeException staleOrFenced) {
+                    throw protocolError("PLAN_CORRECTION_UNAVAILABLE", command,
+                            "待验证 Plan 已变化或 Session 当前不可修正");
+                }
+            }
             run = startRunLocked(command.requestId(), task.length(), events);
             run.suppressModelText = true;
         }
@@ -1038,10 +1060,36 @@ public final class RuntimeStdioCommandHandler
             int byteCount;
             int chunkCount;
             String digest;
+            String targetType;
+            boolean verificationCorrection;
             try {
+                Set<String> fields = Set.of("inputId", "byteCount", "chunkCount", "sha256",
+                        "targetType", "verificationCorrection");
+                if (command.payload().properties().stream().anyMatch(entry -> !fields.contains(entry.getKey()))) {
+                    throw protocolError("INVALID_PAYLOAD", command, "input.begin payload 含未知字段");
+                }
                 byteCount = requiredAssemblyInt(command, "byteCount", 1, MAX_EXPANDED_INPUT_BYTES);
                 chunkCount = requiredAssemblyInt(command, "chunkCount", 1, MAX_INPUT_CHUNKS);
                 digest = requiredAssemblyText(command, "sha256");
+                JsonNode rawTarget = command.payload().get("targetType");
+                JsonNode rawCorrection = command.payload().get("verificationCorrection");
+                if ((rawTarget != null || rawCorrection != null) && !directedChunkInputV1) {
+                    throw protocolError(
+                            "CAPABILITY_REQUIRED",
+                            command,
+                            "定向分片输入尚未协商");
+                }
+                targetType = rawTarget == null ? "run.start" : requiredAssemblyText(command, "targetType");
+                if (!targetType.equals("run.start") && !targetType.equals("plan.start")) {
+                    throw protocolError("INVALID_PAYLOAD", command, "input.begin targetType 无效");
+                }
+                if (rawCorrection != null && !rawCorrection.isBoolean()) {
+                    throw protocolError("INVALID_PAYLOAD", command, "verificationCorrection 必须为 boolean");
+                }
+                verificationCorrection = rawCorrection != null && rawCorrection.booleanValue();
+                if (verificationCorrection && !targetType.equals("plan.start")) {
+                    throw protocolError("INVALID_PAYLOAD", command, "普通 Run 不能携带 Plan 恢复意图");
+                }
             } catch (StdioProtocolException invalid) {
                 recordInputTombstone(inputId, InputTerminal.FAILED);
                 throw invalid;
@@ -1051,8 +1099,9 @@ public final class RuntimeStdioCommandHandler
                 throw protocolError("INPUT_DIGEST_INVALID", command, "输入摘要格式无效");
             }
             inputAssembly = new InputAssembly(
-                    command.requestId(), inputId, byteCount, chunkCount, digest,
-                    clock.instant().plus(INPUT_ASSEMBLY_TIMEOUT), new java.io.ByteArrayOutputStream(byteCount));
+                    command.requestId(), inputId, byteCount, chunkCount, digest, targetType,
+                    verificationCorrection, clock.instant().plus(INPUT_ASSEMBLY_TIMEOUT),
+                    new java.io.ByteArrayOutputStream(byteCount));
             InputAssembly captured = inputAssembly;
             inputExpiry = assemblyScheduler.schedule(INPUT_ASSEMBLY_TIMEOUT, () -> expireInputAssembly(captured));
         }
@@ -1118,12 +1167,15 @@ public final class RuntimeStdioCommandHandler
                 failAssemblyLocked(assembly, InputTerminal.FAILED);
                 throw correlatedError("INVALID_PAYLOAD", command, assembly.requestId, "展开输入为空或超过限制");
             }
+            ObjectNode expanded = codec.objectNode().put("prompt", prompt);
+            if (assembly.verificationCorrection) expanded.put("verificationCorrection", true);
             completeAssemblyLocked(assembly, InputTerminal.COMPLETED);
             command = new StdioProtocol.Command(
-                    command.version(), "run.start", assembly.requestId, command.sessionId(),
-                    Optional.empty(), command.sequence(), command.payload());
+                    command.version(), assembly.targetType, assembly.requestId, command.sessionId(),
+                    Optional.empty(), command.sequence(), expanded);
         }
-        return startAcceptedInput(command, events, prompt);
+        return command.type().equals("plan.start")
+                ? startPlan(command, events) : startAcceptedInput(command, events, prompt);
     }
 
     private InputAssembly requireAssembly(StdioProtocol.Command command) throws StdioProtocolException {
@@ -2269,12 +2321,19 @@ public final class RuntimeStdioCommandHandler
                 if (before.call().id().length() <= 512) payload.put("callId", before.call().id());
                 payload.put("turn", run.modelTurn);
                 safeToolActivity(before.call()).ifPresent(value -> payload.put("parametersPreview", value));
+                StdioApprovalCoordinator.Preview command = approvals.commandPreview(before.call());
+                if ("execute".equals(command.operation())) {
+                    payload.put("command", command.command());
+                    payload.put("shell", command.shell());
+                    payload.put("workingDirectory", command.workingDirectory());
+                }
             }
             safeToolMode(before.call()).ifPresent(mode -> {
                 run.toolModes.put(before.ordinal(), mode);
                 payload.put("mode", mode);
             });
             safeToolActivity(before.call()).ifPresent(activity -> payload.put("activity", activity));
+            rememberEvidenceDeclaration(run, before);
             emit(run, "tool.started", payload);
         } else if (envelope.event() instanceof LifecycleEvent.AfterTool after) {
             ObjectNode payload = codec.objectNode();
@@ -2312,9 +2371,36 @@ public final class RuntimeStdioCommandHandler
                     payload.put("strategyChangeRequired", required);
                 }
             });
+            boolean trustedEvidenceValidationFailure =
+                    isTrustedEvidenceValidationFailure(after.result());
+            Optional<String> safeFailureReason = trustedEvidenceValidationFailure
+                    ? after.result().error().flatMap(error -> {
+                        Object reason = error.details().values()
+                                .get(PlanEvidenceDeclarationTool.FAILURE_REASON_DETAIL);
+                        if (PlanEvidenceDeclarationTool.VERIFICATION_TOOL_UNAVAILABLE.equals(reason)) {
+                            payload.put("failureReasonCode",
+                                    PlanEvidenceDeclarationTool.VERIFICATION_TOOL_UNAVAILABLE);
+                            return Optional.of(PlanEvidenceDeclarationTool.VERIFICATION_TOOL_UNAVAILABLE);
+                        }
+                        return Optional.empty();
+                    })
+                    : Optional.empty();
+            Optional<String> failedRequirementId = trustedEvidenceValidationFailure
+                    ? after.result().error().flatMap(error -> {
+                        Object requirementId = error.details().values()
+                                .get(PlanEvidenceDeclarationTool.RECOVERY_REQUIREMENT_DETAIL);
+                        if (requirementId instanceof String value
+                                && value.matches("[a-z][a-z0-9-]{0,63}")) {
+                            return Optional.of(value);
+                        }
+                        return Optional.empty();
+                    })
+                    : Optional.empty();
             safeCommandExitCode(after.result()).ifPresent(exitCode -> payload.put("exitCode", exitCode));
             boolean succeeded = after.result().status()
                     == io.github.liumaishenjian.ccjava.domain.ToolResultStatus.SUCCESS;
+            correlateEvidenceRecovery(run, after.ordinal(), succeeded, safeFailureReason,
+                    failedRequirementId, payload);
             emit(run, succeeded ? "tool.completed" : "tool.failed", payload);
             if (succeeded && isTaskMutationTool(after.result().toolName())) {
                 emitTaskBoardSnapshot(run);
@@ -2506,6 +2592,65 @@ public final class RuntimeStdioCommandHandler
                 .filter(Integer.class::isInstance)
                 .map(Integer.class::cast)
                 .filter(exitCode -> exitCode != -1);
+    }
+
+    /**
+     * 判断失败是否来自唯一内置验证声明契约的确定性参数校验分支。
+     *
+     * <p>外部或其他 Tool 即使伪造同名 details，也不能进入原因码和恢复身份投影。
+     * Tool 名由 Pipeline 绑定原始调用，错误码与类别则限定到声明 Tool 的校验失败。</p>
+     */
+    static boolean isTrustedEvidenceValidationFailure(
+            io.github.liumaishenjian.ccjava.domain.ToolResult result) {
+        Objects.requireNonNull(result, "result 不能为空");
+        return PlanEvidenceDeclarationTool.NAME.equals(result.toolName())
+                && result.error().filter(error ->
+                        error.code() == io.github.liumaishenjian.ccjava.domain.ToolErrorCode.INVALID_ARGUMENTS
+                                && error.category()
+                                == io.github.liumaishenjian.ccjava.domain.ToolFailureCategory.VALIDATION)
+                        .isPresent();
+    }
+
+    /**
+     * 只在宿主内保存当前 Run 的验证声明身份，供后续成功结果精确关联先前失败。
+     *
+     * <p>requirementId 不进入 stdio；非法或非验证声明不会参与恢复推断。</p>
+     */
+    private static void rememberEvidenceDeclaration(ActiveRun run, LifecycleEvent.BeforeTool before) {
+        if (!PlanEvidenceDeclarationTool.NAME.equals(before.call().name())) return;
+        JsonObject arguments = before.call().arguments();
+        String requirementId = arguments.string("requirementId").orElse("");
+        String kind = arguments.string("kind").orElse("");
+        if ("VERIFICATION".equals(kind) && requirementId.matches("[a-z][a-z0-9-]{0,63}")) {
+            run.evidenceDeclarations.put(before.ordinal(), new EvidenceDeclarationAttempt(requirementId));
+        }
+    }
+
+    /**
+     * 将同一 Run、同一 requirement 的后续成功声明关联到最近一次可信失败。
+     *
+     * <p>历史失败结果保持失败；这里只给成功事件增加 ordinal 关联，不从工具名或相邻顺序猜测。</p>
+     */
+    private static void correlateEvidenceRecovery(
+            ActiveRun run,
+            int ordinal,
+            boolean succeeded,
+            Optional<String> safeFailureReason,
+            Optional<String> failedRequirementId,
+            ObjectNode payload) {
+        EvidenceDeclarationAttempt attempt = run.evidenceDeclarations.remove(ordinal);
+        if (!succeeded) {
+            if (safeFailureReason.filter(PlanEvidenceDeclarationTool.VERIFICATION_TOOL_UNAVAILABLE::equals)
+                    .isPresent() && failedRequirementId.isPresent()) {
+                run.unrecoveredEvidenceFailures.put(failedRequirementId.orElseThrow(), ordinal);
+            }
+            return;
+        }
+        if (attempt == null) return;
+        Integer failedOrdinal = run.unrecoveredEvidenceFailures.remove(attempt.requirementId());
+        if (failedOrdinal != null && failedOrdinal > 0 && failedOrdinal < ordinal) {
+            payload.put("recoveredFailureOrdinal", failedOrdinal);
+        }
     }
 
     /**
@@ -2799,6 +2944,27 @@ public final class RuntimeStdioCommandHandler
         }
     }
 
+    /**
+     * 只接受 Experience Surface 对显式 {@code /plan <文本>} 生成的恢复意图标记。
+     *
+     * <p>该布尔值不携带 Plan identity，也不授予执行权限；Java 仍根据 durable 状态决定是否存在
+     * NEEDS_VERIFICATION 工件。无参 {@code /plan} 不发送命令，普通 plan-mode 输入也不带该标记。</p>
+     */
+    private boolean verificationCorrectionRequested(StdioProtocol.Command command)
+            throws StdioProtocolException {
+        if (!command.type().equals("plan.start")) return false;
+        Set<String> fields = Set.of("prompt", "verificationCorrection");
+        if (command.payload().properties().stream().anyMatch(entry -> !fields.contains(entry.getKey()))) {
+            throw protocolError("INVALID_PAYLOAD", command, "plan.start payload 含未知字段");
+        }
+        JsonNode requested = command.payload().get("verificationCorrection");
+        if (requested == null) return false;
+        if (!requested.isBoolean()) {
+            throw protocolError("INVALID_PAYLOAD", command, "verificationCorrection 必须为 boolean");
+        }
+        return requested.booleanValue();
+    }
+
     private String requiredPrompt(StdioProtocol.Command command)
             throws StdioProtocolException {
         JsonNode prompt = command.payload().get("prompt");
@@ -3014,6 +3180,8 @@ public final class RuntimeStdioCommandHandler
         private final int byteCount;
         private final int chunkCount;
         private final String sha256;
+        private final String targetType;
+        private final boolean verificationCorrection;
         private final Instant deadline;
         private final java.io.ByteArrayOutputStream bytes;
         private int receivedChunks;
@@ -3024,6 +3192,8 @@ public final class RuntimeStdioCommandHandler
                 int byteCount,
                 int chunkCount,
                 String sha256,
+                String targetType,
+                boolean verificationCorrection,
                 Instant deadline,
                 java.io.ByteArrayOutputStream bytes) {
             this.requestId = requestId;
@@ -3031,6 +3201,8 @@ public final class RuntimeStdioCommandHandler
             this.byteCount = byteCount;
             this.chunkCount = chunkCount;
             this.sha256 = sha256;
+            this.targetType = targetType;
+            this.verificationCorrection = verificationCorrection;
             this.deadline = deadline;
             this.bytes = bytes;
         }
@@ -3071,11 +3243,19 @@ public final class RuntimeStdioCommandHandler
         }
     }
 
+    private record EvidenceDeclarationAttempt(String requirementId) {
+        private EvidenceDeclarationAttempt {
+            Objects.requireNonNull(requirementId, "requirementId 不能为空");
+        }
+    }
+
     private static final class ActiveRun {
         private final String requestId;
         private final int promptChars;
         private final StdioProtocol.EventEmitter events;
         private final Map<Integer, String> toolModes = new LinkedHashMap<>();
+        private final Map<Integer, EvidenceDeclarationAttempt> evidenceDeclarations = new LinkedHashMap<>();
+        private final Map<String, Integer> unrecoveredEvidenceFailures = new LinkedHashMap<>();
         private final CommandStartGate commandStart = new CommandStartGate();
         private RunId runId;
         private int modelTurn;

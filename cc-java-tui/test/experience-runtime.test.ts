@@ -30,7 +30,12 @@ function fixture() {
   };
   const initialize = () => {
     runtime.connect();
-    emit('initialized', {questionnaireV1: true, experienceV1: true, modelConfigured: true}, {requestId: 'init', runId: undefined});
+    emit('initialized', {
+      questionnaireV1: true,
+      experienceV1: true,
+      directedChunkInputV1: true,
+      modelConfigured: true,
+    }, {requestId: 'init', runId: undefined});
   };
   const start = () => {
     initialize();
@@ -47,7 +52,11 @@ function fixture() {
 describe('new frontend runtime event boundaries', () => {
   it('initializes once and projects streaming/tool/final content without duplicate rows', () => {
     const f = fixture(); f.start(); f.runtime.connect();
-    expect(f.client.initialize).toHaveBeenCalledExactlyOnceWith({questionnaireV1: true, experienceV1: true});
+    expect(f.client.initialize).toHaveBeenCalledExactlyOnceWith({
+      questionnaireV1: true,
+      experienceV1: true,
+      directedChunkInputV1: true,
+    });
     expect(f.runtime.state.workspace).toBe('C:/workspace');
     expect(f.runtime.state.model).toBe('configured-model');
     f.emit('model.turn.started', {turn: 1});
@@ -128,7 +137,7 @@ describe('new frontend runtime event boundaries', () => {
   it('requires planning terminal before one APPROVE_USER KEEP decision and starts no extra run', () => {
     const f = fixture(); f.initialize();
     expect(f.runtime.submit('/plan implement core')).toBe(true);
-    expect(f.client.startPlan).toHaveBeenCalledExactlyOnceWith('implement core');
+    expect(f.client.startPlan).toHaveBeenCalledExactlyOnceWith('implement core', {verificationCorrection: true});
     f.emit('run.started', {}, {requestId: 'plan-1'});
     f.emit('plan.review.requested', {planId: 'plan', revision: 2, contentDigest: 'content', workspaceDigest: 'workspace', markdown: 'approved design'}, {requestId: 'plan-1', runId: undefined});
     const plan = f.runtime.state.pending as PlanPanel;
@@ -142,6 +151,36 @@ describe('new frontend runtime event boundaries', () => {
     f.emit('run.started', {}, {requestId: 'plan-decision', runId: 'execution-run'});
     expect(f.runtime.state.status).toBe('running');
     expect(f.runtime.state.mode).toBe('chat');
+  });
+
+  it('keeps plan mode after rejection and accepts an explicit new planning task', () => {
+    const f = fixture(); f.initialize();
+    expect(f.runtime.submit('/plan inspect only')).toBe(true);
+    f.emit('run.started', {}, {requestId: 'plan-1'});
+    f.emit('plan.review.requested', {planId: 'plan', revision: 1, contentDigest: 'content', workspaceDigest: 'workspace', markdown: 'inspect'}, {requestId: 'plan-1', runId: undefined});
+    const plan = f.runtime.state.pending as PlanPanel;
+    f.emit('run.completed', {}, {requestId: 'plan-1'});
+    expect(f.runtime.review(plan, 'REJECT', '')).toBe(true);
+    expect(f.runtime.state.mode).toBe('plan');
+    f.emit('plan.review.rejected', {status: 'rejected'}, {requestId: 'plan-decision', runId: undefined});
+    expect(f.runtime.state.status).toBe('idle');
+    expect(f.runtime.submit('/plan new task')).toBe(true);
+    expect(f.client.startPlan).toHaveBeenNthCalledWith(2, 'new task', {verificationCorrection: true});
+    expect(f.client.startRun).not.toHaveBeenCalled();
+  });
+
+  it('keeps bare /plan as view-only and marks only direct /plan text as correction intent', () => {
+    const f = fixture(); f.initialize();
+    expect(f.runtime.submit('/plan')).toBe(true);
+    expect(f.client.startPlan).not.toHaveBeenCalled();
+    expect(f.runtime.submit('plan-mode task')).toBe(true);
+    expect(f.client.startPlan).toHaveBeenLastCalledWith('plan-mode task');
+    f.emit('run.started', {}, {requestId: 'plan-1'});
+    f.emit('run.completed', {finalText: ''}, {requestId: 'plan-1'});
+    expect(f.runtime.submit('/plan correct verification')).toBe(true);
+    expect(f.client.startPlan).toHaveBeenLastCalledWith(
+      'correct verification', {verificationCorrection: true},
+    );
   });
 
   it('validates a whole questionnaire and sends mixed answers once without a normal run', () => {

@@ -45,9 +45,15 @@ it('真实适配器保留运行中草稿，取消后迟到问卷不重夺焦点�
   await h.key('后续中文😀'); await h.key('\x0f'); await h.key('\x0f');
   await h.key('\r'); expect(h.client.startRun).toHaveBeenCalledTimes(1);
   await h.key('\x1b'); expect(h.client.cancelRun).toHaveBeenCalledTimes(1);
-  h.emit('question.requested', {callId: 'late', questions}); h.emit('run.cancelled'); await wait();
+  h.emit('question.requested', {callId: 'late', questions});
+  h.emit('approval.requested', {approvalId:'late-gate',ordinal:1,toolName:'run_command',shell:'powershell',workingDirectory:'.',command:'LATE_COMMAND',sessionScope:true});
+  h.emit('model.text.delta', {text: 'LATE_ASSISTANT_TEXT'});
+  h.emit('tool.started', {ordinal: 1, toolName: 'run_command', command: 'LATE_COMMAND', shell: 'powershell', workingDirectory: '.'});
+  h.emit('run.cancelled'); await wait();
   expect(h.app.lastFrame()).toContain('后续中文😀');
   expect(h.app.lastFrame()).not.toContain('选择检查范围');
+  expect(h.app.lastFrame()).not.toContain('LATE_COMMAND');
+  expect(h.app.lastFrame()).not.toContain('LATE_ASSISTANT_TEXT');
   h.failed(); await wait(); expect(h.app.lastFrame()).toContain('连接已断开');
   expect(h.app.lastFrame()).toContain('后续中文😀');
 });
@@ -67,6 +73,37 @@ it('真实问卷单选多选自由回答、复核返回修改后只整批提交�
     {questionId: 'text', optionIds: [], freeText: '中文补充😀'},
   ]);
 });
+it('无审批元数据优先显示完整命令，审批焦点结束后恢复中文草稿', async () => {
+  const h = await mount();
+  await h.key('审批期间保留😀');
+  const command = `Write-Output ${'长命令'.repeat(90)}-完整尾部`;
+  h.emit('tool.started', {
+    ordinal: 1,
+    toolName: 'run_command',
+    command,
+    parametersPreview: '执行 “已截断…”',
+    shell: 'powershell',
+    workingDirectory: '.',
+  });
+  await wait();
+  await h.key('\x0f');
+  expect(h.app.lastFrame()).toContain('完整尾部');
+  expect(h.app.lastFrame()).toContain('审批期间保留😀');
+
+  h.emit('approval.requested', {
+    approvalId: 'gate', ordinal: 1, toolName: 'run_command', shell: 'powershell',
+    workingDirectory: '.', command, sessionScope: true,
+  });
+  await wait();
+  expect(h.app.lastFrame()).toContain('允许本次操作');
+  await h.key('1');
+  expect(h.client.resolveApproval).not.toHaveBeenCalled();
+  await h.key('\r');
+  expect(h.client.resolveApproval).toHaveBeenCalledExactlyOnceWith('gate', 'allow_once');
+  expect(h.app.lastFrame()).toContain('审批期间保留😀');
+  expect(h.app.lastFrame()).toContain('完整尾部');
+});
+
 it('完整Shell审批需Enter确认；数字选中不会提前执行', async () => {
   const h = await mount(); h.emit('approval.requested', {approvalId:'gate',ordinal:1,toolName:'run_command',shell:'PowerShell',workingDirectory:'G:\\example',command:'Write-Output 42',sessionScope:true}); await wait();
   expect(h.app.lastFrame()).toContain('PowerShell'); expect(h.app.lastFrame()).toContain('Write-Output 42');
@@ -91,6 +128,37 @@ it('Markdown及长问卷在六种视窗保留选项、焦点与退出入口', ()
 });
 
 
+it('搜索分组、命令详情、草稿与审批在六种视窗保持可达',()=>{
+  const h=host();const r=new ExperienceRuntime(h.client,'G:\\example');r.connect();h.initialize();r.submit('尺寸');h.emit('run.started');
+  h.emit('model.turn.started',{turn:1});
+  h.emit('tool.started',{ordinal:1,toolName:'search_text',parametersPreview:'alpha'});h.emit('tool.completed',{ordinal:1,toolName:'search_text',content:'one'});
+  h.emit('tool.started',{ordinal:2,toolName:'search_text',parametersPreview:'beta'});h.emit('tool.completed',{ordinal:2,toolName:'search_text',content:'two'});
+  h.emit('tool.started',{ordinal:3,toolName:'run_command',command:'Write-Output 完整命令尾部',parametersPreview:'执行 “已截断…”',shell:'powershell',workingDirectory:'.'});
+  for (const width of [40,80,120]) for(const height of [24,35]) {
+    const ui={...newRuntimeUi(),draft:{text:'中文草稿😀',cursor:6}};
+    let frame=runtimeFrame(r.state,ui,width,height);
+    let visible=frame.rows.map(rowText).join('\n');
+    expect(frame.rows.length).toBeLessThanOrEqual(height);
+    expect(frame.rows.every(row=>stringWidth(rowText(row))<=width)).toBe(true);
+    expect(visible).toContain('搜索内容 · 2 项');
+    expect(visible).toContain('powershell');
+    expect(visible).toContain('中文草稿😀');
+    frame=runtimeFrame(r.state,{...ui,expanded:true},width,height);
+    visible=frame.rows.map(rowText).join('\n');
+    expect(visible).toContain('完整命令尾部');
+    expect(visible).toContain('目录：.');
+  }
+  h.emit('approval.requested',{approvalId:'gate',ordinal:3,toolName:'run_command',effect:'execute_process',operation:'execute',command:'Write-Output 完整命令尾部',shell:'powershell',workingDirectory:'.',sessionScope:true});
+  for (const width of [40,80,120]) for(const height of [24,35]) {
+    const frame=runtimeFrame(r.state,newRuntimeUi(),width,height);
+    const visible=frame.rows.map(rowText).join('\n');
+    expect(frame.rows.length).toBeLessThanOrEqual(height);
+    expect(frame.rows.every(row=>stringWidth(rowText(row))<=width)).toBe(true);
+    expect(visible).toContain('3. 拒绝本次操作');
+    expect(visible).toContain('Esc');
+  }
+});
+
 it('Alt+Enter只换行，小屏编辑态Esc仍立即停止运行',async()=>{
   const h=host();const app=render(<ExperienceRuntimeApp client={h.client} workspace="G:\\example"/>);
   await wait();h.initialize();await wait();
@@ -110,6 +178,80 @@ it('多选自由回答保存后可以用Enter重新编辑并保留选项',async(
   expect(h.app.lastFrame()).toContain('Enter 保存');
   await h.key('修改');await h.key('\r');await h.key('\r');
   expect(h.app.lastFrame()).toContain('补充说明');
+});
+
+it('搜索只折叠同Run同回合同类相邻成功，失败与展开保持独立',()=>{
+  const h=host();const r=new ExperienceRuntime(h.client,'G:\\example');r.connect();h.initialize();r.submit('搜索');h.emit('run.started');
+  h.emit('model.turn.started',{turn:1});
+  h.emit('tool.started',{ordinal:1,toolName:'search_text',parametersPreview:'alpha'});
+  h.emit('tool.completed',{ordinal:1,toolName:'search_text',content:'one'});
+  h.emit('tool.started',{ordinal:2,toolName:'search_text',parametersPreview:'beta'});
+  h.emit('tool.completed',{ordinal:2,toolName:'search_text',content:'two'});
+  h.emit('tool.started',{ordinal:3,toolName:'search_text',parametersPreview:'failed'});
+  h.emit('tool.failed',{ordinal:3,toolName:'search_text',errorCode:'invalid_arguments'});
+  h.emit('model.turn.started',{turn:2});
+  h.emit('tool.started',{ordinal:4,toolName:'search_text',parametersPreview:'later'});
+  h.emit('tool.completed',{ordinal:4,toolName:'search_text',content:'four'});
+  let visible=runtimeFrame(r.state,newRuntimeUi(),80,35).rows.map(rowText).join('\n');
+  expect(visible.match(/搜索内容 · 2 项/g)).toHaveLength(1);
+  expect(visible).toContain('工具参数无效');
+  expect(visible).toContain('later');
+  visible=runtimeFrame(r.state,{...newRuntimeUi(),expanded:true},80,35).rows.map(rowText).join('\n');
+  expect(visible).not.toContain('搜索内容 · 2 项');
+  expect(visible.match(/搜索内容/g)).toHaveLength(4);
+});
+
+it('流式增量被同回合finalText替换且正文只显示一次',()=>{
+  const h=host();const r=new ExperienceRuntime(h.client,'G:\\example');r.connect();h.initialize();r.submit('回答');h.emit('run.started');
+  h.emit('model.turn.started',{turn:1});
+  h.emit('model.text.delta',{text:'唯一'});h.emit('model.text.delta',{text:'正文'});
+  h.emit('run.completed',{stopReason:'completed',finalText:'唯一正文'});
+  const visible=runtimeFrame(r.state,newRuntimeUi(),80,24).rows.map(rowText).join('\n');
+  expect(visible.match(/唯一正文/g)).toHaveLength(1);
+  expect(r.state.status).toBe('idle');
+});
+
+it('验证声明只按宿主 ordinal 显示真实恢复，旧字段与跨 Run 不猜测',()=>{
+  const h=host();const r=new ExperienceRuntime(h.client,'G:\example');r.connect();h.initialize();r.submit('/plan 天气');h.emit('run.started');
+  h.emit('tool.started',{ordinal:1,toolName:'declare_plan_evidence'});
+  h.emit('tool.failed',{ordinal:1,toolName:'declare_plan_evidence',errorCode:'invalid_arguments',failureReasonCode:'verification_tool_unavailable'});
+  h.emit('tool.started',{ordinal:2,toolName:'declare_plan_evidence'});
+  h.emit('tool.failed',{ordinal:2,toolName:'declare_plan_evidence',errorCode:'invalid_arguments',failureReasonCode:'verification_tool_unavailable'});
+  h.emit('tool.started',{ordinal:3,toolName:'declare_plan_evidence'});
+  h.emit('tool.completed',{ordinal:3,toolName:'declare_plan_evidence'});
+  let visible=runtimeFrame(r.state,newRuntimeUi(),80,35).rows.map(rowText).join('\n');
+  expect(visible.match(/验证方式使用了当前不可用的工具/g)).toHaveLength(2);
+  expect(visible).not.toContain('已修正验证方式');
+
+  h.emit('tool.started',{ordinal:4,toolName:'declare_plan_evidence'});
+  h.emit('tool.completed',{ordinal:4,toolName:'declare_plan_evidence',recoveredFailureOrdinal:2});
+  visible=runtimeFrame(r.state,{...newRuntimeUi(),expanded:true},80,35).rows.map(rowText).join('\n');
+  expect(visible.match(/验证方式使用了当前不可用的工具/g)).toHaveLength(1);
+  expect(visible).toContain('已修正验证方式，继续规划');
+  expect(visible).toContain('原声明：失败（验证工具不可用）');
+  expect(visible).toContain('后续声明：修正成功');
+  expect(visible).not.toMatch(/(?:原|修正)调用 #\d+/);
+  expect(r.state.blocks.find(block=>block.kind==='tool'&&block.ordinal===2)).toMatchObject({status:'failed',recoveredByOrdinal:4});
+
+  h.emit('tool.started',{ordinal:5,toolName:'read_file'});
+  h.emit('tool.failed',{ordinal:5,toolName:'read_file',errorCode:'invalid_arguments'});
+  h.emit('tool.started',{ordinal:6,toolName:'declare_plan_evidence'});
+  h.emit('tool.completed',{ordinal:6,toolName:'declare_plan_evidence',recoveredFailureOrdinal:5});
+  expect(r.state.blocks.find(block=>block.kind==='tool'&&block.ordinal===5)).toMatchObject({status:'failed',recoveredByOrdinal:0});
+  h.emit('tool.started',{ordinal:7,toolName:'declare_plan_evidence'});
+  h.emit('tool.failed',{ordinal:7,toolName:'declare_plan_evidence',errorCode:'invalid_arguments'});
+  h.emit('tool.started',{ordinal:8,toolName:'declare_plan_evidence'});
+  h.emit('tool.completed',{ordinal:8,toolName:'declare_plan_evidence',recoveredFailureOrdinal:7});
+  expect(r.state.blocks.find(block=>block.kind==='tool'&&block.ordinal===7)).toMatchObject({status:'failed',recoveredByOrdinal:0});
+
+  h.emit('run.completed',{stopReason:'completed'});r.submit('/plan 另一轮');h.emit('run.started',{},'request','run-2');
+  h.emit('tool.started',{ordinal:1,toolName:'declare_plan_evidence'},'request','run-2');
+  h.emit('tool.failed',{ordinal:1,toolName:'declare_plan_evidence',errorCode:'invalid_arguments'},'request','run-2');
+  h.emit('tool.started',{ordinal:2,toolName:'declare_plan_evidence'},'request','run-2');
+  h.emit('tool.completed',{ordinal:2,toolName:'declare_plan_evidence'},'request','run-2');
+  visible=runtimeFrame(r.state,newRuntimeUi(),80,35).rows.map(rowText).join('\n');
+  expect(visible).toContain('工具参数无效');
+  expect(visible.match(/已修正验证方式/g)).toHaveLength(1);
 });
 
 it('正常计划编排不刷屏，展开也不泄漏任务JSON；失败仍可见',()=>{

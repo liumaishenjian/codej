@@ -12,6 +12,7 @@ import io.github.liumaishenjian.ccjava.domain.ToolErrorCode;
 import io.github.liumaishenjian.ccjava.domain.ToolResultMetadata;
 import io.github.liumaishenjian.ccjava.domain.ToolResultTruncationReason;
 import io.github.liumaishenjian.ccjava.domain.ToolSource;
+import io.github.liumaishenjian.ccjava.tools.local.command.CommandExecutionDisplay;
 import io.github.liumaishenjian.ccjava.tools.local.command.CommandExecutionResult;
 import io.github.liumaishenjian.ccjava.tools.local.command.LocalCommandExecutor;
 import io.github.liumaishenjian.ccjava.tools.local.workspace.LocalToolLimits;
@@ -64,6 +65,15 @@ public final class RunCommandTool implements AgentTool {
     @Override
     public ToolDefinition definition() {
         return DEFINITION;
+    }
+
+    /**
+     * 返回与本 Tool 实际执行器同源的非 Secret Shell/cwd 描述。
+     *
+     * @return 仅描述已装配执行配置，不表示命令已开始或成功
+     */
+    public CommandExecutionDisplay commandDisplay() {
+        return executor.display();
     }
 
     @Override

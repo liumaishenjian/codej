@@ -15,6 +15,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 
 class LocalCommandExecutorTest {
 
@@ -60,6 +62,30 @@ class LocalCommandExecutorTest {
         assertThat(result.stderr()).contains("hello-err");
         assertThat(events).anyMatch(value -> value.startsWith(ToolOutputStream.STDOUT + ":"));
         assertThat(events).anyMatch(value -> value.startsWith(ToolOutputStream.STDERR + ":"));
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void windowsPowerShellKeepsStructuredUnicodeStreamsWithoutCliXml() throws Exception {
+        CopyOnWriteArrayList<String> events = new CopyOnWriteArrayList<>();
+
+        CommandExecutionResult result = new LocalCommandExecutor(workspace).execute(
+                "Write-Output \"中文输出\"; Write-Error \"中文错误\"; exit 7",
+                Duration.ofSeconds(20),
+                CancellationToken.none(),
+                (stream, text) -> events.add(stream + ":" + text));
+
+        assertThat(result.exitCode()).isEqualTo(7);
+        assertThat(result.timedOut()).isFalse();
+        assertThat(result.cancelled()).isFalse();
+        assertThat(result.stdout()).contains("中文输出");
+        assertThat(result.stderr())
+                .contains("Write-Error", "中文错误")
+                .doesNotContain("#< CLIXML", "_x001B_");
+        assertThat(events).anySatisfy(value -> assertThat(value)
+                .startsWith(ToolOutputStream.STDOUT + ":").contains("中文输出"));
+        assertThat(events).anySatisfy(value -> assertThat(value)
+                .startsWith(ToolOutputStream.STDERR + ":").contains("中文错误"));
     }
 
     @Test

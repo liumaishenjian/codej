@@ -163,6 +163,16 @@ public final class FilePlanArtifactStore implements PlanArtifactStore {
     }
 
     @Override
+    public synchronized PlanArtifact replaceTerminal(
+            PlanArtifact artifact, String expectedPlanId,
+            long expectedRevision, String expectedContentDigest) {
+        PreparedArtifact prepared = prepareTerminalReplacement(
+                artifact, expectedPlanId, expectedRevision, expectedContentDigest);
+        commit(prepared);
+        return requireExact(artifact);
+    }
+
+    @Override
     public synchronized PlanArtifact restoreMissing(PlanArtifact artifact) {
         requireArtifactOwner(artifact);
         if (load(sessionId).isPresent()) throw failure(PlanArtifactStoreException.Code.ALREADY_EXISTS);
@@ -181,8 +191,11 @@ public final class FilePlanArtifactStore implements PlanArtifactStore {
         if (local.isPresent()) {
             PlanArtifact current = local.orElseThrow();
             if (current.equals(artifact)) return current;
-            if (!current.planId().equals(artifact.planId())
-                    || !current.createdAt().equals(artifact.createdAt())) {
+            boolean sameIdentity = current.planId().equals(artifact.planId())
+                    && current.createdAt().equals(artifact.createdAt());
+            boolean journaledRotation = !sameIdentity
+                    && PlanLifecyclePolicy.validIdentityRotation(current, artifact);
+            if (!sameIdentity && !journaledRotation) {
                 throw failure(PlanArtifactStoreException.Code.IDENTITY_MISMATCH);
             }
         }
@@ -242,6 +255,33 @@ public final class FilePlanArtifactStore implements PlanArtifactStore {
             if (!PlanLifecyclePolicy.validTransition(current.status(), artifact.status())) {
                 throw failure(PlanArtifactStoreException.Code.INVALID_STATE);
             }
+        }
+        ensureGeneration(artifact);
+        publishObserver.generationDurable(artifact);
+        return new PreparedArtifact(artifact, generationPath(artifact));
+    }
+
+    /**
+     * 以旧终态 identity 的完整 CAS 预备全新 DRAFT；不允许覆盖可恢复或仍可执行的 Plan。
+     */
+    synchronized PreparedArtifact prepareTerminalReplacement(
+            PlanArtifact artifact, String expectedPlanId,
+            long expectedRevision, String expectedContentDigest) {
+        requireArtifactOwner(artifact);
+        PlanArtifact current = load(sessionId).orElseThrow(
+                () -> failure(PlanArtifactStoreException.Code.NOT_FOUND));
+        if (!current.planId().equals(Objects.requireNonNull(expectedPlanId, "expectedPlanId 不能为空"))) {
+            throw failure(PlanArtifactStoreException.Code.IDENTITY_MISMATCH);
+        }
+        if (current.revision() != expectedRevision || artifact.revision() != 1) {
+            throw failure(PlanArtifactStoreException.Code.STALE_REVISION);
+        }
+        if (!current.contentDigest().equals(Objects.requireNonNull(
+                expectedContentDigest, "expectedContentDigest 不能为空"))) {
+            throw failure(PlanArtifactStoreException.Code.DIGEST_CONFLICT);
+        }
+        if (!PlanLifecyclePolicy.validIdentityRotation(current, artifact)) {
+            throw failure(PlanArtifactStoreException.Code.INVALID_STATE);
         }
         ensureGeneration(artifact);
         publishObserver.generationDurable(artifact);

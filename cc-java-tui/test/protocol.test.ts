@@ -591,6 +591,86 @@ describe('decodeEvent', () => {
     }), 1)).toThrowError(/模式/);
   });
 
+  it('命令显示字段只接受 run_command started 的完整封闭元组', () => {
+    const started = {
+      version: 0, type: 'tool.started', requestId: 'req-1', sessionId: 'session-1', runId: 'run-1', sequence: 1,
+      payload: {
+        ordinal: 2, toolName: 'run_command', status: 'started',
+        command: 'Write-Output 完整命令', shell: 'powershell', workingDirectory: '.',
+      },
+    };
+    expect(decodeEvent(JSON.stringify(started), 1).payload.command)
+      .toBe('Write-Output 完整命令');
+    expect(() => decodeEvent(JSON.stringify({...started, payload: {
+      ...started.payload, shell: undefined,
+    }}), 1)).toThrowError(/命令显示配置/);
+    expect(() => decodeEvent(JSON.stringify({...started, payload: {
+      ...started.payload, toolName: 'read_file',
+    }}), 1)).toThrowError(/命令显示配置/);
+    expect(() => decodeEvent(JSON.stringify({...started, type: 'tool.completed'}), 1))
+      .toThrowError(/命令显示配置/);
+    expect(() => decodeEvent(JSON.stringify({...started, payload: {
+      ...started.payload, workingDirectory: 'G:\\private',
+    }}), 1)).toThrowError(/命令显示配置/);
+    expect(() => decodeEvent(JSON.stringify({...started, payload: {
+      ...started.payload, command: 'x'.repeat(8_193),
+    }}), 1)).toThrowError(/命令显示配置/);
+    expect(() => decodeEvent(JSON.stringify({...started, payload: {
+      ...started.payload, command: `ok${String.fromCodePoint(0x85)}hidden`,
+    }}), 1)).toThrowError(/命令显示配置/);
+  });
+
+  it('验证声明原因码与恢复 ordinal 是可选且封闭的', () => {
+    const failed = {
+      version: 0, type: 'tool.failed', requestId: 'req-1', sessionId: 'session-1', runId: 'run-1', sequence: 1,
+      payload: {ordinal: 2, toolName: 'declare_plan_evidence', status: 'failure', failureReasonCode: 'verification_tool_unavailable'},
+    };
+    expect(decodeEvent(JSON.stringify(failed), 1).payload.failureReasonCode)
+      .toBe('verification_tool_unavailable');
+    expect(decodeEvent(JSON.stringify({...failed, payload: {
+      ordinal: 2, toolName: 'declare_plan_evidence', status: 'failure',
+    }}), 1).payload.failureReasonCode).toBeUndefined();
+    expect(() => decodeEvent(JSON.stringify({...failed, payload: {
+      ...failed.payload, failureReasonCode: 'raw_exception',
+    }}), 1)).toThrowError(/失败原因/);
+    expect(() => decodeEvent(JSON.stringify({...failed, payload: {
+      ...failed.payload, toolName: 'task_update',
+    }}), 1)).toThrowError(/失败原因/);
+
+    const recovered = {...failed, type: 'tool.completed', sequence: 2, payload: {
+      ordinal: 4, toolName: 'declare_plan_evidence', status: 'success', recoveredFailureOrdinal: 2,
+    }};
+    expect(decodeEvent(JSON.stringify(recovered), 2).payload.recoveredFailureOrdinal).toBe(2);
+    expect(() => decodeEvent(JSON.stringify({...recovered, payload: {
+      ...recovered.payload, recoveredFailureOrdinal: 4,
+    }}), 2)).toThrowError(/恢复关联/);
+    expect(() => decodeEvent(JSON.stringify({...recovered, type: 'tool.failed'}), 2))
+      .toThrowError(/恢复关联/);
+  });
+
+  it('非Local命令审批接受执行器稳定Shell ID并拒绝未知值', () => {
+    for (const shell of ['linux-sh/wsl2-bwrap', 'linux-sh/docker', 'windows-native', 'macos-sandbox']) {
+      const event = decodeEvent(JSON.stringify({
+        version: 0,
+        type: 'approval.requested',
+        requestId: 'req-1',
+        sessionId: 'session-1',
+        runId: 'run-1',
+        sequence: 1,
+        payload: {
+          approvalId: 'approval-1', ordinal: 1, toolName: 'run_command',
+          effect: 'execute_process', operation: 'execute', command: 'printf ok',
+          shell, workingDirectory: '.',
+        },
+      }), 1);
+      expect(event.payload.shell).toBe(shell);
+    }
+    expect(() => decodeEvent(JSON.stringify({
+      version: 0, type: 'approval.requested', requestId: 'req-1', sessionId: 'session-1', runId: 'run-1', sequence: 1,
+      payload: {approvalId: 'approval-1', ordinal: 1, toolName: 'run_command', effect: 'execute_process', operation: 'execute', command: 'printf ok', shell: 'guessed-shell', workingDirectory: '.'},
+    }), 1)).toThrowError(/命令预览/);
+  });
+
   it('只接受带固定副作用分类的审批摘要', () => {
     const event = decodeEvent(JSON.stringify({
       version: 0,

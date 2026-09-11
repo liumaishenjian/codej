@@ -108,7 +108,13 @@ class S15WebSearchHeadlessE2ETest {
                         + "\"sequence\":3,\"payload\":{\"approvalId\":\"%s\",\"decision\":\"deny\"}}")
                         .formatted(sessionId, approval.runId().orElseThrow(),
                                 approval.payload().get("approvalId").stringValue())), emitter);
-                awaitEvent(events, "run.completed");
+                CapturedEvent failed = awaitEvent(events, "run.failed");
+                assertThat(failed.payload().get("stopReason").stringValue())
+                        .isEqualTo("invalid_model_response");
+                assertThat(failed.payload().get("modelTurns").intValue()).isEqualTo(3);
+                assertThat(failed.payload().get("toolCalls").intValue()).isEqualTo(1);
+                assertThat(events).filteredOn(event -> event.type().equals("tool.failed")).hasSize(1);
+                assertThat(events).noneMatch(event -> event.type().equals("plan.review.requested"));
                 assertThat(hits).hasValue(0);
             }
         }

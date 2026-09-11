@@ -4,6 +4,7 @@ import io.github.liumaishenjian.ccjava.core.AgentTool;
 import io.github.liumaishenjian.ccjava.core.execution.ExecutionBackend;
 import io.github.liumaishenjian.ccjava.domain.execution.ExecutionBackendPreference;
 import io.github.liumaishenjian.ccjava.domain.execution.ExecutionShell;
+import io.github.liumaishenjian.ccjava.tools.local.command.CommandExecutionDisplay;
 import io.github.liumaishenjian.ccjava.tools.local.command.LocalCommandExecutor;
 import io.github.liumaishenjian.ccjava.tools.local.execution.ExecutionBackendFactory;
 import io.github.liumaishenjian.ccjava.tools.local.git.GitReadClient;
@@ -30,18 +31,21 @@ import java.util.Objects;
  * @param tools 按稳定协议顺序排列的五个只读、两个写入和一个命令 Tool
  * @param snapshot 非 Secret Git 摘要
  * @param workspaceGuard 与文件 Tool 共享的真实路径安全边界
+ * @param commandDisplay 与命令 Tool 实际执行器同源的非 Secret 显示事实
  * @since 0.3.0
  */
 public record LocalWorkspaceBootstrap(
         List<AgentTool> tools,
         WorkspaceSnapshot snapshot,
-        WorkspaceGuard workspaceGuard) {
+        WorkspaceGuard workspaceGuard,
+        CommandExecutionDisplay commandDisplay) {
 
     /** 冻结 Bootstrap 输出。 */
     public LocalWorkspaceBootstrap {
         tools = List.copyOf(Objects.requireNonNull(tools, "tools 不能为空"));
         snapshot = Objects.requireNonNull(snapshot, "snapshot 不能为空");
         workspaceGuard = Objects.requireNonNull(workspaceGuard, "workspaceGuard 不能为空");
+        commandDisplay = Objects.requireNonNull(commandDisplay, "commandDisplay 不能为空");
     }
 
     /**
@@ -100,11 +104,14 @@ public record LocalWorkspaceBootstrap(
                 LocalReadTools.create(guard, readRegistry));
         tools.add(new ApplyPatchTool(guard, readRegistry));
         tools.add(new WriteFileTool(guard, readRegistry));
-        tools.add(new RunCommandTool(
-                new LocalCommandExecutor(guard.workspace(), backend, shell)));
+        LocalCommandExecutor commandExecutor = new LocalCommandExecutor(
+                guard.workspace(), backend, shell);
+        RunCommandTool commandTool = new RunCommandTool(commandExecutor);
+        tools.add(commandTool);
         return new LocalWorkspaceBootstrap(
                 tools,
                 WorkspaceSnapshot.capture(git),
-                guard);
+                guard,
+                commandTool.commandDisplay());
     }
 }

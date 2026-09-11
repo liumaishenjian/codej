@@ -1,6 +1,6 @@
 # 新 TUI 核心功能收口与源码对照交接文档
 
-日期：2026-09-10。状态：待实施。本文件保存已讨论确认的执行计划，不表示下列工作已经完成。
+日期：2026-09-11。状态：分批实施中；第一批已完成实现、确定性验收及真实 Provider 正常天气闭环，另以 Fake Model + 生产 stdio/TUI 的 Windows PTY 验证失败恢复；第二批 R1—R4 已完成源码对照、自动六尺寸、跨进程与 Windows PTY 验收。第三批 R5—R6 已形成收窄后的方向验证候选版：同一真实 Session 从 revision 24 的 `NEEDS_VERIFICATION` 修正至 revision 37 `COMPLETED`，并完成 PowerShell 7 Unicode/长正文和定向分片安全边界；修复后全 TUI、显式 Java E2E 与最终真实入口均已复验通过，Windows PowerShell 5.1 未实机。本文件不表示整体重构已经完成。
 
 ## 1. 目标、基线与交接方式
 
@@ -37,7 +37,9 @@
 - [ADR-094](../adr/ADR-094-s15-plan-completion-evidence.md)：执行完成与持久化验收条件统一。
 - 近期相关后端回归 136 项，0 失败、1 跳过；TUI 339 项通过；最终跨进程定向 23 项通过。上述是既有证据，不是本计划实施后的验收。
 - 真实天气场景已观察到：审核、命令执行、最终正文可见、Plan COMPLETED、恢复输入。
-- 仍存在内部错误原因不清、恢复状态缺失、模型引用未注册验证工具的问题。
+- 第一批已让未注册验证 Tool 的安全原因与宿主权威恢复关联可见；真实 Provider 正常天气样本未触发该分支，Fake Model + 生产 stdio/TUI 的 Windows PTY 已覆盖失败与恢复显示。
+- 第二批已关闭无审批 `run_command` 缺完整 command/shell/cwd 的实际偏差，并完成草稿/焦点、搜索分组、流式去重、取消迟到隔离及六尺寸回归。
+- 第三批已复现并修复拒绝终态永久阻塞新 `/plan` identity、非 Git Workspace 声明不可满足 required Git verification、显式 correction 的 durable 恢复、Windows PowerShell 双引号/Unicode/argv 边界及旧 Host 定向分片协商。无参 `/plan` 固定只进入/查看；仅显式 `/plan <修正请求>` 纠正同一 planId/Task cohort/requirementId。Java 155/155、同一真实 Session revision 24→37、修复后 build、全 TUI 349 pass/7 skip、显式 Java E2E 7/7，以及真实入口混合中文/错误 exit 7/正确正文/下一轮均已通过。
 - Markdown 表格排版、首次生成命令的 Windows 适配质量仍有差距；本轮不宣称解决全部视觉与模型质量问题。
 - 全仓聚合 Javadoc 的既有警告限制仍需如实记录。
 
@@ -157,9 +159,9 @@
 
 | 批次 | 初始状态 | 必须附带的交付 |
 |---|---|---|
-| 第一批：验证错误与恢复 | 待实施 | ADR、接口兼容说明、失败与恢复对照、原场景复验 |
-| 第二批：显示与焦点 | 待对照 | R1—R4 对照记录、实际修复清单、尺寸与按键证据 |
-| 第三批：问卷与计划 | 待完整验收 | R5—R6 对照记录、四条核心流程最终交付证据 |
+| 第一批：验证错误与恢复 | 已完成本批验收 | ADR-095、stdio 可选字段兼容、Fake/Java/stdio/TUI 失败与恢复对照已补；真实 Provider 正常天气闭环和 Fake Model + 生产链 Windows PTY 失败/恢复结果见 S15 核心证据。真实 Provider 样本未触发失败恢复分支，未伪装为已覆盖 |
+| 第二批：显示与焦点 | 已完成本批验收 | ADR-096；唯一复现偏差为无审批命令缺可信显示元组，已由实际执行器同源修复。自动六尺寸、12 秒 Java→stdio→Ink 5/5、Windows PTY 按键与持久化终态均通过；不声称参考视觉一致 |
+| 第三批：问卷与计划 | 方向验证候选版 | ADR-097；问卷成功/取消与下一轮、拒绝后全新 identity、Jsonl/manifest 恢复、非 Git verification applicability、显式 correction、定向长 Plan capability 与 PowerShell 7 Unicode/固定 launcher 已收口。同一真实 Session revision 24→37 后五条 required 全 PASS、Plan COMPLETED、正文可见且文件 hash 不变；Java 155/155、修复后 TypeScript build、全 TUI 349 pass/7 skip、显式 Java→stdio→Ink 7/7 均通过。真实 `StartCodejDev.ps1 --tui-next` 已验证混合中文/emoji stdout、纯文本中文 stderr、预期 exit 7、正确非成功说明及下一轮回 idle。Windows PowerShell 5.1、参考 UI 视觉一致性、复杂 Provider/跨平台和 Markdown 反引号呈现仍是差距；Capability 等级不变，S15 OPEN |
 
 统一要求：
 

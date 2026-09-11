@@ -64,6 +64,17 @@ public final class LocalCommandExecutor {
     }
 
     /**
+     * 返回与当前真实后端、固定 Workspace 同源的显示事实。
+     *
+     * <p>该方法不启动进程，也不表示命令已经获准或执行成功。</p>
+     *
+     * @return 可安全投影的 Shell ID 与 Workspace-relative cwd
+     */
+    public CommandExecutionDisplay display() {
+        return new CommandExecutionDisplay(shellId(backend.id()), ".");
+    }
+
+    /**
      * 执行已通过参数校验与审批的完整命令。
      *
      * @param command 完整命令文本

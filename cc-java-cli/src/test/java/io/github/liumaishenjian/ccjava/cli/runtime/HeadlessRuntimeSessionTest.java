@@ -42,6 +42,8 @@ import io.github.liumaishenjian.ccjava.domain.JsonObject;
 import io.github.liumaishenjian.ccjava.domain.settings.RuntimeConfiguration;
 import io.github.liumaishenjian.ccjava.domain.settings.RuntimeDiagnosticsVerbosity;
 import io.github.liumaishenjian.ccjava.model.springai.config.OpenAiCompatibleSettings;
+import io.github.liumaishenjian.ccjava.tools.local.WorkspaceSnapshot;
+import io.github.liumaishenjian.ccjava.tools.local.git.GitReadClient;
 import io.github.liumaishenjian.ccjava.tools.local.memory.FileMemoryPrefetchAdapter;
 import io.github.liumaishenjian.ccjava.tools.local.memory.FileMemoryRepository;
 import java.io.IOException;
@@ -2141,6 +2143,62 @@ class HeadlessRuntimeSessionTest {
         }
     }
     @Test
+    void verificationCorrectionRejectsActiveRunAndFencedSessionBeforeMutatingPlan() throws Exception {
+        CountDownLatch modelEntered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicReference<Throwable> runFailure = new AtomicReference<>();
+        ModelGateway blocking = request -> {
+            modelEntered.countDown();
+            try {
+                if (!release.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("test timeout");
+                }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(exception);
+            }
+            return ModelTurn.text("done");
+        };
+        try (HeadlessRuntimeSession runtime = new HeadlessRuntimeSession(
+                blocking, AgentEventSink.noop(), testOptions(temporaryWorkspace, Duration.ofSeconds(5)))) {
+            runtime.open();
+            Thread runner = Thread.ofPlatform().start(() -> {
+                try {
+                    runtime.run("block correction");
+                } catch (Throwable failure) {
+                    runFailure.set(failure);
+                }
+            });
+            assertThat(modelEntered.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThatThrownBy(runtime::preparePlanVerificationCorrection)
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("活动 Run 中不能修正待验证 Plan");
+            release.countDown();
+            runner.join(5_000);
+            assertThat(runFailure.get()).isNull();
+        } finally {
+            release.countDown();
+        }
+
+        try (HeadlessRuntimeSession runtime = new HeadlessRuntimeSession(
+                ignored -> ModelTurn.text("unused"), AgentEventSink.noop(),
+                testOptions(temporaryWorkspace, Duration.ofSeconds(5)))) {
+            runtime.open();
+            java.lang.reflect.Field sessionField = HeadlessRuntimeSession.class.getDeclaredField("session");
+            sessionField.setAccessible(true);
+            Object session = sessionField.get(runtime);
+            java.lang.reflect.Field fencedField = session.getClass().getDeclaredField("fenced");
+            fencedField.setAccessible(true);
+            fencedField.setBoolean(session, true);
+
+            assertThatThrownBy(runtime::preparePlanVerificationCorrection)
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("Session 已 fenced，不能修正待验证 Plan");
+            fencedField.setBoolean(session, false);
+        }
+    }
+
+    @Test
     void continuousPlanUsesReadUpdateQuestionUpdateReviewInSameSessionAndResumes() throws Exception {
         Files.writeString(temporaryWorkspace.resolve("sample.txt"), "hello\n");
         AtomicInteger calls = new AtomicInteger();
@@ -2295,6 +2353,186 @@ class HeadlessRuntimeSessionTest {
     }
 
     @Test
+    void nonGitWorkspaceRejectsGitVerificationWithoutMutatingLedgerAndAllowsSameIdCorrection() throws Exception {
+        Path nonGitWorkspace = Files.createDirectory(sessionStoreRoot.resolve("non-git-verification"));
+        AtomicInteger calls = new AtomicInteger();
+        List<ModelRequest> requests = new CopyOnWriteArrayList<>();
+        ModelGateway model = request -> {
+            requests.add(request);
+            return switch (calls.getAndIncrement()) {
+                case 0 -> ModelTurn.tools(List.of(new ToolCall("create", "revise_plan_artifact",
+                        new JsonObject(Map.of("markdown", "# Plan\n\nVerify without assuming Git.\n")))));
+                case 1 -> ModelTurn.tools(List.of(new ToolCall("bad", "declare_plan_evidence",
+                        new JsonObject(Map.of("requirementId", "verification", "kind", "VERIFICATION",
+                                "locator", "git_status", "label", "status", "required", true)))));
+                case 2 -> ModelTurn.tools(List.of(new ToolCall("correct", "declare_plan_evidence",
+                        new JsonObject(Map.of("requirementId", "verification", "kind", "VERIFICATION",
+                                "locator", "run_command", "label", "command", "required", true)))));
+                case 3 -> ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review", JsonObject.empty())));
+                default -> ModelTurn.text("plan ready");
+            };
+        };
+        try (HeadlessRuntimeSession runtime = new HeadlessRuntimeSession(
+                model, AgentEventSink.noop(), testOptions(nonGitWorkspace, Duration.ofSeconds(5)))) {
+            runtime.open();
+            assertThat(runtime.runPlan("plan non Git verification").stopReason()).isEqualTo(StopReason.COMPLETED);
+            PlanArtifact artifact = runtime.planArtifact().orElseThrow();
+            assertThat(artifact.revision()).isEqualTo(3);
+            assertThat(artifact.evidenceLedger().requirements()).singleElement().satisfies(requirement -> {
+                assertThat(requirement.requirementId()).isEqualTo("verification");
+                assertThat(requirement.locator()).isEqualTo("run_command");
+            });
+            var failure = requests.get(2).messages().stream()
+                    .filter(ToolResultMessage.class::isInstance).map(ToolResultMessage.class::cast)
+                    .map(ToolResultMessage::result).filter(result -> result.callId().equals("bad"))
+                    .findFirst().orElseThrow();
+            assertThat(failure.error().orElseThrow().details().toString())
+                    .contains("run_command").doesNotContain("git_status", "git_diff");
+        }
+    }
+
+    @Test
+    void correctionProjectsAllLegacyRequirementsAndReviewBlocksUntilEveryUnavailableLocatorIsReplaced()
+            throws Exception {
+        Path workspace = Files.createDirectory(sessionStoreRoot.resolve("legacy-git-requirements"));
+        Process git = new ProcessBuilder("git", "-C", workspace.toString(), "init")
+                .redirectErrorStream(true).start();
+        boolean initialized = git.waitFor(10, TimeUnit.SECONDS);
+        if (!initialized) {
+            git.destroyForcibly();
+            git.waitFor(5, TimeUnit.SECONDS);
+        }
+        assertThat(initialized).isTrue();
+        assertThat(git.exitValue()).isZero();
+
+        AtomicInteger calls = new AtomicInteger();
+        List<ModelRequest> requests = new CopyOnWriteArrayList<>();
+        ModelGateway model = request -> {
+            requests.add(request);
+            return switch (calls.getAndIncrement()) {
+                case 0 -> ModelTurn.tools(List.of(new ToolCall("create", "revise_plan_artifact",
+                        new JsonObject(Map.of("markdown", "# Plan\n\nVerify the exact result.\n")))));
+                case 1 -> ModelTurn.tools(List.of(
+                        new ToolCall("status-requirement", "declare_plan_evidence", new JsonObject(Map.of(
+                                "requirementId", "acceptance-file-diff", "kind", "VERIFICATION",
+                                "locator", "git_status", "label", "status", "required", true))),
+                        new ToolCall("diff-requirement", "declare_plan_evidence", new JsonObject(Map.of(
+                                "requirementId", "acceptance-second-diff", "kind", "VERIFICATION",
+                                "locator", "git_diff", "label", "diff", "required", true)))));
+                case 2 -> ModelTurn.tools(List.of(new ToolCall(
+                        "initial-review", "request_plan_review", JsonObject.empty())));
+                case 3 -> ModelTurn.text("plan ready");
+                case 4 -> ModelTurn.text("FIRST_UNVERIFIED_FINAL");
+                case 5 -> ModelTurn.text("SECOND_UNVERIFIED_FINAL");
+                case 6 -> {
+                    assertThat(request.messages().toString())
+                            .contains("requirementId=acceptance-file-diff")
+                            .contains("locator=git_status")
+                            .contains("requirementId=acceptance-second-diff")
+                            .contains("locator=git_diff")
+                            .contains("VERIFICATION_TOOL_UNAVAILABLE_IN_CURRENT_WORKSPACE");
+                    yield ModelTurn.tools(List.of(new ToolCall(
+                            "correct-only-one", "declare_plan_evidence", new JsonObject(Map.of(
+                                    "requirementId", "acceptance-file-diff", "kind", "VERIFICATION",
+                                    "locator", "run_command", "label", "command", "required", true)))));
+                }
+                case 7 -> ModelTurn.tools(List.of(new ToolCall(
+                        "blocked-review", "request_plan_review", JsonObject.empty())));
+                case 8 -> {
+                    assertThat(request.messages().toString())
+                            .contains("Required verification is unavailable in the current Workspace")
+                            .contains("requirementId=acceptance-second-diff")
+                            .contains("locator=git_diff");
+                    yield ModelTurn.tools(List.of(new ToolCall(
+                            "correct-second", "declare_plan_evidence", new JsonObject(Map.of(
+                                    "requirementId", "acceptance-second-diff", "kind", "VERIFICATION",
+                                    "locator", "list_files", "label", "listing", "required", true)))));
+                }
+                case 9 -> ModelTurn.tools(List.of(new ToolCall(
+                        "corrected-review", "request_plan_review", JsonObject.empty())));
+                default -> ModelTurn.text("corrected plan ready");
+            };
+        };
+
+        io.github.liumaishenjian.ccjava.domain.SessionId sessionId;
+        try (HeadlessRuntimeSession runtime = new HeadlessRuntimeSession(
+                model, AgentEventSink.noop(), testOptions(workspace, Duration.ofSeconds(5)))) {
+            sessionId = runtime.open();
+            assertThat(runtime.runPlan("plan with Git evidence").stopReason()).isEqualTo(StopReason.COMPLETED);
+            PlanArtifact awaiting = runtime.planArtifact().orElseThrow();
+            var acceptance = runtime.acceptPlanExecution(
+                    awaiting.planId(), awaiting.revision(), awaiting.contentDigest(),
+                    runtime.currentWorkspaceDigest(),
+                    io.github.liumaishenjian.ccjava.domain.PlanReviewDecision.APPROVE_USER,
+                    io.github.liumaishenjian.ccjava.domain.PlanContextPolicy.KEEP, "");
+            assertThat(runtime.runAcceptedPlan(acceptance).stopReason())
+                    .isEqualTo(StopReason.PLAN_VERIFICATION_REQUIRED);
+        }
+
+        try (var paths = Files.walk(workspace.resolve(".git"))) {
+            for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
+                if (!Files.deleteIfExists(path) && Files.exists(path)) {
+                    throw new AssertionError("failed to remove test Git metadata: " + path);
+                }
+            }
+        }
+        assertThat(WorkspaceSnapshot.capture(new GitReadClient(workspace)).repository()).isFalse();
+
+        try (HeadlessRuntimeSession runtime = new HeadlessRuntimeSession(
+                model, AgentEventSink.noop(), optionsFor(SessionOpenRequest.resume(sessionId), workspace))) {
+            assertThat(runtime.open()).isEqualTo(sessionId);
+            assertThat(runtime.preparePlanVerificationCorrection()).isTrue();
+            assertThat(runtime.runPlan("replace every unavailable Git requirement").stopReason())
+                    .isEqualTo(StopReason.COMPLETED);
+
+            PlanArtifact corrected = runtime.planArtifact().orElseThrow();
+            assertThat(corrected.status()).isEqualTo(
+                    io.github.liumaishenjian.ccjava.domain.PlanStatus.AWAITING_APPROVAL);
+            assertThat(corrected.evidenceLedger().requirements())
+                    .extracting(io.github.liumaishenjian.ccjava.domain.PlanEvidenceRequirement::requirementId,
+                            io.github.liumaishenjian.ccjava.domain.PlanEvidenceRequirement::locator)
+                    .containsExactly(
+                            org.assertj.core.groups.Tuple.tuple("acceptance-file-diff", "run_command"),
+                            org.assertj.core.groups.Tuple.tuple("acceptance-second-diff", "list_files"));
+            assertThat(calls).hasValue(11);
+        }
+    }
+
+    @Test
+    void gitWorkspaceKeepsGitStatusAndDiffEligibleAsDeclaredVerification() throws Exception {
+        Process git = new ProcessBuilder("git", "-C", temporaryWorkspace.toString(), "init")
+                .redirectErrorStream(true).start();
+        boolean initialized = git.waitFor(10, TimeUnit.SECONDS);
+        if (!initialized) {
+            git.destroyForcibly();
+            git.waitFor(5, TimeUnit.SECONDS);
+        }
+        assertThat(initialized).isTrue();
+        assertThat(git.exitValue()).isZero();
+        AtomicInteger calls = new AtomicInteger();
+        ModelGateway model = request -> switch (calls.getAndIncrement()) {
+            case 0 -> ModelTurn.tools(List.of(new ToolCall("create", "revise_plan_artifact",
+                    new JsonObject(Map.of("markdown", "# Plan\n\nVerify the Git workspace.\n")))));
+            case 1 -> ModelTurn.tools(List.of(new ToolCall("status-evidence", "declare_plan_evidence",
+                    new JsonObject(Map.of("requirementId", "status", "kind", "VERIFICATION",
+                            "locator", "git_status", "label", "status inspected", "required", true)))));
+            case 2 -> ModelTurn.tools(List.of(new ToolCall("diff-evidence", "declare_plan_evidence",
+                    new JsonObject(Map.of("requirementId", "diff", "kind", "VERIFICATION",
+                            "locator", "git_diff", "label", "diff inspected", "required", true)))));
+            case 3 -> ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review", JsonObject.empty())));
+            default -> ModelTurn.text("plan ready");
+        };
+        try (HeadlessRuntimeSession runtime = new HeadlessRuntimeSession(
+                model, AgentEventSink.noop(), testOptions(temporaryWorkspace, Duration.ofSeconds(5)))) {
+            runtime.open();
+            assertThat(runtime.runPlan("plan Git verification").stopReason()).isEqualTo(StopReason.COMPLETED);
+            assertThat(runtime.planArtifact().orElseThrow().evidenceLedger().requirements())
+                    .extracting(io.github.liumaishenjian.ccjava.domain.PlanEvidenceRequirement::locator)
+                    .containsExactly("git_status", "git_diff");
+        }
+    }
+
+    @Test
     void rejectedConcurrentPlanRunDoesNotReopenAwaitingApprovalArtifact() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         CountDownLatch ordinaryRunEntered = new CountDownLatch(1);
@@ -2411,8 +2649,12 @@ class HeadlessRuntimeSessionTest {
     }
 
     private HeadlessRuntimeOptions optionsFor(SessionOpenRequest request) {
+        return optionsFor(request, temporaryWorkspace);
+    }
+
+    private HeadlessRuntimeOptions optionsFor(SessionOpenRequest request, Path workspace) {
         return new HeadlessRuntimeOptions(
-                temporaryWorkspace,
+                workspace,
                 "fake-model",
                 Duration.ofSeconds(5),
                 PermissionMode.DEFAULT,

@@ -58,6 +58,7 @@ public final class StdioProtocolFixtureMain {
             Path workspace = Files.createDirectory(fixtureRoot.resolve("workspace"));
             initializeGitRepository(workspace);
             java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+            java.util.concurrent.atomic.AtomicInteger freshPlanCalls = new java.util.concurrent.atomic.AtomicInteger();
             java.util.concurrent.atomic.AtomicInteger executionCalls = new java.util.concurrent.atomic.AtomicInteger();
             java.util.concurrent.atomic.AtomicBoolean directExecution = new java.util.concurrent.atomic.AtomicBoolean();
             String markdown = "# 跨进程实施计划\n\n## 拟定步骤\n1. 生成精确命名的河南天气工作簿。\n";
@@ -71,7 +72,20 @@ public final class StdioProtocolFixtureMain {
                         .map(io.github.liumaishenjian.ccjava.domain.UserMessage::content)
                         .reduce((previous, current) -> current)
                         .orElse("");
-                if (directExecution.get() && latestUser.contains("普通输入")) {
+                if (latestUser.contains("拒绝后新计划")) {
+                    return switch (freshPlanCalls.getAndIncrement()) {
+                        case 0 -> tool("fresh-plan-task", "task_create", Map.of(
+                                "subject", "验证拒绝后可建立全新计划。"));
+                        case 1 -> tool("fresh-plan-update", "revise_plan_artifact", Map.of(
+                                "markdown", "# 拒绝后的全新计划\n\n1. 验证新计划身份与审核链。\n"));
+                        case 2 -> tool("fresh-plan-evidence", "declare_plan_evidence", Map.of(
+                                "requirementId", "fresh-plan", "kind", "DELIVERABLE",
+                                "locator", "fresh-plan.txt", "label", "fresh plan result", "required", true));
+                        case 3 -> tool("fresh-plan-review", "request_plan_review", Map.of());
+                        default -> io.github.liumaishenjian.ccjava.domain.ModelTurn.text("fresh planning finished");
+                    };
+                }
+                if (latestUser.contains("普通输入")) {
                     return io.github.liumaishenjian.ccjava.domain.ModelTurn.text("follow-up completed");
                 }
                 boolean executing = directExecution.get()

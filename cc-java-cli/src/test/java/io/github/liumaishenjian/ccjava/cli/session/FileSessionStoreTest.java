@@ -811,6 +811,56 @@ class FileSessionStoreTest {
     }
 
     @Test
+    void terminalPlanIdentityRotationSurvivesResumeAndRepairsOlderProjection() throws IOException {
+        Path workspace = workspace("plan-terminal-rotation");
+        Path root = storeRoot("plan-terminal-rotation");
+        SessionId id;
+        PlanArtifact rejected;
+        PlanArtifact fresh;
+        try (FileSessionStore store = store(root, workspace, 1)) {
+            id = store.create(SPEC).id();
+            PlanArtifact draft = store.savePlanArtifact(PlanArtifact.create(
+                    "plan-old", id, "# Old", PlanStatus.DRAFT,
+                    Instant.parse("2026-08-20T00:00:00Z")), 0, "");
+            PlanArtifact awaiting = store.savePlanArtifact(draft.nextRevision(
+                    "# Old", PlanStatus.AWAITING_APPROVAL,
+                    Instant.parse("2026-08-20T00:00:01Z")), draft.revision(), draft.contentDigest());
+            rejected = store.savePlanArtifact(awaiting.nextRevision(
+                    "# Old", PlanStatus.REJECTED,
+                    Instant.parse("2026-08-20T00:00:02Z")), awaiting.revision(), awaiting.contentDigest());
+            PlanDocument rejectedDocument = new PlanDocument(rejected.planId(), "old", List.of(
+                    new PlanStep(1, "inspect", "inspect", "workspace-digest")),
+                    PlanStatus.REJECTED, "workspace-digest");
+            store.planSnapshot(id, rejectedDocument, new PlanExecutionState(
+                    rejected.planId(), PlanApprovalGate.REJECTED, null, null,
+                    PlanStatus.REJECTED, "workspace-digest"));
+            fresh = PlanArtifact.create("plan-new", id, "# Fresh", PlanStatus.DRAFT,
+                    Instant.parse("2026-08-20T00:00:03Z"));
+            store.replaceTerminalPlanArtifact(
+                    fresh, rejected.planId(), rejected.revision(), rejected.contentDigest());
+            store.close(id);
+        }
+
+        try (FileSessionStore resumed = store(root, workspace, 20)) {
+            SessionOpenResult opened = resumed.open(SessionOpenRequest.resume(id), SPEC);
+            assertThat(opened.session().plan()).isEmpty();
+            assertThat(resumed.planArtifacts(id).load(id)).contains(fresh);
+            resumed.close(id);
+        }
+
+        Path directory = root.resolve(id.value());
+        Files.delete(directory.resolve(FilePlanArtifactStore.MANIFEST_FILE));
+        new FilePlanArtifactStore(directory, id).restoreAuthoritative(rejected);
+        assertThat(new FilePlanArtifactStore(directory, id).load(id)).contains(rejected);
+
+        try (FileSessionStore recovered = store(root, workspace, 40)) {
+            SessionOpenResult opened = recovered.open(SessionOpenRequest.resume(id), SPEC);
+            assertThat(opened.session().plan()).isEmpty();
+            assertThat(recovered.planArtifacts(id).load(id)).contains(fresh);
+        }
+    }
+
+    @Test
     void journalOneRevisionAheadOfOlderManifestFastForwardsProjection() throws IOException {
         Path workspace = workspace("plan-journal-fast-forward");
         Path root = storeRoot("plan-journal-fast-forward");

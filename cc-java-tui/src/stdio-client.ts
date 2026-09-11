@@ -232,6 +232,8 @@ export class StdioClient {
   #questionnaireRequested = false;
   #questionnaireEnabled = false;
   #experienceRequested = false;
+  #directedChunkInputRequested = false;
+  #directedChunkInputEnabled = false;
   #sessionId: string | undefined;
   #activeRunId: string | undefined;
   #transportClosed = false;
@@ -336,9 +338,14 @@ export class StdioClient {
     return () => this.#events.off('exit', listener);
   }
 
-  public initialize(capabilities: {questionnaireV1?: boolean; experienceV1?: boolean} = {}): string {
+  public initialize(capabilities: {
+    questionnaireV1?: boolean;
+    experienceV1?: boolean;
+    directedChunkInputV1?: boolean;
+  } = {}): string {
     this.#questionnaireRequested = capabilities.questionnaireV1 === true;
     this.#experienceRequested = capabilities.experienceV1 === true;
+    this.#directedChunkInputRequested = capabilities.directedChunkInputV1 === true;
     return this.#send('initialize', capabilities);
   }
 
@@ -362,9 +369,14 @@ export class StdioClient {
     return this.#startTextRun('run.start', prompt);
   }
 
-  /** 以自然语言任务启动 Java 权威的只读 Plan Runtime。 */
-  public startPlan(task: string): string {
-    return this.#startTextRun('plan.start', task);
+  /**
+   * 以自然语言任务启动 Java 权威的只读 Plan Runtime。
+   *
+   * 只有用户直接提交 `/plan <修正请求>` 时 Surface 才设置 verificationCorrection；该标记
+   * 不携带 Plan 身份或权限，Java 仍以 durable NEEDS_VERIFICATION 状态决定是否进入纠正规划。
+   */
+  public startPlan(task: string, options?: {readonly verificationCorrection?: boolean}): string {
+    return this.#startTextRun('plan.start', task, options?.verificationCorrection === true);
   }
 
   /** 为 NEEDS_VERIFICATION Plan 请求新的显式审批；命令本身不启动执行 Run。 */
@@ -401,21 +413,29 @@ export class StdioClient {
     throw new Error('durable Plan 使用 plan.review.resolve 原子执行交接');
   }
 
-  #startTextRun(type: 'run.start' | 'plan.start', prompt: string): string {
+  #startTextRun(
+    type: 'run.start' | 'plan.start',
+    prompt: string,
+    verificationCorrection = false,
+  ): string {
     if (this.#sessionId === undefined) {
       throw new Error('Session 尚未初始化');
     }
     const encoded = Buffer.from(prompt, 'utf8');
     const requestId = `tui-${this.#nextRequestNumber++}`;
+    const payload = type === 'plan.start' && verificationCorrection ? {prompt, verificationCorrection: true} : {prompt};
     const direct = this.#command(
-      type, {prompt}, requestId, this.#nextCommandSequence, this.#sessionId,
+      type, payload, requestId, this.#nextCommandSequence, this.#sessionId,
     );
+    if (commandBytes(direct) >= this.#maxLineBytes
+      && type === 'plan.start' && !this.#directedChunkInputEnabled) {
+      throw new Error('宿主未确认定向 Plan 分片能力，不能安全发送长 Plan 输入');
+    }
     this.#registerRunCommand(requestId, type);
     try {
       if (commandBytes(direct) < this.#maxLineBytes) {
         this.#write(direct);
       } else {
-        if (type === 'plan.start') throw new Error('Plan 任务超过单条安全协议预算');
         const inputId = `input-${requestId}`;
         const chunks = protocolTextChunks(
           prompt,
@@ -431,6 +451,9 @@ export class StdioClient {
           byteCount: encoded.byteLength,
           chunkCount: chunks.length,
           sha256: createHash('sha256').update(encoded).digest('hex'),
+          ...(this.#directedChunkInputEnabled ? {targetType: type} : {}),
+          ...(this.#directedChunkInputEnabled
+            && type === 'plan.start' && verificationCorrection ? {verificationCorrection: true} : {}),
         }, requestId, this.#nextCommandSequence, this.#sessionId));
         chunks.forEach((text, ordinal) => {
           this.#write(this.#command(
@@ -987,13 +1010,15 @@ export class StdioClient {
       }
     }
     if (event.type === 'question.requested' && Array.isArray(event.payload.questions) && !this.#questionnaireEnabled)
-      throw new ProtocolViolation('宿主发送未协商问卷');    if (event.type === 'initialized') {      for (const capability of ['questionnaireV1', 'experienceV1']) {
+      throw new ProtocolViolation('宿主发送未协商问卷');    if (event.type === 'initialized') {      for (const capability of ['questionnaireV1', 'experienceV1', 'directedChunkInputV1']) {
         const flag = event.payload[capability];
-        const requested = capability === 'questionnaireV1' ? this.#questionnaireRequested : this.#experienceRequested;
+        const requested = capability === 'questionnaireV1' ? this.#questionnaireRequested
+          : capability === 'experienceV1' ? this.#experienceRequested : this.#directedChunkInputRequested;
         if ((flag !== undefined && typeof flag !== 'boolean') || (flag === true && !requested))
           throw new ProtocolViolation('宿主返回未协商能力');
       }
       this.#questionnaireEnabled = event.payload.questionnaireV1 === true;
+      this.#directedChunkInputEnabled = event.payload.directedChunkInputV1 === true;
       if (this.#sessionId !== undefined && this.#sessionId !== event.sessionId) {
         this.#pendingFileSuggestions.clear();
       }

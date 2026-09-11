@@ -677,6 +677,33 @@ public final class FileSessionStore implements SessionStore, SessionJournal,
     }
 
     /**
+     * 以旧终态工件的完整 CAS 启动全新 Plan identity，并保持 journal 先于 manifest 的提交顺序。
+     *
+     * @param artifact 全新 revision 1 DRAFT
+     * @param expectedPlanId 旧终态 Plan 身份
+     * @param expectedRevision 旧终态 revision
+     * @param expectedDigest 旧终态正文摘要
+     * @return 已提交的新工件
+     */
+    public synchronized PlanArtifact replaceTerminalPlanArtifact(
+            PlanArtifact artifact, String expectedPlanId,
+            long expectedRevision, String expectedDigest) {
+        OpenSession opened = writer(artifact.sessionId());
+        FilePlanArtifactStore store = planArtifacts(artifact.sessionId());
+        FilePlanArtifactStore.PreparedArtifact prepared = store.prepareTerminalReplacement(
+                artifact, expectedPlanId, expectedRevision, expectedDigest);
+        ObjectNode commit = codec.encodePlanArtifact(opened.nextSequence, artifact);
+        try {
+            appendAndAdvance(opened, commit);
+            store.commit(prepared);
+            return artifact;
+        } catch (RuntimeException failure) {
+            SessionStoreAccess.fenceSession(opened.session);
+            throw failure;
+        }
+    }
+
+    /**
      * 把 artifact 与兼容 Plan projection 作为单条 canonical journal 事实提交，消除两个
      * JSONL append 之间的永久不一致窗口；随后再切换可重建 manifest。
      *

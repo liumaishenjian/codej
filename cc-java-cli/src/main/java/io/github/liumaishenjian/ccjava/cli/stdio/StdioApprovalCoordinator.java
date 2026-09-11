@@ -8,6 +8,8 @@ import io.github.liumaishenjian.ccjava.domain.PermissionOutcome;
 import io.github.liumaishenjian.ccjava.domain.RunId;
 import io.github.liumaishenjian.ccjava.domain.ToolDefinition;
 import io.github.liumaishenjian.ccjava.domain.ToolEffect;
+import io.github.liumaishenjian.ccjava.domain.ToolCall;
+import io.github.liumaishenjian.ccjava.tools.local.command.CommandExecutionDisplay;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -35,6 +37,7 @@ final class StdioApprovalCoordinator implements ApprovalHandler, AutoCloseable {
     private final Object lock = new Object();
     private final Consumer<Request> requestSink;
     private final Supplier<String> idSupplier;
+    private volatile CommandDisplay commandDisplay;
     private Pending pending;
     private boolean closed;
 
@@ -44,7 +47,19 @@ final class StdioApprovalCoordinator implements ApprovalHandler, AutoCloseable {
      * @param requestSink 安全审批摘要的事件出口
      */
     StdioApprovalCoordinator(Consumer<Request> requestSink) {
-        this(requestSink, () -> UUID.randomUUID().toString());
+        this(requestSink, () -> UUID.randomUUID().toString(), CommandDisplay.platform());
+    }
+
+    /**
+     * 使用 Runtime 已冻结的命令执行配置创建协调器。
+     *
+     * @param requestSink 安全审批摘要的事件出口
+     * @param commandDisplay 与执行 Tool 同源的非 Secret Shell/cwd 描述
+     */
+    StdioApprovalCoordinator(
+            Consumer<Request> requestSink,
+            CommandDisplay commandDisplay) {
+        this(requestSink, () -> UUID.randomUUID().toString(), commandDisplay);
     }
 
     /**
@@ -56,8 +71,16 @@ final class StdioApprovalCoordinator implements ApprovalHandler, AutoCloseable {
     StdioApprovalCoordinator(
             Consumer<Request> requestSink,
             Supplier<String> idSupplier) {
+        this(requestSink, idSupplier, CommandDisplay.platform());
+    }
+
+    private StdioApprovalCoordinator(
+            Consumer<Request> requestSink,
+            Supplier<String> idSupplier,
+            CommandDisplay commandDisplay) {
         this.requestSink = Objects.requireNonNull(requestSink, "requestSink 不能为空");
         this.idSupplier = Objects.requireNonNull(idSupplier, "idSupplier 不能为空");
+        this.commandDisplay = Objects.requireNonNull(commandDisplay, "commandDisplay 不能为空");
     }
 
     /**
@@ -139,6 +162,21 @@ final class StdioApprovalCoordinator implements ApprovalHandler, AutoCloseable {
         }
     }
 
+    /**
+     * 在 Runtime Session 完成真实 Tool 装配后绑定唯一命令显示来源。
+     *
+     * @param display 与实际 LocalCommandExecutor 同源的事实
+     */
+    void bindCommandDisplay(CommandExecutionDisplay display) {
+        Objects.requireNonNull(display, "display 不能为空");
+        synchronized (lock) {
+            if (pending != null) {
+                throw new IllegalStateException("存在待决审批时不能替换命令显示配置");
+            }
+            commandDisplay = new CommandDisplay(display.shell(), display.workingDirectory());
+        }
+    }
+
     private boolean resolveInternally(
             String approvalId,
             ApprovalResponse decision) {
@@ -172,7 +210,7 @@ final class StdioApprovalCoordinator implements ApprovalHandler, AutoCloseable {
         return value;
     }
 
-    private static Preview preview(
+    private Preview preview(
             ToolInvocation invocation,
             ToolDefinition definition) {
         String name = definition.name();
@@ -192,28 +230,7 @@ final class StdioApprovalCoordinator implements ApprovalHandler, AutoCloseable {
             return Preview.webSearch(query);
         }
         if ("run_command".equals(name)) {
-            String command;
-            try {
-                command = invocation.call().arguments().string("command").orElse("");
-            } catch (IllegalArgumentException exception) {
-                return Preview.unavailable();
-            }
-            if (command.isBlank()
-                    || command.codePointCount(0, command.length())
-                    > LocalToolLimits.MAX_COMMAND_CHARACTERS
-                    || command.indexOf('\0') >= 0) {
-                return Preview.unavailable();
-            }
-            return new Preview(
-                    "",
-                    "execute",
-                    0,
-                    0,
-                    command,
-                    CommandShell.current().id(),
-                    ".",
-                    "",
-                    "");
+            return commandPreview(invocation.call());
         }
         if (!"apply_patch".equals(name) && !"write_file".equals(name)) {
             return Preview.unavailable();
@@ -232,6 +249,45 @@ final class StdioApprovalCoordinator implements ApprovalHandler, AutoCloseable {
                 "",
                 "",
                 "",
+                "",
+                "");
+    }
+
+    /**
+     * 为审批与无审批的 {@code tool.started} 生成同一份命令显示事实。
+     *
+     * <p>完整命令来自结构化 ToolCall；Shell 与工作目录来自可信 Runtime 配置。
+     * 无法满足 Tool 的显示安全边界时返回 unavailable，调用方不得猜测。</p>
+     */
+    Preview commandPreview(ToolCall call) {
+        Objects.requireNonNull(call, "call 不能为空");
+        if (!"run_command".equals(call.name())) {
+            return Preview.unavailable();
+        }
+        String command;
+        try {
+            command = call.arguments().string("command").orElse("");
+        } catch (IllegalArgumentException exception) {
+            return Preview.unavailable();
+        }
+        if (command.isBlank()
+                || command.codePointCount(0, command.length())
+                > LocalToolLimits.MAX_COMMAND_CHARACTERS
+                || command.codePoints().anyMatch(character ->
+                        Character.isISOControl(character)
+                                && character != '\r'
+                                && character != '\n'
+                                && character != '\t')) {
+            return Preview.unavailable();
+        }
+        return new Preview(
+                "",
+                "execute",
+                0,
+                0,
+                command,
+                commandDisplay.shell(),
+                commandDisplay.workingDirectory(),
                 "",
                 "");
     }
@@ -304,6 +360,31 @@ final class StdioApprovalCoordinator implements ApprovalHandler, AutoCloseable {
             effect = Objects.requireNonNull(effect, "effect 不能为空");
             scope = Objects.requireNonNull(scope, "scope 不能为空");
             preview = Objects.requireNonNull(preview, "preview 不能为空");
+        }
+    }
+
+    /**
+     * 与真实命令执行配置同源的非 Secret 显示描述。
+     *
+     * <p>工作目录固定为 Workspace-relative {@code .}，避免 stdio 暴露用户绝对路径。
+     * 后端与 Shell 组合由 {@link io.github.liumaishenjian.ccjava.cli.runtime.HeadlessRuntimeOptions}
+     * 在可信 Composition Root 冻结。</p>
+     *
+     * @param shell 实际执行后端的稳定 Shell ID
+     * @param workingDirectory 固定命令 cwd 的 Workspace-relative 表达
+     */
+    record CommandDisplay(String shell, String workingDirectory) {
+        CommandDisplay {
+            shell = Objects.requireNonNull(shell, "shell 不能为空");
+            workingDirectory = Objects.requireNonNull(
+                    workingDirectory, "workingDirectory 不能为空");
+            if (shell.isBlank() || shell.length() > 64 || !".".equals(workingDirectory)) {
+                throw new IllegalArgumentException("命令显示配置无效");
+            }
+        }
+
+        static CommandDisplay platform() {
+            return new CommandDisplay(CommandShell.current().id(), ".");
         }
     }
 

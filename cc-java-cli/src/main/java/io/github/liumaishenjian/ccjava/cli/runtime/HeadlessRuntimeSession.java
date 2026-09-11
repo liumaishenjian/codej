@@ -886,25 +886,38 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                     io.github.liumaishenjian.ccjava.domain.PlanStatus.DRAFT, java.time.Instant.now());
             current = java.util.Optional.of(store.save(draft, previous.revision(), previous.contentDigest()));
         }
+        java.util.Optional<io.github.liumaishenjian.ccjava.domain.PlanArtifact> replaceableTerminal =
+                current.filter(artifact -> io.github.liumaishenjian.ccjava.domain.PlanLifecyclePolicy
+                        .replaceableTerminal(artifact.status()));
         if (current.isPresent() && current.orElseThrow().status()
-                != io.github.liumaishenjian.ccjava.domain.PlanStatus.DRAFT) {
+                != io.github.liumaishenjian.ccjava.domain.PlanStatus.DRAFT
+                && replaceableTerminal.isEmpty()) {
             throw new IllegalStateException("当前 Plan 状态不能继续规划");
         }
+        if (replaceableTerminal.isPresent()) current = java.util.Optional.empty();
         String planId = current.map(io.github.liumaishenjian.ccjava.domain.PlanArtifact::planId)
                 .orElseGet(() -> "plan-" + java.util.UUID.randomUUID());
         var update = new io.github.liumaishenjian.ccjava.core.PlanArtifactUpdateTool(
-                store, session.id(), planId, java.time.Clock.systemUTC());
-        var review = new io.github.liumaishenjian.ccjava.core.PlanReviewRequestTool(
-                store, session.id(), java.time.Clock.systemUTC(), this::planReviewTaskBlockReason);
+                store, session.id(), planId, java.time.Clock.systemUTC(), replaceableTerminal);
+        // 注册身份只证明 Tool 可信，不证明当前 Workspace 能满足其执行前提。非 Git 或探测故障时
+        // 仍保留普通 Git Tool 定义与 Permission 路径，但禁止把它持久声明成必需验收依据。
+        Set<String> workspaceBoundVerificationTools = Set.of("git_status", "git_diff");
+        boolean gitVerificationAvailable = workspaceBootstrap.snapshot().repository();
         Set<String> trustedVerificationTools = registeredTools().stream()
                 .map(io.github.liumaishenjian.ccjava.core.AgentTool::definition)
                 .filter(definition -> definition.source() == ToolSource.BUILT_IN)
                 .map(io.github.liumaishenjian.ccjava.domain.ToolDefinition::name)
+                .filter(name -> gitVerificationAvailable || !workspaceBoundVerificationTools.contains(name))
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        var review = new io.github.liumaishenjian.ccjava.core.PlanReviewRequestTool(
+                store, session.id(), java.time.Clock.systemUTC(),
+                () -> planReviewTaskBlockReason(trustedVerificationTools));
         var evidence = new io.github.liumaishenjian.ccjava.core.PlanEvidenceDeclarationTool(
                 store, session.id(), java.time.Clock.systemUTC(), trustedVerificationTools);
         var ask = new io.github.liumaishenjian.ccjava.core.PlanAskUserTool(userQuestionHandler);
-        return new PlanRunResources(store, current, planId, update, review, evidence, ask);
+        return new PlanRunResources(
+                store, current, planId, update, review, evidence, ask,
+                trustedVerificationTools);
     }
 
     private HeadlessRuntimeScope createPlanRuntimeScope(PlanRunResources planning) {
@@ -935,6 +948,7 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                                 new java.util.ArrayList<>(request.messages());
                         messages.add(1, new io.github.liumaishenjian.ccjava.domain.SystemMessage(
                                 PLAN_RUNTIME_INSTRUCTIONS + taskBoardReminder(true)
+                                        + planEvidencePlanningProjection(planning)
                                         + (missingReviewCorrection.get() ? """
 
                                         本轮尚未形成供用户审核的计划，因此不能按成功结束。请使用当前规划工具保存计划工件，再请求用户审核。
@@ -1032,7 +1046,49 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
             io.github.liumaishenjian.ccjava.core.PlanArtifactUpdateTool update,
             io.github.liumaishenjian.ccjava.core.PlanReviewRequestTool review,
             io.github.liumaishenjian.ccjava.core.PlanEvidenceDeclarationTool evidence,
-            io.github.liumaishenjian.ccjava.core.PlanAskUserTool ask) {
+            io.github.liumaishenjian.ccjava.core.PlanAskUserTool ask,
+            Set<String> trustedVerificationTools) {
+    }
+
+    /**
+     * 把当前 durable Ledger 的完整 requirement 身份投影给每一轮规划请求。
+     *
+     * <p>恢复再审批会按安全契约清除旧 execution binding 和 reference，因此缺少当前 reference 时只陈述
+     * “重新审批后尚未记录”；若 locator 在当前 Workspace 不可用，则给出更具体的确定性原因。模型必须
+     * 使用相同 requirementId 调用 declare_plan_evidence 原位修正，不能靠改 Markdown 遗漏旧条目。</p>
+     */
+    private String planEvidencePlanningProjection(PlanRunResources planning) {
+        var artifact = planning.store().load(session.id());
+        if (artifact.isEmpty() || artifact.orElseThrow().evidenceLedger().requirements().isEmpty()) {
+            return "";
+        }
+        var ledger = artifact.orElseThrow().evidenceLedger();
+        java.util.Map<String, io.github.liumaishenjian.ccjava.domain.PlanEvidenceReference> references =
+                ledger.references().stream().collect(java.util.stream.Collectors.toMap(
+                        io.github.liumaishenjian.ccjava.domain.PlanEvidenceReference::requirementId,
+                        java.util.function.Function.identity()));
+        StringBuilder projection = new StringBuilder(512)
+                .append("\n\nCurrent durable evidence requirements follow. They remain authoritative even if the Markdown omits them. ")
+                .append("Correct an obsolete locator only by redeclaring the same requirementId, then request review again:\n");
+        for (var requirement : ledger.requirements()) {
+            var reference = references.get(requirement.requirementId());
+            String reason;
+            if (requirement.kind() == io.github.liumaishenjian.ccjava.domain.PlanEvidenceKind.VERIFICATION
+                    && !planning.trustedVerificationTools().contains(requirement.locator())) {
+                reason = "VERIFICATION_TOOL_UNAVAILABLE_IN_CURRENT_WORKSPACE";
+            } else if (reference == null) {
+                reason = "NOT_RECORDED_AFTER_REAPPROVAL";
+            } else {
+                reason = reference.reasonCode();
+            }
+            projection.append("- requirementId=").append(requirement.requirementId())
+                    .append(", kind=").append(requirement.kind())
+                    .append(", locator=").append(requirement.locator())
+                    .append(", required=").append(requirement.required())
+                    .append(", status=").append(reference == null ? "UNRECORDED" : reference.status())
+                    .append(", reason=").append(reason).append('\n');
+        }
+        return projection.toString();
     }
 
     /**
@@ -1426,11 +1482,26 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
      * Gate 只观察绑定到当前 {@code planId} 的 cohort：普通 Run 或旧 Plan 留在同一 Session Board 的 Task
      * 既不能满足 readiness，也不能阻断当前 Plan。该契约不解析 Markdown，也不根据 Task 标题猜测语义。</p>
      */
-    private Optional<String> planReviewTaskBlockReason() {
+    private Optional<String> planReviewTaskBlockReason(Set<String> trustedVerificationTools) {
         var artifact = planArtifact();
         if (artifact.isEmpty() || artifact.orElseThrow().evidenceLedger().requirements().stream().noneMatch(
                 io.github.liumaishenjian.ccjava.domain.PlanEvidenceRequirement::required))
             return Optional.of("Declare required completion evidence with declare_plan_evidence before review; text-only queries may use VERIFICATION with a registered query/execution tool.");
+        var unavailable = artifact.orElseThrow().evidenceLedger().requirements().stream()
+                .filter(io.github.liumaishenjian.ccjava.domain.PlanEvidenceRequirement::required)
+                .filter(requirement -> requirement.kind()
+                        == io.github.liumaishenjian.ccjava.domain.PlanEvidenceKind.VERIFICATION)
+                .filter(requirement -> !trustedVerificationTools.contains(requirement.locator()))
+                .findFirst();
+        if (unavailable.isPresent()) {
+            var requirement = unavailable.orElseThrow();
+            String alternatives = trustedVerificationTools.stream().sorted()
+                    .collect(java.util.stream.Collectors.joining(", "));
+            return Optional.of("Required verification is unavailable in the current Workspace: requirementId="
+                    + requirement.requirementId() + ", locator=" + requirement.locator()
+                    + ". Redeclare the same requirementId with an available locator before review. Available: "
+                    + (alternatives.isEmpty() ? "none" : alternatives));
+        }
         if (!durableTaskTools) return Optional.empty();
         if (taskBoardSnapshot().isEmpty()) return Optional.of("TASK_BOARD_UNAVAILABLE");
         return incompletePlanTasks().isEmpty()
@@ -1607,6 +1678,40 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
             var review = saved.verificationResumeReview().orElseThrow();
             return Optional.of(io.github.liumaishenjian.ccjava.domain.PlanReviewEvent.from(
                     saved, currentWorkspaceDigest(), review.originalPermissionMode(), review.contextPolicy()));
+        }
+    }
+
+    /**
+     * 把显式 {@code /plan <修正请求>} 绑定到同一 NEEDS_VERIFICATION Plan 的纠正规划。
+     *
+     * <p>该转换复用 durable verification-resume 再审批迁移，再立即把精确 revision 退回 DRAFT。
+     * canonical journal 因而保留旧批准 requirement、失败 reference 与再审批事实；当前 DRAFT 只允许模型
+     * 在后续规划 Run 中按相同 requirementId 修正 locator，并必须重新请求审核。该入口不执行 Tool、
+     * 不跳过 required evidence，也不适用于普通聊天、无参 {@code /plan} 或任意非恢复状态。</p>
+     *
+     * @return 当前工件确为 verification-resume 状态并已安全转为 DRAFT 时为 {@code true}
+     * @throws IllegalStateException Session fenced、存在活动 Run 或精确 revision 在迁移中失效时
+     */
+    public boolean preparePlanVerificationCorrection() {
+        synchronized (lifecycleMonitor) {
+            requireOpenLocked();
+            if (activeRun != null) throw new IllegalStateException("活动 Run 中不能修正待验证 Plan");
+            if (session.isFenced()) throw new IllegalStateException("Session 已 fenced，不能修正待验证 Plan");
+            var current = sessions.planArtifacts(session.id()).load(session.id());
+            if (current.isEmpty()) return false;
+            var artifact = current.orElseThrow();
+            boolean recoverable = artifact.status()
+                    == io.github.liumaishenjian.ccjava.domain.PlanStatus.NEEDS_VERIFICATION
+                    && artifact.executionBrief().isPresent();
+            boolean retryable = artifact.status()
+                    == io.github.liumaishenjian.ccjava.domain.PlanStatus.AWAITING_APPROVAL
+                    && artifact.verificationResumeReview().isPresent();
+            if (!recoverable && !retryable) return false;
+            var review = requestPlanVerificationResume()
+                    .orElseThrow(() -> new IllegalStateException("待验证 Plan 已变化，不能开始纠正规划"));
+            returnPlanForFeedback(review.planId(), review.revision(), review.contentDigest())
+                    .orElseThrow(() -> new IllegalStateException("待验证 Plan revision 已变化，不能开始纠正规划"));
+            return true;
         }
     }
 
@@ -2484,6 +2589,18 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
      */
     public io.github.liumaishenjian.ccjava.tools.local.workspace.WorkspaceGuard workspaceGuard() {
         return workspaceBootstrap.workspaceGuard();
+    }
+
+    /**
+     * 返回与 {@code run_command} 实际执行器同源的非 Secret 显示事实。
+     *
+     * <p>该值只说明已冻结的 Shell/cwd 配置，不表示 Permission 已允许、进程已启动或命令成功。</p>
+     *
+     * @return 真实后端 Shell ID 与 Workspace-relative cwd
+     */
+    public io.github.liumaishenjian.ccjava.tools.local.command.CommandExecutionDisplay
+            commandExecutionDisplay() {
+        return workspaceBootstrap.commandDisplay();
     }
 
     /**

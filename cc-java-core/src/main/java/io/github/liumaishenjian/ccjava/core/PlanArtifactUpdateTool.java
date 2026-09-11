@@ -44,18 +44,49 @@ public final class PlanArtifactUpdateTool implements AgentTool {
     private final io.github.liumaishenjian.ccjava.domain.SessionId sessionId;
     private final String planId;
     private final Clock clock;
+    private final PlanArtifact replaceableTerminal;
     private volatile PlanArtifact latest;
 
     /** 绑定单个 Session 与稳定 Plan 身份。 */
     public PlanArtifactUpdateTool(PlanArtifactStore store,
                                   io.github.liumaishenjian.ccjava.domain.SessionId sessionId,
                                   String planId, Clock clock) {
+        this(store, sessionId, planId, clock, java.util.Optional.empty());
+    }
+
+    /**
+     * 绑定全新 Plan identity，并允许首个 Markdown 以旧终态工件的完整 CAS 原子替换它。
+     *
+     * <p>只有宿主已经判定旧工件不可恢复且无需继续执行时才传入该参数。首个成功提交后，后续调用恢复
+     * 普通同 identity revision 更新；旧 Evidence 和执行状态不会被复制到新工件。</p>
+     *
+     * @param store 当前 Session 的 durable store
+     * @param sessionId Session 身份
+     * @param planId 全新 Plan 身份
+     * @param clock revision 时间源
+     * @param replaceableTerminal 允许被首个 DRAFT 替换的旧终态工件
+     */
+    public PlanArtifactUpdateTool(PlanArtifactStore store,
+                                  io.github.liumaishenjian.ccjava.domain.SessionId sessionId,
+                                  String planId, Clock clock,
+                                  java.util.Optional<PlanArtifact> replaceableTerminal) {
         this.store = Objects.requireNonNull(store, "store 不能为空");
         this.sessionId = Objects.requireNonNull(sessionId, "sessionId 不能为空");
         this.planId = Objects.requireNonNull(planId, "planId 不能为空");
         this.clock = Objects.requireNonNull(clock, "clock 不能为空");
-        this.latest = store.load(sessionId).orElse(null);
-        requireIdentity(latest);
+        this.replaceableTerminal = Objects.requireNonNull(
+                replaceableTerminal, "replaceableTerminal 不能为空").orElse(null);
+        PlanArtifact current = store.load(sessionId).orElse(null);
+        if (this.replaceableTerminal == null) {
+            this.latest = current;
+            requireIdentity(latest);
+        } else {
+            if (!this.replaceableTerminal.equals(current)
+                    || this.replaceableTerminal.planId().equals(planId)) {
+                throw new PlanArtifactStoreException(PlanArtifactStoreException.Code.IDENTITY_MISMATCH);
+            }
+            this.latest = null;
+        }
     }
 
     @Override public ToolDefinition definition() { return DEFINITION; }
@@ -79,6 +110,17 @@ public final class PlanArtifactUpdateTool implements AgentTool {
     public synchronized ToolExecutionOutcome execute(ToolInvocation invocation) {
         String markdown = invocation.call().arguments().string("markdown").orElseThrow();
         PlanArtifact current = store.load(sessionId).orElse(null);
+        if (replaceableTerminal != null && latest == null) {
+            if (!replaceableTerminal.equals(current)) {
+                throw new PlanArtifactStoreException(PlanArtifactStoreException.Code.STALE_REVISION);
+            }
+            PlanArtifact candidate = PlanArtifact.create(
+                    planId, sessionId, markdown, PlanStatus.DRAFT, clock.instant());
+            latest = store.replaceTerminal(candidate, replaceableTerminal.planId(),
+                    replaceableTerminal.revision(), replaceableTerminal.contentDigest());
+            return ToolExecutionOutcome.success(
+                    "Plan artifact revision %d committed".formatted(latest.revision()));
+        }
         requireIdentity(current);
         if (current != null && current.status() != PlanStatus.DRAFT) {
             throw new PlanArtifactStoreException(PlanArtifactStoreException.Code.INVALID_STATE);

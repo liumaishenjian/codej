@@ -8,6 +8,8 @@
 
 ## 前端重设计验收版
 
+开发统一使用 `G:\AI Cloud\cc-java` 的 `feat/tui-redesign` 分支；目录与分支说明见[单目录开发指南](docs/development-workspaces.md)。
+
 本分支已接通真实对话、工具审批、完整问卷及 /plan 确认执行。使用 scripts/StartCodejDev.ps1 --tui-next 启动；默认安装入口未替换。离线演示保留 preview:tui。完整路径、按键与验证限制见 [核心流程验收指南](docs/evidence/S15-tui-next-core.md)。
 
 ## 安装

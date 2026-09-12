@@ -8,10 +8,10 @@ CLI-01/03/04/05/09 保持 L2，TOOL-11/PLAN-01 保持 L1。S15/P7 仍 OPEN。
 
 在目标项目目录使用 PowerShell 7：
 
-    & 'G:\AI Cloud\cc-java-tui-redesign\scripts\StartCodejDev.ps1' --tui-next
+    & 'G:\AI Cloud\cc-java\scripts\StartCodejDev.ps1' --tui-next
 
 也可追加 --workspace 'E:\ai project\choco-backend'。开发构建已准备好，复用现有用户模型配置。
-离线演示仍是 npm.cmd --prefix 'G:\AI Cloud\cc-java-tui-redesign\cc-java-tui' run preview:tui。
+离线演示仍是 npm.cmd --prefix 'G:\AI Cloud\cc-java\cc-java-tui' run preview:tui。
 默认安装入口未替换。
 
 - 普通输入使用真实 Java Run；流式与最终正文去重，运行中草稿保留，Enter 不排队。

@@ -12,7 +12,7 @@
 
 | 项目 | 固定值 |
 |---|---|
-| 工作目录 | `G:\AI Cloud\cc-java-tui-redesign` |
+| 工作目录 | `G:\AI Cloud\cc-java` |
 | 分支 | `feat/tui-redesign` |
 | main 起始基线 | `e51e6b5062fbab46881137342a2bff84bfc05645` |
 | 已推送实现提交 | `0c01799`，包含 `116af64`、`dea3349`；远程分支 `origin/feat/tui-redesign` |
@@ -27,7 +27,7 @@
 真实入口：
 
 ```powershell
-& 'G:\AI Cloud\cc-java-tui-redesign\scripts\StartCodejDev.ps1' --tui-next
+& 'G:\AI Cloud\cc-java\scripts\StartCodejDev.ps1' --tui-next
 ```
 
 `preview:tui` 仅用于离线视觉演示，不能证明真实 Runtime 已接通。继续保留已安装版本默认入口，不提交、合并或发布；额度剩余不高于 1% 时停止并记录进度。

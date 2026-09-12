@@ -899,3 +899,7 @@ ADR-094统一计划最终Assistant接受与持久化完成条件；审核需要r
 并呈现verification.required，避免“更新任务”后空白结束。
 真实Provider天气计划已从审核走到最终正文可见及Plan COMPLETED；详见S15-tui-next-core证据。
 CLI-05/CLI-09保持L2，PLAN-01保持L1；无Capability等级变化，S15仍OPEN。
+
+### 2026-09-12 验证工具职责与审核恢复纠正
+
+ADR-098将交付验证候选限定为可信内置的工作区读写、进程或网络工具；用户交互、内部Task状态及计划编排不能作为交付证明。模型可见候选、声明校验和审核Gate复用同一集合；不放松实际成功结果要求。新TUI以当前Run的真实审核事件标记此前审核阻塞已解除，并保留原失败事实。CLI-05/09 L2、PLAN-01 L1不变；最终实测见S15-tui-next-core证据。

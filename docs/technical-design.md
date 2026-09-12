@@ -2292,3 +2292,7 @@ resolveQuestionnaire只提交整批答案，Java协调器仍绑定Session/Run/ca
 工具正文仅投影有界显示数据，参数来自白名单摘要；疑似敏感正文启发式隐藏不构成通用脱敏保证。
 Plan继续复用现有原子review接口，生成run结束前禁止确认，批准固定APPROVE_USER+KEEP。
 拒绝、取消、断连或迟到事件不能绕过既有Java权限和执行管线。范围限定见PRD 11.1A。
+
+### 2026-09-12 验证工具职责纠正（ADR-098）
+
+PLAN-01：宿主从实际注册的可信内置Tool中，按READ_WORKSPACE/WRITE_WORKSPACE/EXECUTE_PROCESS/NETWORK_OR_REMOTE效应和Workspace适用性生成验证集合；交互、Session状态和编排不得进入。集合同时用于定义说明、声明和审核/恢复校验。CLI-05/09：审核恢复只以同Run真实plan.review.requested判定，原Tool失败事实不变，不新增协议字段。

@@ -268,3 +268,40 @@ it('正常计划编排不刷屏，展开也不泄漏任务JSON；失败仍可见
     expect(runtimeFrame(r.state,newRuntimeUi(),80,35).rows.map(rowText).join('\n')).toContain('工具参数无效');
   }
 });
+
+it('命令与网页搜索折叠摘要不冒用协议头，展开保留真实输出',()=>{
+  for(const [name,output,summary] of [
+    ['run_command','shell: powershell\nstdout:\nquery-result','命令执行完成'],
+    ['web_search','provenance: external-web-search\nquery-result','网页搜索完成'],
+  ] as const) {
+    const h=host();const r=new ExperienceRuntime(h.client,'G:\\example');r.connect();h.initialize();r.submit('查询');h.emit('run.started');
+    h.emit('tool.started',{ordinal:1,toolName:name});
+    h.emit('tool.completed',{ordinal:1,toolName:name,content:output});
+    const collapsed=runtimeFrame(r.state,newRuntimeUi(),80,35).rows.map(rowText).join('\n');
+    expect(collapsed).toContain(summary);expect(collapsed).not.toContain(output.split('\n')[0]);
+    const expanded=runtimeFrame(r.state,{...newRuntimeUi(),expanded:true},80,35).rows.map(rowText).join('\n');
+    expect(expanded).toContain(output.split('\n')[0]);expect(expanded).toContain('query-result');
+    h.emit('tool.failed',{ordinal:1,toolName:name,errorCode:'invalid_arguments'});
+    const failed=runtimeFrame(r.state,newRuntimeUi(),80,35).rows.map(rowText).join('\n');
+    expect(failed).not.toContain(summary);expect(failed).toContain('工具参数无效');
+  }
+});
+
+it('审核条件失败只在当前Run真实审核事件后显示恢复，不改写历史失败',()=>{
+  const h=host();const r=new ExperienceRuntime(h.client,'G:\\example');r.connect();h.initialize();r.submit('/plan 天气');h.emit('run.started');
+  const visible=()=>runtimeFrame(r.state,newRuntimeUi(),80,35).rows.map(rowText).join('\n');
+  h.emit('tool.started',{ordinal:1,toolName:'request_plan_review'});
+  h.emit('tool.failed',{ordinal:1,toolName:'request_plan_review',errorCode:'plan_gate_blocked'});
+  expect(visible()).toContain('计划尚未满足审核条件');expect(visible()).not.toContain('plan_gate_blocked');
+  h.emit('tool.started',{ordinal:2,toolName:'read_file'});h.emit('tool.completed',{ordinal:2,toolName:'read_file'});
+  expect(r.state.blocks.find(b=>b.kind==='tool'&&b.ordinal===1)).not.toHaveProperty('reviewRecovered');
+  h.emit('plan.review.requested',{planId:'p',revision:2,contentDigest:'c',workspaceDigest:'w',markdown:'# 计划'});
+  expect(r.state.blocks.find(b=>b.kind==='tool'&&b.ordinal===1)).toMatchObject({status:'failed',reviewRecovered:true});
+  r.state.showPlan=false;r.state.pending=undefined;
+  expect(visible()).toContain('审核条件已补齐');
+  h.emit('run.completed');r.submit('/plan 另一任务');h.emit('run.started',{},'request','run-2');
+  h.emit('tool.started',{ordinal:1,toolName:'request_plan_review'},'request','run-2');
+  h.emit('tool.failed',{ordinal:1,toolName:'request_plan_review',errorCode:'plan_gate_blocked'},'request','run-2');
+  h.emit('plan.review.requested',{planId:'old',revision:3},'request','run');
+  expect(r.state.blocks.find(b=>b.kind==='tool'&&b.run==='run-2'&&b.ordinal===1)).not.toHaveProperty('reviewRecovered');
+});

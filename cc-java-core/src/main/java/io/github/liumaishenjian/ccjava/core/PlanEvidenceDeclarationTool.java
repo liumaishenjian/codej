@@ -72,6 +72,8 @@ public final class PlanEvidenceDeclarationTool implements AgentTool {
         this.trustedVerificationTools = Set.copyOf(normalized);
         this.definition = new ToolDefinition(NAME,
                 "Declare or correct one required deliverable or registered-tool verification item for deterministic completion validation. "
+                        + "Verification tools describe approved execution; they may be unavailable for calls during planning. "
+                        + "Questions and internal task updates do not prove delivery. "
                         + "VERIFICATION locator must be one of the currently registered trusted tools: "
                         + allowedAlternatives() + ".",
                 INPUT_SCHEMA, ToolEffect.PLAN_ARTIFACT_WRITE, ToolSource.BUILT_IN, false,

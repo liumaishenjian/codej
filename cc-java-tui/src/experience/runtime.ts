@@ -8,7 +8,7 @@ export interface QuestionsPanel {kind: 'questions'; event: ProtocolEvent; callId
 export interface PlanPanel {kind: 'plan'; event: ProtocolEvent; planId: string; revision: number; contentDigest: string; workspaceDigest: string; markdown: string}
 export type Pending = ApprovalPanel | QuestionsPanel | PlanPanel;
 export interface Message {kind: 'user' | 'assistant' | 'notice'; id: string; run: string; turn: number; text: string}
-export interface ToolRecord {kind: 'tool'; id: string; run: string; turn: number; ordinal: number; name: string; activity: string; status: 'running' | 'completed' | 'failed' | 'cancelled'; output: string; preview: string; shell: string; directory: string; truncated: boolean; failure: string; failureReasonCode: string; recoveredByOrdinal: number}
+export interface ToolRecord {kind: 'tool'; id: string; run: string; turn: number; ordinal: number; name: string; activity: string; status: 'running' | 'completed' | 'failed' | 'cancelled'; output: string; preview: string; shell: string; directory: string; truncated: boolean; failure: string; failureReasonCode: string; recoveredByOrdinal: number; reviewRecovered?: boolean}
 export type RecordBlock = Message | ToolRecord;
 export interface RuntimeSnapshot {
   connection: 'connecting' | 'ready' | 'closed';
@@ -241,7 +241,11 @@ export class ExperienceRuntime {
     if (event.type === 'plan.review.requested') {
       const pending: PlanPanel = {kind: 'plan', event, planId: text(p, 'planId'), revision: count(p, 'revision'), contentDigest: text(p, 'contentDigest'),
         workspaceDigest: text(p, 'workspaceDigest'), markdown: text(p, 'markdown')};
-      this.patch({pending, plan: pending, showPlan: true, activity: '计划已生成'});
+      // 宿主已发布当前Run审核面板，才证明此前同Run审核Gate已解除。保留失败历史。
+      this.patch({pending, plan: pending, showPlan: true, activity: '计划已生成',
+        blocks: this.state.blocks.map(block => block.kind === 'tool' && block.run === this.#run
+          && block.name === 'request_plan_review' && block.status === 'failed' && block.failure === 'plan_gate_blocked'
+          ? {...block, reviewRecovered: true} : block)});
     }
     if (event.type === 'protocol.error') this.finish('宿主拒绝了当前请求，请检查配置或重新启动。');
   }

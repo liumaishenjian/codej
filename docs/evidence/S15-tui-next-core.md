@@ -219,3 +219,18 @@ pwsh -NoProfile -File .\docs\evidence\S15-tui-next-batch2-fixture.ps1
 协调者已使用本轮新构建从生产 `StartCodejDev.ps1 --tui-next` 入口完成 C 终态：人工 Allow Once 后，同一 `run_command` 的 stdout 同时显示中文/emoji Host 输出与原始 UTF-8 中文/emoji，stderr 为纯文本中文错误，exit code 7 与 Tool failure 一致；`Ctrl+O` 详情和最终正文正确说明“命令非零失败、未重试、未修复”，没有把失败冒充成功，随后无工具下一轮可见并返回 idle。运行没有文件读写、联网或安装。stderr 中固定 launcher 的 `. $script` 行号是已知 Adapter 差异，本批不扩展修复。
 
 剩余差距为 Windows PowerShell 5.1 实机、参考 UI 视觉一致性、复杂 Provider/跨平台质量及 Markdown 反引号呈现。
+
+## 2026-09-12：交付证据职责与审核恢复（ADR-098）
+
+原失败运行已从本机 journal 核对：真实 run_command 成功，required requirement 却绑定 ask_user_questions，因此最终停在 NEEDS_VERIFICATION。审核失败后模型虽已修正另一项条件，UI仍显示裸 plan_gate_blocked。不是目录切换造成此业务错误。
+
+参考入口、职责、独立设计偏差及验证方法见 [ADR-098](../adr/ADR-098-s15-verification-tool-purpose.md)。宿主共用验证工具集合现在排除交互、内部状态及计划/委派编排；实际交付的成功 ToolResult 和文件验收不放宽。当前 Run 的真实审核事件才可将先前审核阻塞标为恢复，保留原始失败状态。命令和网页搜索成功摘要不再直接显示 shell/provenance 包装头，Ctrl+O 保留原输出；缺少结构化计数时不编造统计。
+
+本次证据（工作树，未提交）：
+
+- Java 定向 Maven：DurablePlanExecutionHandoffTest、HeadlessRuntimeSessionTest、RuntimeStdioCommandHandlerTest、PlanEvidenceDeclarationToolTest、ToolFailureFingerprintGovernanceTest，共141项，0失败、0错误、1跳过。新增原失败方式被拒绝、同 requirementId 修正为 run_command、真实命令成功、最终正文、COMPLETED 和零造文件断言。
+- 最终 TypeScript build 通过；显式 CC_JAVA_TEST_CLASSPATH 的 TUI 回归23文件、358/358通过，47.67秒。命令排除 real-java-plan-e2e 与 installed-plan-e2e 两套需单独启用的在线/安装测试；Java→stdio→Ink 套件包含在358项内。新增折叠/展开、失败不可显示成功、真实审核恢复与跨Run隔离断言。新增测试曾因元组类型检查失败，修正后上述构建与回归重新通过。
+- 正式 StartCodejDev.ps1 --tui-next、当前配置真实 Provider、独立临时 Workspace、实际 PTY按键：输入原请求 `/plan 看下青岛未来七天天气`，读取计划后确认执行，三次公共天气网页搜索均人工本次允许。Plan revision7 为 COMPLETED，唯一 required `qingdao-weather-7d` 使用 `web_search`，reference 为 PASSED/TOOL_RESULT。最终七天正文与提示可见，下一轮“请只回复：本轮对话可以继续。”得到对应回答、恢复idle，Ctrl+C退出0。未以进度更新代替结果。
+- PTY记录验证的是实际程序交互，不是物理终端截图或参考产品视觉一致性。在线运行启动早于最终摘要显示调整；摘要调整由其后的最终构建、渲染和跨进程回归验证，不把旧PTY画面说成新摘要证据。
+
+本次没有独立验证模型汇总的天气事实准确性。一次成功查询不能证明规模化Provider质量，也不能证明所有计划的语义验收充分。Markdown表格仍按文本折行，复杂排版及参考视觉一致性仍是差距。PLAN-01保持L1，CLI-05/09保持L2，S15 Exit保持OPEN。

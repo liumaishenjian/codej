@@ -29,10 +29,10 @@ const planningToolTitles: Record<string, string> = {
 };
 function toolTitle(tool: ToolRecord): string {
   if (tool.name === 'run_command') return tool.shell || '命令';
-  return ({read_file: '读取文件', search_text: '搜索内容', search_content: '搜索内容', glob_files: '查找文件', list_files: '列出文件', write_file: '写入文件', apply_patch: '修改文件', ask_user_questions: '提问', ask_plan_question: '提问'} as Record<string, string>)[tool.name] ?? tool.name;
+  return ({web_search: '搜索网页', read_file: '读取文件', search_text: '搜索内容', search_content: '搜索内容', glob_files: '查找文件', list_files: '列出文件', write_file: '写入文件', apply_patch: '修改文件', ask_user_questions: '提问', ask_plan_question: '提问'} as Record<string, string>)[tool.name] ?? tool.name;
 }
 function failure(tool: ToolRecord): string {
-  return (({permission_denied: '操作已被拒绝', invalid_arguments: '工具参数无效', timeout: '操作超时', cancelled: '已取消'} as Record<string, string>)[tool.failure] ?? tool.failure) || '工具执行失败';
+  return (({permission_denied: '操作已被拒绝', invalid_arguments: '工具参数无效', plan_gate_blocked: '计划尚未满足审核条件', timeout: '操作超时', cancelled: '已取消'} as Record<string, string>)[tool.failure] ?? tool.failure) || '工具执行失败';
 }
 export function runtimeFrame(state: RuntimeSnapshot, ui: RuntimeUi, width: number, height: number, now = Date.now()): {rows: Row[]; total: number; maxScroll: number; maxPanelScroll: number} {
   const body = writer(Math.max(12, width)), panel = writer(Math.max(12, width)), detail = writer(Math.max(12, width));
@@ -55,13 +55,14 @@ export function runtimeFrame(state: RuntimeSnapshot, ui: RuntimeUi, width: numbe
     if (planningToolTitles[block.name] && block.status !== 'failed') continue;
     if (planningToolTitles[block.name]) {
       const unavailable = block.failureReasonCode === 'verification_tool_unavailable';
-      const recovered = unavailable && block.recoveredByOrdinal > block.ordinal;
-      const summary = recovered ? '已修正验证方式，继续规划'
+      const recovered = block.reviewRecovered || (unavailable && block.recoveredByOrdinal > block.ordinal);
+      const summary = block.reviewRecovered ? '审核条件已补齐，计划已提交审核'
+        : recovered ? '已修正验证方式，继续规划'
         : unavailable ? '验证方式使用了当前不可用的工具'
         : block.status === 'running' ? '正在处理…'
         : block.status === 'failed' ? failure(block)
         : block.status === 'cancelled' ? '已取消' : '完成';
-      body.add([span('● ', block.status === 'failed' ? palette.red : undefined), span(planningToolTitles[block.name]!, undefined, true)]);
+      body.add([span('● ', block.status === 'failed' && !recovered ? palette.red : undefined), span(planningToolTitles[block.name]!, undefined, true)]);
       body.add([span('  └ ' + summary, block.status === 'failed' && !recovered ? palette.red : palette.muted)]);
       if (ui.expanded && unavailable) {
         body.add(muted('    原声明：失败（验证工具不可用）'));
@@ -81,7 +82,11 @@ export function runtimeFrame(state: RuntimeSnapshot, ui: RuntimeUi, width: numbe
     body.add([span('● ', block.status === 'failed' ? palette.red : running ? palette.blue : undefined),
       span(group.length > 1 ? toolTitle(block) + ' · ' + group.length + ' 项' : toolTitle(block), undefined, true),
       span((block.preview ? ' (' + compact(block.preview, Math.max(10, width - 35)) + ')' : '') + '  (Ctrl+O ' + (ui.expanded ? '收起' : '展开') + ')', palette.muted)]);
-    const summary = running ? block.activity || '正在执行…' : block.status === 'failed' ? failure(block) : block.status === 'cancelled' ? '已取消' : block.output.trim().split('\n').find(Boolean)?.slice(0, 140) || '完成';
+    // 命令/网页输出带协议包装头，不能把shell或provenance当作用户结果；正文仍在详情中。
+    const summary = running ? block.activity || '正在执行…' : block.status === 'failed' ? failure(block) : block.status === 'cancelled' ? '已取消'
+      : block.name === 'run_command' ? '命令执行完成'
+      : block.name === 'web_search' ? '网页搜索完成'
+      : block.output.trim().split('\n').find(Boolean)?.slice(0, 140) || '完成';
     body.add([span('  └ ' + summary, block.status === 'failed' ? palette.red : palette.muted)]);
     if (ui.expanded) {
       if (block.preview) body.add(muted('    ' + block.preview));

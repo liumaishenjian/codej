@@ -51,7 +51,11 @@ class DurablePlanExecutionHandoffTest {
             return switch (calls.getAndIncrement()) {
                 case 0 -> ModelTurn.tools(List.of(new ToolCall("draft-query", "revise_plan_artifact",
                         new JsonObject(Map.of("markdown", "# 文本查询\n\n批准后运行只读命令并将结果直接回答用户。")))));
-                case 1 -> ModelTurn.tools(List.of(new ToolCall("missing-requirement-review", "request_plan_review", JsonObject.empty())));
+                case 1 -> ModelTurn.tools(List.of(
+                        new ToolCall("question-is-not-evidence", "declare_plan_evidence", new JsonObject(Map.of(
+                                "requirementId", "completion-check", "kind", "VERIFICATION", "locator", "ask_user_questions",
+                                "label", "不能用提问替代查询结果", "required", true))),
+                        new ToolCall("missing-requirement-review", "request_plan_review", JsonObject.empty())));
                 case 2 -> {
 
                     yield ModelTurn.tools(List.of(completionRequirement(), new ToolCall("valid-review", "request_plan_review", JsonObject.empty())));
@@ -73,6 +77,12 @@ class DurablePlanExecutionHandoffTest {
                     .filter(r -> r.callId().equals("missing-requirement-review")).findFirst().orElseThrow();
             assertThat(blocked.error().orElseThrow().code().name()).isEqualTo("PLAN_GATE_BLOCKED");
             assertThat(blocked.error().orElseThrow().details().string("reason").orElseThrow()).contains("declare_plan_evidence");
+            var invalidEvidence = requests.get(2).messages().stream()
+                    .filter(io.github.liumaishenjian.ccjava.domain.ToolResultMessage.class::isInstance)
+                    .map(io.github.liumaishenjian.ccjava.domain.ToolResultMessage.class::cast)
+                    .map(io.github.liumaishenjian.ccjava.domain.ToolResultMessage::result)
+                    .filter(r -> r.callId().equals("question-is-not-evidence")).findFirst().orElseThrow();
+            assertThat(invalidEvidence.error().orElseThrow().code().name()).isEqualTo("INVALID_ARGUMENTS");
             var plan = runtime.planArtifact().orElseThrow();
             assertThat(plan.evidenceLedger().requirements()).allMatch(r -> r.kind() == io.github.liumaishenjian.ccjava.domain.PlanEvidenceKind.VERIFICATION && r.locator().equals("run_command"));
             assertThat(approvals).hasValue(0);

@@ -842,3 +842,7 @@ S01 已确认：
   durable/auditable，不能从模型文本暗示或批量推断。
 - Surface 必须显示 actionable 非完成状态；Evidence Gate 不改变 Permission、AutoReview、Hard Denial、
   Hook、Checkpoint、MCP/Plugin/Skill Pipeline 或 EXECUTING restart no-replay。
+
+### 2026-09-12 核心计划交付纠正（ADR-098）
+
+FR-CLI-005、PLAN-01：查询结果不能因无关的提问或任务状态被登记为交付证据而阻塞；用户交互和内部状态不能充当交付证明。审核条件不足应有可理解提示，真实恢复后显示恢复事实，不持续呈现裸错误码；未经验证的结果不能标为完成。范围及等级不变。

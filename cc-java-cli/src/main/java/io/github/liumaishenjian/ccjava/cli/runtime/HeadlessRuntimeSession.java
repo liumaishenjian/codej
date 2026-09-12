@@ -906,6 +906,11 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         Set<String> trustedVerificationTools = registeredTools().stream()
                 .map(io.github.liumaishenjian.ccjava.core.AgentTool::definition)
                 .filter(definition -> definition.source() == ToolSource.BUILT_IN)
+                // 可信身份不是交付证据：交互、内部状态及编排成功不能证明用户任务完成。
+                .filter(definition -> switch (definition.effect()) {
+                    case READ_WORKSPACE, WRITE_WORKSPACE, EXECUTE_PROCESS, NETWORK_OR_REMOTE -> true;
+                    default -> false;
+                })
                 .map(io.github.liumaishenjian.ccjava.domain.ToolDefinition::name)
                 .filter(name -> gitVerificationAvailable || !workspaceBoundVerificationTools.contains(name))
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());

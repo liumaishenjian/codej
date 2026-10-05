@@ -16,6 +16,7 @@
         <module>cc-java-domain</module>
         <module>cc-java-core</module>
         <module>cc-java-model-spring-ai</module>
+        <module>cc-java-model-pi</module>
         <module>cc-java-tools-local</module>
         <module>cc-java-tools-web</module>
         <module>cc-java-mcp</module>

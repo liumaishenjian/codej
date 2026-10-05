@@ -33,7 +33,15 @@ public final class ToolFailureFingerprintGovernance {
     private final Set<FailureFingerprint> failed = new HashSet<>();
     private final Set<ValidationCorrectionFingerprint> validationCorrections = new HashSet<>();
 
-    /** 返回该 Tool 与规范参数是否已有任一类型化失败记录；执行前不猜测下一次失败类别。 */
+    /** 创建单个Run独占的空失败窗口；新Run必须使用新实例，避免跨Run复用记录。 */
+    public ToolFailureFingerprintGovernance() {
+    }
+
+    /**
+     * 返回该 Tool 与规范参数是否已有任一类型化失败记录；执行前不猜测下一次失败类别。
+     * @param call 待执行的非空调用，仅使用工具名和规范参数摘要匹配
+     * @return 当前 Run 已记录同工具与参数失败时为 true
+     */
     public synchronized boolean repeated(ToolCall call) {
         Objects.requireNonNull(call, "call 不能为空");
         String arguments = argumentsDigest(call);
@@ -41,7 +49,11 @@ public final class ToolFailureFingerprintGovernance {
                 value.tool().equals(call.name()) && value.arguments().equals(arguments));
     }
 
-    /** 记录由 Tool、规范参数与类型化失败类别共同组成的执行失败 fingerprint。 */
+    /**
+     * 记录由 Tool、规范参数与类型化失败类别共同组成的执行失败 fingerprint。
+     * @param call 已失败的非空工具调用，不保存原始参数
+     * @param error 真实失败的类型化错误，仅保留错误码与分类
+     */
     public synchronized void record(ToolCall call, ToolError error) {
         Objects.requireNonNull(call, "call 不能为空");
         Objects.requireNonNull(error, "error 不能为空");
@@ -117,7 +129,10 @@ public final class ToolFailureFingerprintGovernance {
                         || effect == ToolEffect.SYSTEM_OR_DESTRUCTIVE);
     }
 
-    /** 构造不泄漏参数的策略反馈。 */
+    /**
+     * 构造不泄漏参数的策略反馈。
+     * @return 不可原样重试、要求改变参数或解释阻塞原因的固定结构化错误
+     */
     public static ToolError repeatedFailure() {
         return ToolError.classified(ToolErrorCode.REPEATED_FAILURE, ToolFailureCategory.INTERNAL, false,
                 "相同 Tool 与参数已失败；禁止原样重试，请修改 arguments 或向用户解释阻塞原因",

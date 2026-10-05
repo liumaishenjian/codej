@@ -42,12 +42,29 @@ final class HeadlessRuntimeScope {
     private final AgentRuntime runtime;
     private final RuntimeConfiguration configuration;
     private final ToolExecutionPipeline pipeline;
+    private final java.util.function.BiFunction<io.github.liumaishenjian.ccjava.core.RunModelBinding,
+            ContextPreparationService, HeadlessRuntimeScope> rebinder;
 
     private HeadlessRuntimeScope(AgentRuntime runtime, RuntimeConfiguration configuration,
-                                 ToolExecutionPipeline pipeline) {
+                                 ToolExecutionPipeline pipeline,
+                                 java.util.function.BiFunction<io.github.liumaishenjian.ccjava.core.RunModelBinding,
+                                         ContextPreparationService, HeadlessRuntimeScope> rebinder) {
         this.runtime = Objects.requireNonNull(runtime, "runtime 不能为空");
         this.configuration = Objects.requireNonNull(configuration, "configuration 不能为空");
         this.pipeline = Objects.requireNonNull(pipeline, "pipeline 不能为空");
+        this.rebinder = Objects.requireNonNull(rebinder, "rebinder 不能为空");
+    }
+
+    /**
+     * 将已验证的显式模型绑定装配为完整依赖图；同时重建 Runtime、Pipeline 和 reviewer。
+     * Session、Tool、权限状态及上下文之外的会话级端口保留原引用，不重新创建 canonical Session。
+     * @param binding 本次 Run 冻结的模型与摘要来源
+     * @param preparation 共享 Root projection/pending 的本次 Context 视图
+     * @return 不依赖同步 facade 的完整新 Scope
+     */
+    HeadlessRuntimeScope bindModel(io.github.liumaishenjian.ccjava.core.RunModelBinding binding,
+                                  ContextPreparationService preparation) {
+        return rebinder.apply(Objects.requireNonNull(binding), Objects.requireNonNull(preparation));
     }
 
     AgentRuntime runtime() {
@@ -216,6 +233,17 @@ final class HeadlessRuntimeScope {
         return new HeadlessRuntimeScope(new AgentRuntime(
                 sessions, ids, gateway, new DefaultContextAssembler(), registry, pipeline, lifecycle, sessions,
                 contextPreparation, memoryContext, instructionContext, hooks, skills, plugins, pluginHooks,
-                finalAssistantHandler), checkedConfiguration, pipeline);
+                finalAssistantHandler), checkedConfiguration, pipeline, (binding, preparation) -> {
+                    var selectedModel = binding.selection().map(value -> value.modelId());
+                    RuntimeConfiguration boundConfiguration = selectedModel.isEmpty() ? checkedConfiguration
+                            : new RuntimeConfiguration(selectedModel, checkedConfiguration.permissionMode(),
+                                    checkedConfiguration.approvalReviewer(), checkedConfiguration.permissionRules(),
+                                    checkedConfiguration.enabledBuiltinTools(), checkedConfiguration.toolConfigurations(),
+                                    checkedConfiguration.compactAnchors(), checkedConfiguration.diagnosticsVerbosity());
+                    return create(boundConfiguration, selectedModel.orElse(configuredModel), binding.gateway(),
+                            preparation, registeredTools, sessions, checkpoints, lifecycle, ids, approvals,
+                            permissionState, workspaceGuard, memoryContext, instructionContext, hooks, skills,
+                            plugins, pluginHooks, finalAssistantHandler, planEligibility);
+                });
     }
 }

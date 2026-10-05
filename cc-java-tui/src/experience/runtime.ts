@@ -1,3 +1,4 @@
+import {ExperienceAuth, isAuthCommand, type AuthPanel, type AuthClient} from './auth.js';
 import type {ProtocolEvent} from '../protocol.js';
 import type {StdioClient} from '../stdio-client.js';
 import {DeliveryDiagnostics} from './diagnostics.js';
@@ -32,6 +33,7 @@ export interface Message {kind: 'user' | 'assistant' | 'notice'; id: string; run
 export interface ToolRecord {kind: 'tool'; fileChange?: FileChange | undefined; resultSummary?: ToolResultSummary | undefined; callId?: string; id: string; run: string; turn: number; ordinal: number; name: string; activity: string; status: 'running' | 'completed' | 'failed' | 'cancelled'; output: string; preview: string; shell: string; directory: string; truncated: boolean; failure: string; failureReasonCode: string; failureCategory: string; argumentChangeRequired: boolean; retryable: boolean; recoveredByOrdinal: number; reviewRecovered?: boolean; returnedItems?: number}
 export type RecordBlock = Message | ToolRecord;
 export interface RuntimeSnapshot {
+  auth?: AuthPanel | undefined;
   rejectedInput?: {id: number; text: string} | undefined;
   diagnostics?: readonly string[];
   connection: 'connecting' | 'ready' | 'closed';
@@ -40,8 +42,8 @@ export interface RuntimeSnapshot {
   blocks: RecordBlock[]; pending: Pending | undefined; plan: PlanPanel | undefined; showPlan: boolean;
   notice: string; activity: string; startedAt: number; revision: number; questionnaire: boolean;
 }
-export interface RuntimeClient {
-  initialize(options?: {questionnaireV1?: boolean; experienceV1?: boolean; directedChunkInputV1?: boolean}): string;
+export interface RuntimeClient extends AuthClient {
+  initialize(options?: {questionnaireV1?: boolean; experienceV1?: boolean; directedChunkInputV1?: boolean; authLifecycleV1?: boolean; piProviderV1?: boolean}): string;
   onEvent(listener: (event: ProtocolEvent) => void): () => void;
   onFailure(listener: (message: string) => void): () => void;
   onRunHandshake?: StdioClient['onRunHandshake'];
@@ -74,6 +76,7 @@ function resultSummary(value: unknown): ToolResultSummary | undefined {
 /** 只将已验证stdio事件投影成视图；Java继续拥有执行、权限与取消决定。 */
 export class ExperienceRuntime {
   state: RuntimeSnapshot;
+  readonly auth: ExperienceAuth;
   readonly #client: RuntimeClient;
   readonly #listeners = new Set<(streaming: boolean) => void>();
   #cleanup: (() => void)[] = [];
@@ -88,6 +91,7 @@ export class ExperienceRuntime {
   #submittedInput = ''; #awaitingAcceptance = false;
   constructor(client: RuntimeClient, workspace: string) {
     this.#client = client;
+    this.auth = new ExperienceAuth(client, (auth, notice, model) => this.patch({auth, ...(notice === undefined ? {} : {notice}), ...(model === undefined ? {} : {model})}));
     this.state = {connection: 'connecting', status: 'idle', session: '', workspace, model: '', mode: 'chat', blocks: [],
       pending: undefined, plan: undefined, showPlan: false, notice: '', activity: '正在启动', startedAt: 0, revision: 0, questionnaire: false};
   }
@@ -105,10 +109,12 @@ export class ExperienceRuntime {
       questionnaireV1: true,
       experienceV1: true,
       directedChunkInputV1: true,
+      authLifecycleV1: true,
+      ...(this.#client.piLogin ? {piProviderV1: true} : {}),
     });}
     catch {this.fail('无法初始化 Java 连接。');}
   }
-  dispose(): void {this.#disposed = true; for (const cleanup of this.#cleanup) cleanup(); this.#cleanup = []; this.#listeners.clear(); this.#decisions.clear(); this.#answerSummaries.clear();}
+  dispose(): void {this.auth.invalidate(); this.#disposed = true; for (const cleanup of this.#cleanup) cleanup(); this.#cleanup = []; this.#listeners.clear(); this.#decisions.clear(); this.#answerSummaries.clear();}
   patch(patch: Partial<RuntimeSnapshot>, streaming = false): void {
     if (this.#disposed) return;
     this.state = {...this.state, ...patch, revision: this.state.revision + 1};
@@ -118,18 +124,25 @@ export class ExperienceRuntime {
     this.#submittedInput='';this.#awaitingAcceptance=false;
     this.state = {...this.state, diagnostics: this.#diagnostics.transport()};
     this.#request = ''; this.#run = ''; this.#cancelWanted = false; this.#decisions.clear(); this.#answerSummaries.clear();
+    if (this.state.auth) {this.auth.cancel(true); message = this.state.notice;}
     this.patch({connection: 'closed', status: 'idle', pending: undefined, showPlan: false, notice: message,
       blocks: this.state.blocks.map(block => block.kind === 'tool' && block.status === 'running' ? {...block, status: 'failed', failure: 'transport_lost'} : block)});
   }
   submit(value: string): boolean {
     const prompt = value.trim();
     if (!prompt || this.state.connection !== 'ready') return false;
+    if (isAuthCommand(prompt)) {
+      if (this.state.status !== 'idle' || this.state.pending || this.state.showPlan || this.state.auth) {this.patch({notice: '当前操作或面板尚未结束；认证命令不会排队执行。'}); return false;}
+      return this.auth.open(prompt);
+    }
+    if (this.state.auth) return false;
+    if (this.auth.required) {this.auth.open('/login'); return false;}
     if (this.state.status !== 'idle' || this.state.pending) {this.patch({notice: '当前操作尚未结束，草稿已保留。'}); return false;}
-    if (prompt === '/help') {this.patch({notice: '核心入口：/plan 进入计划，/plan 任务开始规划。Ctrl+O详情，PgUp/PgDn阅读详情，Esc停止。'}); return true;}
+    if (prompt === '/help') {this.patch({notice: '核心入口：/plan 规划任务，/login 连接服务商，/logout 选择账号并确认退出；/connect、/auth、/models 保留高级入口。Ctrl+O详情，PgUp/PgDn回看，Esc停止。'}); return true;}
     if (prompt === '/plan') {
       this.patch({mode: 'plan', showPlan: !!this.state.plan, notice: this.state.plan ? '' : '已进入计划模式。请输入需要规划的任务。'}); return true;
     }
-    if (prompt.startsWith('/') && !prompt.startsWith('/plan ')) {this.patch({notice: '此界面仅提供 /plan 和 /help。'}); return false;}
+    if (prompt.startsWith('/') && !prompt.startsWith('/plan ')) {this.patch({notice: '此界面提供 /plan、/help、/login、/logout 与高级认证命令。'}); return false;}
     const explicitPlanTask = prompt.startsWith('/plan ');
     const planning = explicitPlanTask || this.state.mode === 'plan';
     const task = explicitPlanTask ? prompt.slice(6).trim() : prompt;
@@ -148,6 +161,7 @@ export class ExperienceRuntime {
     } catch {this.patch({notice: '运行未能启动，输入已保留；请检查模型配置和连接。'}); return false;}
   }
   cancel(): void {
+    if (this.state.auth) {this.auth.cancel(); return;}
     if (this.state.status === 'idle') {
       if (this.state.pending?.kind === 'plan') this.review(this.state.pending, 'REJECT', '');
       else this.patch({showPlan: false, notice: ''});
@@ -235,11 +249,15 @@ export class ExperienceRuntime {
       this.#sequence = event.sequence; this.#request = ''; this.#run = ''; this.#cancelWanted = false; this.#decisions.clear(); this.#answerSummaries.clear();
       this.patch({connection: 'ready', session: event.sessionId ?? '', status: 'idle', pending: undefined, plan: undefined, showPlan: false,
         mode: 'chat', blocks: [], questionnaire: event.payload.questionnaireV1 === true, model: text(event.payload, 'model'),
-        notice: event.payload.modelConfigured === false ? '尚未配置模型，请先通过现有 codej 配置入口完成配置。' : '', activity: ''});
+        notice: '', activity: ''});
+      this.auth.initialize(this.state.session, event.payload);
       return;
     }
     if (this.state.connection === 'connecting' && event.type === 'protocol.error' && event.requestId === this.#init) {this.fail('Java 初始化请求被拒绝，请检查启动配置。'); return;}
-    if (this.state.connection !== 'ready' || event.sessionId !== this.state.session) return;
+    if (this.state.connection !== 'ready') return;
+    // protocol.error可以没有Session；认证控制器仍要求精确匹配已发request和当前操作代次。
+    if (this.auth.accept(event)) {this.#sequence = event.sequence; return;}
+    if (event.sessionId !== this.state.session) return;
     if (event.type === 'protocol.error' && this.#decisions.has(event.requestId)) {
       this.#sequence = event.sequence;
       if(this.restorePlanDecision(event.requestId)) return;
@@ -278,7 +296,12 @@ export class ExperienceRuntime {
     if (event.type === 'steering.discarded' && !this.#run) {
       this.finish(this.#cancelWanted ? '本轮已停止。' : '宿主已丢弃尚未开始的请求，本轮未执行。'); return;
     }
-    if (event.type === 'run.launch.failed') {this.finish('运行启动失败，请检查配置和当前计划状态。'); return;}
+    if (event.type === 'run.launch.failed') {
+      this.finish(p.code === 'MODEL_CONTEXT_BUDGET_INCOMPATIBLE'
+        ? '模型窗口不足以容纳当前保留预算；请选择更大窗口模型，或显式调整 Context 参数。'
+        : '运行启动失败，请检查配置和当前计划状态。');
+      return;
+    }
     if (event.type === 'plan.review.rejected') {this.finish('计划已取消，没有启动执行。'); return;}
     if (['run.completed', 'run.failed', 'run.cancelled'].includes(event.type)) {
       if (event.type === 'run.cancelled') this.#cancelWanted = true;

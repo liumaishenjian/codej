@@ -1,0 +1,882 @@
+{
+  "piVersion": "0.85.1",
+  "brands": [
+    {
+      "id": "openai",
+      "label": "OpenAI",
+      "providerIds": [
+        "openai",
+        "openai-codex"
+      ]
+    },
+    {
+      "id": "deepseek",
+      "label": "DeepSeek",
+      "providerIds": [
+        "deepseek"
+      ]
+    },
+    {
+      "id": "qwen",
+      "label": "通义",
+      "providerIds": [
+        "qwen-token-plan-cn"
+      ]
+    }
+  ],
+  "providers": [
+    {
+      "id": "openai",
+      "brandId": "openai",
+      "label": "OpenAI API",
+      "authMethods": [
+        {
+          "id": "api_key",
+          "label": "API 密钥"
+        }
+      ],
+      "models": [
+        {
+          "id": "gpt-4",
+          "label": "GPT-4",
+          "api": "openai-responses",
+          "contextWindow": 8192,
+          "maxTokens": 8192,
+          "reasoning": false,
+          "input": [
+            "text"
+          ]
+        },
+        {
+          "id": "gpt-4-turbo",
+          "label": "GPT-4 Turbo",
+          "api": "openai-responses",
+          "contextWindow": 128000,
+          "maxTokens": 4096,
+          "reasoning": false,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-4.1",
+          "label": "GPT-4.1",
+          "api": "openai-responses",
+          "contextWindow": 1047576,
+          "maxTokens": 32768,
+          "reasoning": false,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-4.1-mini",
+          "label": "GPT-4.1 mini",
+          "api": "openai-responses",
+          "contextWindow": 1047576,
+          "maxTokens": 32768,
+          "reasoning": false,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-4.1-nano",
+          "label": "GPT-4.1 nano",
+          "api": "openai-responses",
+          "contextWindow": 1047576,
+          "maxTokens": 32768,
+          "reasoning": false,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-4o",
+          "label": "GPT-4o",
+          "api": "openai-responses",
+          "contextWindow": 128000,
+          "maxTokens": 16384,
+          "reasoning": false,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-4o-2024-05-13",
+          "label": "GPT-4o (2024-05-13)",
+          "api": "openai-responses",
+          "contextWindow": 128000,
+          "maxTokens": 4096,
+          "reasoning": false,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-4o-2024-08-06",
+          "label": "GPT-4o (2024-08-06)",
+          "api": "openai-responses",
+          "contextWindow": 128000,
+          "maxTokens": 16384,
+          "reasoning": false,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-4o-2024-11-20",
+          "label": "GPT-4o (2024-11-20)",
+          "api": "openai-responses",
+          "contextWindow": 128000,
+          "maxTokens": 16384,
+          "reasoning": false,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-4o-mini",
+          "label": "GPT-4o mini",
+          "api": "openai-responses",
+          "contextWindow": 128000,
+          "maxTokens": 16384,
+          "reasoning": false,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5",
+          "label": "GPT-5",
+          "api": "openai-responses",
+          "contextWindow": 400000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5-chat-latest",
+          "label": "GPT-5 Chat Latest",
+          "api": "openai-responses",
+          "contextWindow": 128000,
+          "maxTokens": 16384,
+          "reasoning": false,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5-mini",
+          "label": "GPT-5 Mini",
+          "api": "openai-responses",
+          "contextWindow": 400000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5-nano",
+          "label": "GPT-5 Nano",
+          "api": "openai-responses",
+          "contextWindow": 400000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5-pro",
+          "label": "GPT-5 Pro",
+          "api": "openai-responses",
+          "contextWindow": 400000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5.1",
+          "label": "GPT-5.1",
+          "api": "openai-responses",
+          "contextWindow": 400000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5.2",
+          "label": "GPT-5.2",
+          "api": "openai-responses",
+          "contextWindow": 400000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5.2-chat-latest",
+          "label": "GPT-5.2 Chat",
+          "api": "openai-responses",
+          "contextWindow": 128000,
+          "maxTokens": 16384,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5.2-pro",
+          "label": "GPT-5.2 Pro",
+          "api": "openai-responses",
+          "contextWindow": 400000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5.3-chat-latest",
+          "label": "GPT-5.3 Chat (latest)",
+          "api": "openai-responses",
+          "contextWindow": 128000,
+          "maxTokens": 16384,
+          "reasoning": false,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5.3-codex",
+          "label": "GPT-5.3 Codex",
+          "api": "openai-responses",
+          "contextWindow": 400000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5.3-codex-spark",
+          "label": "GPT-5.3 Codex Spark",
+          "api": "openai-responses",
+          "contextWindow": 128000,
+          "maxTokens": 32000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5.4",
+          "label": "GPT-5.4",
+          "api": "openai-responses",
+          "contextWindow": 272000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5.4-mini",
+          "label": "GPT-5.4 mini",
+          "api": "openai-responses",
+          "contextWindow": 400000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5.4-nano",
+          "label": "GPT-5.4 nano",
+          "api": "openai-responses",
+          "contextWindow": 400000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5.4-pro",
+          "label": "GPT-5.4 Pro",
+          "api": "openai-responses",
+          "contextWindow": 1050000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5.5",
+          "label": "GPT-5.5",
+          "api": "openai-responses",
+          "contextWindow": 272000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5.5-pro",
+          "label": "GPT-5.5 Pro",
+          "api": "openai-responses",
+          "contextWindow": 1050000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5.6-luna",
+          "label": "GPT-5.6 Luna",
+          "api": "openai-responses",
+          "contextWindow": 272000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5.6-sol",
+          "label": "GPT-5.6 Sol",
+          "api": "openai-responses",
+          "contextWindow": 272000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5.6-terra",
+          "label": "GPT-5.6 Terra",
+          "api": "openai-responses",
+          "contextWindow": 272000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-6-astra",
+          "label": "GPT-6 Astra",
+          "api": "openai-responses",
+          "contextWindow": 272000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-realtime-2.1",
+          "label": "GPT-Realtime-2.1",
+          "api": "openai-responses",
+          "contextWindow": 128000,
+          "maxTokens": 32000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "o1",
+          "label": "o1",
+          "api": "openai-responses",
+          "contextWindow": 200000,
+          "maxTokens": 100000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "o1-pro",
+          "label": "o1-pro",
+          "api": "openai-responses",
+          "contextWindow": 200000,
+          "maxTokens": 100000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "o3",
+          "label": "o3",
+          "api": "openai-responses",
+          "contextWindow": 200000,
+          "maxTokens": 100000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "o3-mini",
+          "label": "o3-mini",
+          "api": "openai-responses",
+          "contextWindow": 200000,
+          "maxTokens": 100000,
+          "reasoning": true,
+          "input": [
+            "text"
+          ]
+        },
+        {
+          "id": "o3-pro",
+          "label": "o3-pro",
+          "api": "openai-responses",
+          "contextWindow": 200000,
+          "maxTokens": 100000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "o4-mini",
+          "label": "o4-mini",
+          "api": "openai-responses",
+          "contextWindow": 200000,
+          "maxTokens": 100000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "openai-codex",
+      "brandId": "openai",
+      "label": "OpenAI ChatGPT/Codex",
+      "authMethods": [
+        {
+          "id": "oauth",
+          "label": "网页授权（ChatGPT/Codex）"
+        }
+      ],
+      "models": [
+        {
+          "id": "gpt-5.3-codex-spark",
+          "label": "GPT-5.3 Codex Spark",
+          "api": "openai-codex-responses",
+          "contextWindow": 128000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text"
+          ]
+        },
+        {
+          "id": "gpt-5.4",
+          "label": "GPT-5.4",
+          "api": "openai-codex-responses",
+          "contextWindow": 272000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5.4-mini",
+          "label": "GPT-5.4 mini",
+          "api": "openai-codex-responses",
+          "contextWindow": 272000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5.5",
+          "label": "GPT-5.5",
+          "api": "openai-codex-responses",
+          "contextWindow": 272000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5.6-luna",
+          "label": "GPT-5.6 Luna",
+          "api": "openai-codex-responses",
+          "contextWindow": 272000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5.6-sol",
+          "label": "GPT-5.6 Sol",
+          "api": "openai-codex-responses",
+          "contextWindow": 272000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-5.6-terra",
+          "label": "GPT-5.6 Terra",
+          "api": "openai-codex-responses",
+          "contextWindow": 272000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "gpt-6-astra",
+          "label": "GPT-6 Astra",
+          "api": "openai-codex-responses",
+          "contextWindow": 272000,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "deepseek",
+      "brandId": "deepseek",
+      "label": "DeepSeek API",
+      "authMethods": [
+        {
+          "id": "api_key",
+          "label": "API 密钥"
+        }
+      ],
+      "models": [
+        {
+          "id": "deepseek-v4-flash",
+          "label": "DeepSeek V4 Flash",
+          "api": "openai-completions",
+          "contextWindow": 1000000,
+          "maxTokens": 384000,
+          "reasoning": true,
+          "input": [
+            "text"
+          ]
+        },
+        {
+          "id": "deepseek-v4-flash-vision-exp",
+          "label": "DeepSeek V4 Flash Vision Exp",
+          "api": "openai-completions",
+          "contextWindow": 1000000,
+          "maxTokens": 384000,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "deepseek-v4-pro",
+          "label": "DeepSeek V4 Pro",
+          "api": "openai-completions",
+          "contextWindow": 1000000,
+          "maxTokens": 384000,
+          "reasoning": true,
+          "input": [
+            "text"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "qwen-token-plan-cn",
+      "brandId": "qwen",
+      "label": "通义国内 Token Plan",
+      "authMethods": [
+        {
+          "id": "api_key",
+          "label": "API 密钥"
+        }
+      ],
+      "models": [
+        {
+          "id": "MiniMax-M2.5",
+          "label": "MiniMax-M2.5",
+          "api": "openai-completions",
+          "contextWindow": 196608,
+          "maxTokens": 32768,
+          "reasoning": true,
+          "input": [
+            "text"
+          ]
+        },
+        {
+          "id": "deepseek-v3.2",
+          "label": "DeepSeek V3.2",
+          "api": "openai-completions",
+          "contextWindow": 131072,
+          "maxTokens": 65536,
+          "reasoning": true,
+          "input": [
+            "text"
+          ]
+        },
+        {
+          "id": "deepseek-v4-flash",
+          "label": "DeepSeek V4 Flash",
+          "api": "openai-completions",
+          "contextWindow": 1000000,
+          "maxTokens": 384000,
+          "reasoning": true,
+          "input": [
+            "text"
+          ]
+        },
+        {
+          "id": "deepseek-v4-flash-0731",
+          "label": "DeepSeek V4 Flash 0731",
+          "api": "openai-completions",
+          "contextWindow": 1000000,
+          "maxTokens": 384000,
+          "reasoning": true,
+          "input": [
+            "text"
+          ]
+        },
+        {
+          "id": "deepseek-v4-pro",
+          "label": "DeepSeek V4 Pro",
+          "api": "openai-completions",
+          "contextWindow": 1000000,
+          "maxTokens": 384000,
+          "reasoning": true,
+          "input": [
+            "text"
+          ]
+        },
+        {
+          "id": "deepseek-v4-pro-0813",
+          "label": "DeepSeek V4 Pro 0813",
+          "api": "openai-completions",
+          "contextWindow": 1000000,
+          "maxTokens": 384000,
+          "reasoning": true,
+          "input": [
+            "text"
+          ]
+        },
+        {
+          "id": "glm-5",
+          "label": "GLM-5",
+          "api": "openai-completions",
+          "contextWindow": 202752,
+          "maxTokens": 16384,
+          "reasoning": true,
+          "input": [
+            "text"
+          ]
+        },
+        {
+          "id": "glm-5.1",
+          "label": "GLM-5.1",
+          "api": "openai-completions",
+          "contextWindow": 202752,
+          "maxTokens": 128000,
+          "reasoning": true,
+          "input": [
+            "text"
+          ]
+        },
+        {
+          "id": "glm-5.2",
+          "label": "GLM-5.2",
+          "api": "openai-completions",
+          "contextWindow": 1000000,
+          "maxTokens": 131072,
+          "reasoning": true,
+          "input": [
+            "text"
+          ]
+        },
+        {
+          "id": "kimi-k2.5",
+          "label": "Kimi K2.5",
+          "api": "openai-completions",
+          "contextWindow": 262144,
+          "maxTokens": 98304,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "kimi-k2.6",
+          "label": "Kimi K2.6",
+          "api": "openai-completions",
+          "contextWindow": 262144,
+          "maxTokens": 262144,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "kimi-k2.7-code",
+          "label": "Kimi K2.7 Code",
+          "api": "openai-completions",
+          "contextWindow": 262144,
+          "maxTokens": 262144,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "qwen3.6-flash",
+          "label": "Qwen3.6 Flash",
+          "api": "openai-completions",
+          "contextWindow": 1000000,
+          "maxTokens": 65536,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "qwen3.6-plus",
+          "label": "Qwen3.6 Plus",
+          "api": "openai-completions",
+          "contextWindow": 1000000,
+          "maxTokens": 65536,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "qwen3.7-max",
+          "label": "Qwen3.7 Max",
+          "api": "openai-completions",
+          "contextWindow": 1000000,
+          "maxTokens": 131072,
+          "reasoning": true,
+          "input": [
+            "text"
+          ]
+        },
+        {
+          "id": "qwen3.7-plus",
+          "label": "Qwen3.7 Plus",
+          "api": "openai-completions",
+          "contextWindow": 1000000,
+          "maxTokens": 65536,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "qwen3.8-flash",
+          "label": "Qwen3.8 Flash",
+          "api": "openai-completions",
+          "contextWindow": 1000000,
+          "maxTokens": 131072,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        {
+          "id": "qwen3.8-max",
+          "label": "Qwen3.8 Max",
+          "api": "openai-completions",
+          "contextWindow": 1000000,
+          "maxTokens": 131072,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ]
+        }
+      ]
+    }
+  ]
+}

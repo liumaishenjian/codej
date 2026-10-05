@@ -3,11 +3,18 @@ import type {ChildProcess, SpawnOptions} from 'node:child_process';
 import {PassThrough} from 'node:stream';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {
-  ProviderLoginBridge,
+  ProviderLoginBridge as RuntimeProviderLoginBridge,
+  type ProviderLoginBridgeOptions,
   type ChildProcessSpec,
   type ProviderLoginRequest,
 } from '../src/stdio-client.js';
 
+// Console兼容契约在明确的非Windows平台运行；Windows真实交接已证伪，必须另测失败关闭。
+class ProviderLoginBridge extends RuntimeProviderLoginBridge {
+  constructor(spec: ChildProcessSpec, options: ProviderLoginBridgeOptions = {}) {
+    super(spec, {platform: 'linux', ...options});
+  }
+}
 const MAIN = 'io.github.liumaishenjian.ccjava.cli.CcJavaCliMain';
 const SPEC: ChildProcessSpec = {
   executable: 'java',
@@ -48,6 +55,55 @@ function spawnFixture(child: FakeChild, failSynchronously = false) {
 afterEach(() => vi.useRealTimers());
 
 describe('ProviderLoginBridge', () => {
+  it.each((['linux', 'win32'] as const).flatMap(platform =>
+    (['stdin', 'env', 'browser'] as const).map(mode => ({platform, mode}))))('$platform/$mode 不交接 Ink 终端，只有秘密使用私有 stdin pipe', async ({platform, mode}) => {
+    const child = new FakeChild(); const spawnProcess = spawnFixture(child); const tty = terminal();
+    const bridge = new ProviderLoginBridge(SPEC, {platform, spawnProcess, terminal: tty});
+    const request: ProviderLoginRequest = mode === 'stdin'
+      ? {...STORE, secretSource: 'stdin', secretBytes: Buffer.from('synthetic-key')}
+      : mode === 'env' ? {...STORE, secretSource: 'env', environmentName: 'TEST_KEY'}
+        : {...STORE, providerId: 'openrouter', authMethod: 'openrouter-browser'};
+    const result = bridge.login(request);
+    expect(bridge.active()).toBe(true);
+    expect(spawnProcess.mock.calls[0]?.[2].stdio).toEqual([mode === 'stdin' ? 'pipe' : 'ignore', 'inherit', 'pipe']);
+    expect(tty.pause).not.toHaveBeenCalled(); expect(tty.setRawMode).not.toHaveBeenCalled();
+    child.emit('exit', 0, null);
+    await expect(result).resolves.toEqual({status: 'succeeded', exitCode: 0});
+    expect(tty.pause).not.toHaveBeenCalled(); expect(tty.resume).not.toHaveBeenCalled();
+    expect(tty.setRawMode).not.toHaveBeenCalled();
+  });
+
+  it('验证失败也清零独立stdin缓冲，不启动helper', async () => {
+    const spawnProcess = spawnFixture(new FakeChild());
+    const bridge = new ProviderLoginBridge(SPEC, {spawnProcess, terminal: terminal()});
+    const bytes = Uint8Array.from([65, 66, 67]);
+    await expect(bridge.login({...STORE, providerId: 'invalid provider', secretSource: 'stdin', secretBytes: bytes})).rejects.toThrow();
+    expect([...bytes]).toEqual([0, 0, 0]); expect(spawnProcess).not.toHaveBeenCalled();
+  });
+  it('Windows共享Console在暂停终端或spawn之前失败关闭', async () => {
+    const spawnProcess = spawnFixture(new FakeChild()); const tty = terminal();
+    const bridge = new ProviderLoginBridge(SPEC, {platform: 'win32', spawnProcess, terminal: tty});
+    await expect(bridge.login(STORE)).rejects.toThrow('Windows共享终端Console交接不安全');
+    expect(spawnProcess).not.toHaveBeenCalled(); expect(tty.pause).not.toHaveBeenCalled();
+  });
+  it('OpenRouter browser 仅追加公开意图并保留受信JVM桥位置，不携带凭证', async () => {
+    const child = new FakeChild();
+    const spawnProcess = spawnFixture(child);
+    const bridge = new ProviderLoginBridge({...SPEC, args: ['-Dcodej.piBridge=fixed/login.mjs', ...SPEC.args]}, {platform: 'win32', spawnProcess, terminal: terminal()});
+    const result = bridge.login({...STORE, providerId: 'openrouter', authMethod: 'openrouter-browser'});
+    child.emit('exit', 0, null);
+    await expect(result).resolves.toEqual({status: 'succeeded', exitCode: 0});
+    expect(spawnProcess.mock.calls[0]?.[1]).toEqual(['-Dcodej.piBridge=fixed/login.mjs', '-cp', 'fixed-classpath', MAIN,
+      'auth', 'login', '--provider', 'openrouter', '--profile', 'default', '--browser', '--tui-preview']);
+  });
+
+  it('browser 拒绝其他Provider及ENV混用，不能静默改为其他认证方法', async () => {
+    const spawnProcess = spawnFixture(new FakeChild());
+    const bridge = new ProviderLoginBridge(SPEC, {spawnProcess, terminal: terminal()});
+    await expect(bridge.login({...STORE, authMethod: 'openrouter-browser'})).rejects.toThrow();
+    await expect(bridge.login({...STORE, providerId: 'openrouter', authMethod: 'openrouter-browser', secretSource: 'env', environmentName: 'TEST_KEY'})).rejects.toThrow();
+    expect(spawnProcess).not.toHaveBeenCalled();
+  });
   it('只从固定 Java 主类派生参数且使用继承终端与 shell=false', async () => {
     const child = new FakeChild();
     const spawnProcess = spawnFixture(child);
@@ -107,13 +163,13 @@ describe('ProviderLoginBridge', () => {
     });
   });
 
-  it('首次配置通过一次性 stdin 写入且立即清零调用方缓冲', async () => {
+  it('Windows一次性stdin仍可用，写入后立即清零调用方缓冲', async () => {
     const child = new FakeChild();
     const chunks: Buffer[] = [];
     child.stdin.on('data', chunk => chunks.push(Buffer.from(chunk)));
     const secretBytes = Buffer.from('sk-protected-a9K2');
     const bridge = new ProviderLoginBridge(SPEC, {
-      spawnProcess: spawnFixture(child), terminal: terminal(),
+      platform: 'win32', spawnProcess: spawnFixture(child), terminal: terminal(),
     });
 
     const result = bridge.login({...STORE, secretSource: 'stdin', secretBytes});
@@ -177,6 +233,22 @@ describe('ProviderLoginBridge', () => {
 
     await expect(result).resolves.toEqual({status: 'timed_out', exitCode: null});
     expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(tty.resume).toHaveBeenCalledTimes(1);
+  });
+
+  it('终止未确认也有界恢复终端，但实际exit前不得启动第二个登录', async () => {
+    vi.useFakeTimers();
+    const child = new FakeChild();
+    const tty = terminal();
+    const bridge = new ProviderLoginBridge(SPEC, {timeoutMs: 1_000, spawnProcess: spawnFixture(child), terminal: tty});
+    const result = bridge.login(STORE);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(result).resolves.toEqual({status: 'timed_out', exitCode: null});
+    expect(tty.resume).toHaveBeenCalledTimes(1);
+    expect(bridge.active()).toBe(true);
+    await expect(bridge.login(STORE)).rejects.toThrow('已有 Provider login');
+    child.emit('exit', 0, null);
+    expect(bridge.active()).toBe(false);
     expect(tty.resume).toHaveBeenCalledTimes(1);
   });
 

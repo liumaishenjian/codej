@@ -1,5 +1,7 @@
 import {CODEJ_BANNER, codejBannerColor} from './brand.js';
 import {useEffect, useReducer, useRef, useState} from 'react';
+import {ExperienceAuth, type AuthClient, type AuthPanel} from './experience/auth.js';
+import {authRows} from './experience/auth-screen.js';
 import {Box, Static, Text, useApp, useInput, usePaste, useWindowSize} from 'ink';
 import stringWidth from 'string-width';
 import {initialTuiState, orderedSessionTasks, reduceTuiState} from './state.js';
@@ -16,6 +18,7 @@ import type {
   TuiState,
 } from './state.js';
 import {AssistantMarkdown} from './assistant-markdown.js';
+import {piAuthorizationText} from './pi-authorization-link.js';
 import {ToolActivityGroup} from './tool-activity.js';
 import {HistoricalToolDetail, ToolDetail} from './tool-detail.js';
 import {
@@ -147,12 +150,12 @@ export interface AgentTuiProps {
   readonly client: AgentClient;
 }
 
-export interface AgentClient {
+export interface AgentClient extends AuthClient {
   onEvent(listener: (event: ProtocolEvent) => void): () => void;
   onFailure(listener: (message: string) => void): () => void;
   onRunHandshake?(listener: (notice: RunHandshakeNotice) => void): () => void;
   onExit(listener: () => void): () => void;
-  initialize(): string;
+  initialize(capabilities?: {authLifecycleV1?: boolean; piProviderV1?: boolean}): string;
   startRun(prompt: string): string;
   startPlan?(task: string): string;
   resumePlanVerification?(): string;
@@ -180,7 +183,7 @@ export interface AgentClient {
   keepTaskWorktree?(taskId: string): string;
   removeTaskWorktree?(taskId: string): string;
   sessionCommand?(commandId: string, intent: 'help' | 'clear' | 'compact' | 'context' | 'doctor' | 'model' | 'permissions' | 'resume' | 'tasks' | 'plan-status' | 'plan' | 'plan-approve' | 'plan-reject' | 'plan-step-begin' | 'plan-step-complete' | 'plan-execute', arguments_: Readonly<Record<string, unknown>>): string;
-  providerControl?(controlId: string, intent: 'providers.configure' | 'providers.add' | 'auth.list' | 'auth.probe' | 'auth.logout' | 'models.list' | 'models.use' | 'models.add' | 'models.remove', arguments_: Readonly<Record<string, unknown>>): string;
+  providerControl?(controlId: string, intent: 'providers.catalog' | 'providers.configure' | 'providers.add' | 'auth.list' | 'auth.probe' | 'auth.logout' | 'auth.activate' | 'auth.logout.prepare' | 'auth.logout.commit' | 'models.list' | 'models.use' | 'models.add' | 'models.remove', arguments_: Readonly<Record<string, unknown>>): string;
   providerLogin?(request: ProviderLoginRequest): Promise<ProviderLoginResult>;
   cancelProviderLogin?(): void;
   suggestFiles?(query: string): string;
@@ -326,7 +329,17 @@ export function AgentTui({client}: AgentTuiProps) {
   const planSessionRef = useRef<PlanSessionState | undefined>(undefined);
   const connectWizardRef = useRef<ModelSetupState | undefined>(undefined);
   const providerLoginActiveRef = useRef(false);
+  const authLifecycleRef = useRef(false);
   const setupCredentialBytesRef = useRef<number[]>([]);
+  const [piPanel, setPiPanel] = useState<AuthPanel | undefined>();
+  const piSecret = useRef({bytes: new Uint8Array(16_384), count: 0, owner: ''});
+  const clearPiSecret = () => {piSecret.current.bytes.fill(0); piSecret.current.count = 0;};
+  const [piAuth] = useState(() => new ExperienceAuth(client, (panel, notice) => {
+    const owner = panel?.phase === 'secret' ? panel.operation + ':' + (panel.promptId ?? 'legacy') : '';
+    if (owner !== piSecret.current.owner) {clearPiSecret(); piSecret.current.owner = owner;}
+    setPiPanel(panel);
+    if (notice !== undefined) dispatch({type: 'slash.notice', message: notice});
+  }, () => replaceConnectWizard(beginModelSetup(nextConnectGeneration.current++, false))));
   const fileSuggestionRef = useRef<{
     readonly requestId: string;
     readonly query: string;
@@ -378,7 +391,7 @@ export function AgentTui({client}: AgentTuiProps) {
     return transition;
   };
   const sendIndependentProviderControl = (
-    intent: 'providers.add' | 'auth.list' | 'auth.probe' | 'auth.logout' | 'models.list' | 'models.use' | 'models.add' | 'models.remove',
+    intent: 'providers.add' | 'auth.list' | 'auth.probe' | 'auth.logout' | 'auth.activate' | 'models.list' | 'models.use' | 'models.add' | 'models.remove',
     arguments_: Readonly<Record<string, unknown>>,
   ) => {
     if (client.providerControl === undefined) return undefined;
@@ -444,6 +457,9 @@ export function AgentTui({client}: AgentTuiProps) {
   useEffect(() => {
     const offEvent = client.onEvent(event => {
       if (event.type === 'initialized') {
+        authLifecycleRef.current = event.payload.authLifecycleV1 === true;
+        clearPiSecret();
+        piAuth.initialize(event.sessionId ?? '', {...event.payload, modelConfigured: event.payload.piProviderV1 === true ? event.payload.modelConfigured : true});
         if (historySessionIdRef.current !== event.sessionId) {
           const switchingSession = historySessionIdRef.current !== undefined;
           historySessionIdRef.current = event.sessionId;
@@ -456,11 +472,12 @@ export function AgentTui({client}: AgentTuiProps) {
           planSessionRef.current = undefined;
           replacePlanReviewPicker(undefined);
         }
-        if (event.payload.modelConfigured === false && connectWizardRef.current === undefined) {
+        if (event.payload.modelConfigured === false && !piAuth.pi && connectWizardRef.current === undefined) {
           setupCredentialBytesRef.current.fill(0); setupCredentialBytesRef.current.length = 0;
           replaceConnectWizard(beginModelSetup(nextConnectGeneration.current++, true));
         }
       }
+      if (piAuth.accept(event)) return;
       if (event.type === 'file.suggestions') {
         const pending = fileSuggestionRef.current;
         const mention = activeFileMention(composerRef.current);
@@ -491,6 +508,7 @@ export function AgentTui({client}: AgentTuiProps) {
             String(payload.intent), String(payload.status), String(payload.code),
             payload.result as Readonly<Record<string, unknown>>,
           )});
+          if (payload.intent === 'auth.activate' && payload.status === 'succeeded') sendIndependentProviderControl('auth.list', {});
           if (payload.intent === 'models.add' && payload.status === 'succeeded') {
             sendIndependentProviderControl('models.list', {});
           }
@@ -879,6 +897,7 @@ export function AgentTui({client}: AgentTuiProps) {
       dispatch({type: 'run.submission.timed_out', requestId: notice.requestId});
     }) ?? (() => {});
     const offFailure = client.onFailure(message => {
+      clearPiSecret(); if (piAuth.panel) piAuth.cancel(true);
       cancelPending.current = false;
       const pendingComposers = [...pendingSubmissionsRef.current.values()]
         .filter(pending => pending.status === 'awaiting_acceptance')
@@ -905,6 +924,7 @@ export function AgentTui({client}: AgentTuiProps) {
       client.terminate();
     });
     const offExit = client.onExit(() => {
+      clearPiSecret(); piAuth.invalidate();
       cancelPending.current = false;
       const pendingComposers = [...pendingSubmissionsRef.current.values()]
         .filter(pending => pending.status === 'awaiting_acceptance')
@@ -929,8 +949,9 @@ export function AgentTui({client}: AgentTuiProps) {
       dispatch({type: 'closed'});
       exitRef.current();
     });
-    client.initialize();
+    client.initialize({authLifecycleV1: true, ...(client.piLogin ? {piProviderV1: true} : {})});
     return () => {
+      clearPiSecret(); piAuth.invalidate();
       offEvent();
       offRunHandshake();
       offFailure();
@@ -985,6 +1006,13 @@ export function AgentTui({client}: AgentTuiProps) {
   }, [composer.text, composer.cursorGrapheme, client, state.phase]);
 
   usePaste(pasted => {
+    if (piAuth.panel) {
+      if (piAuth.panel.phase === 'secret' && columns >= 40 && rows >= 24 && /^[\x20-\x7e]+$/.test(pasted) && piSecret.current.count + pasted.length <= 16_384) {
+        for (let i = 0; i < pasted.length; i++) piSecret.current.bytes[piSecret.current.count++] = pasted.charCodeAt(i);
+        piAuth.secretCount(piSecret.current.count);
+      } else if (piAuth.panel.phase === 'env') piAuth.input(pasted);
+      return;
+    }
     const setup = connectWizardRef.current;
     if (planFeedbackInput !== undefined) {
       replacePlanFeedbackInput({
@@ -1003,6 +1031,31 @@ export function AgentTui({client}: AgentTuiProps) {
   });
 
   useInput((text, key) => {
+    if (piAuth.panel) {
+      const panel = piAuth.panel;
+      if (key.eventType === 'release') return;
+      if (key.ctrl && text.toLowerCase() === 'c') {clearPiSecret(); piAuth.cancel(); dispatch({type: 'closing'}); void client.shutdown(); return;}
+      if (key.escape) {clearPiSecret(); piAuth.cancel(); return;}
+      if (key.ctrl || key.meta || columns < 40 || rows < 24) return;
+      if (panel.phase === 'secret') {
+        if (key.return) {
+          if ((text === '' || text === '\r' || text === '\n') && piSecret.current.count) {
+            const bytes = piSecret.current.bytes.slice(0, piSecret.current.count); clearPiSecret(); piAuth.submitSecret(bytes);
+          }
+        } else if (key.backspace || key.delete) {if (piSecret.current.count) piSecret.current.bytes[--piSecret.current.count] = 0;}
+        else if (!key.tab && /^[\x20-\x7e]+$/.test(text) && piSecret.current.count + text.length <= 16_384) {
+          for (let i = 0; i < text.length; i++) piSecret.current.bytes[piSecret.current.count++] = text.charCodeAt(i);
+        }
+        piAuth.secretCount(piSecret.current.count); return;
+      }
+      if (panel.phase === 'login' || panel.phase === 'wait') return;
+      if (key.upArrow) piAuth.move(-1);
+      else if (key.downArrow || key.tab) piAuth.move(1);
+      else if (key.return) piAuth.enter();
+      else if (key.backspace || key.delete) piAuth.input('', true);
+      else if (text) piAuth.input(text);
+      return;
+    }
     if (key.ctrl && text.toLowerCase() === 'c') {
       if (providerLoginActive) {
         client.cancelProviderLogin?.();
@@ -1239,6 +1292,8 @@ export function AgentTui({client}: AgentTuiProps) {
           const latest = connectWizardRef.current;
           if (latest !== undefined && latest.generation === currentWizard.generation) {
             replaceConnectWizard(completeModelSetupLogin(latest, result.status));
+            if (result.status === 'succeeded' && authLifecycleRef.current)
+              sendIndependentProviderControl('auth.activate', {providerId: currentWizard.providerId, profileId: 'default'});
           }
         }).catch(() => {
           secretBytes.fill(0);
@@ -1389,6 +1444,10 @@ export function AgentTui({client}: AgentTuiProps) {
         dispatch({type: 'slash.notice', message: '上一条输入仍在提交中，当前草稿已保留'});
         return;
       }
+      if (piAuth.pi && ['/login', '/logout'].includes(current.text.trim())) {
+        piAuth.open(current.text.trim()); replaceComposer(createComposerState(4)); return;
+      }
+      if (piAuth.pi && piAuth.required && current.text.trim() && !current.text.trim().startsWith('/')) {piAuth.open('/login'); return;}
       const submission = applyComposer({type: 'Submit'});
       if (submission.kind !== 'submit-ready') return;
       const prompt = submission.expandedText;
@@ -1440,12 +1499,15 @@ export function AgentTui({client}: AgentTuiProps) {
             };
             setProviderLoginActive(true);
             dispatch({type: 'slash.notice', message: request.secretSource === 'store'
-              ? '已暂停 TUI 输入；请在 Java 提示中输入 API key（输入将被遮蔽，Ctrl+C 取消）'
+              ? (process.platform === 'win32'
+                ? 'Windows共享Console已禁用；请使用不带参数的 /login 遮蔽面板、ENV或独立CLI'
+                : '已暂停 TUI 输入；请在 Java 提示中输入 API key（输入将被遮蔽，Ctrl+C 取消）')
               : `正在保存 ENV 引用 ${request.environmentName ?? ''}；TUI 不读取环境值`});
             void client.providerLogin(request).then(result => {
               if (result.status === 'succeeded') {
                 dispatch({type: 'slash.notice', message: 'Provider profile 已保存，正在刷新 credential 列表'});
-                sendIndependentProviderControl('auth.list', {});
+                if (authLifecycleRef.current) sendIndependentProviderControl('auth.activate', {providerId: request.providerId, profileId: request.profileId});
+                else sendIndependentProviderControl('auth.list', {});
               } else {
                 const label = result.status === 'cancelled' ? '已取消'
                   : result.status === 'timed_out' ? '已超时并终止子进程'
@@ -1453,7 +1515,7 @@ export function AgentTui({client}: AgentTuiProps) {
                 dispatch({type: 'slash.notice', message: `Provider 登录${label}；未通过 TUI 传输 secret`});
               }
             }).catch(() => {
-              dispatch({type: 'slash.notice', message: 'Provider 登录桥启动失败；未通过 TUI 传输 secret'});
+              dispatch({type: 'slash.notice', message: 'Provider 登录桥启动失败；可使用不带参数的 /login 遮蔽面板、ENV或独立CLI'});
             }).finally(() => setProviderLoginActive(false));
           }
         } else if (client.providerControl === undefined) {
@@ -1603,6 +1665,7 @@ export function AgentTui({client}: AgentTuiProps) {
 
   return <AgentView
     state={state}
+    {...(piPanel ? {piPanel, authorizationUrl: piAuth.authorizationUrl} : {})}
     composer={composer}
     columns={columns}
     rows={rows}
@@ -1618,6 +1681,8 @@ export function AgentTui({client}: AgentTuiProps) {
 }
 
 export interface AgentViewProps {
+  readonly piPanel?: AuthPanel;
+  readonly authorizationUrl?: string;
   readonly state: ReturnType<typeof reduceTuiState>;
   readonly composer?: ComposerState;
   /** 兼容纯展示测试；生产路径使用 composer。 */
@@ -1659,12 +1724,12 @@ export function maskedCredentialPreview(value: readonly number[]): string {
 /**
  * 纯展示组件，使宽字符、窄窗口和各 Run 终态无需真实终端即可验证。
  */
-export function AgentView({state, composer, input = '', columns, rows, composerLayout, connectWizard, permissionPicker, approvalPicker, planReviewPicker, planFeedbackInput, questionPicker, activityTick}: AgentViewProps) {
+export function AgentView({piPanel, authorizationUrl, state, composer, input = '', columns, rows, composerLayout, connectWizard, permissionPicker, approvalPicker, planReviewPicker, planFeedbackInput, questionPicker, activityTick}: AgentViewProps) {
   const width = Math.max(20, columns);
   const viewportRows = rows === undefined
     ? undefined
     : Math.max(5, Math.floor(rows));
-  const overlayBlocksComposer = connectWizard !== undefined || permissionPicker !== undefined
+  const overlayBlocksComposer = piPanel !== undefined || connectWizard !== undefined || permissionPicker !== undefined
     || state.taskPanelFocused === true;
   if (connectWizard !== undefined && connectWizard.required) {
     return <Box flexDirection="column">
@@ -1743,6 +1808,9 @@ export function AgentView({state, composer, input = '', columns, rows, composerL
           <Text color="red">连接已关闭，Ctrl+C退出</Text>
         </Box>
       ) : null}
+      {piPanel === undefined ? null : <Box flexDirection="column">
+        {authRows(piPanel, Math.max(1, width), rows ?? 24, authorizationUrl).map((row, i) => <Text key={i}>{row.spans.map(s => s.authorizationUrl ? piAuthorizationText(s.authorizationUrl) : s.text).join('')}</Text>)}
+      </Box>}
       {connectWizard === undefined ? null : <ConnectWizardPanel state={connectWizard} />}
       {permissionPicker === undefined ? null : <PermissionPickerPanel state={permissionPicker} />}
       {state.detachedPlanReview === undefined ? null : (

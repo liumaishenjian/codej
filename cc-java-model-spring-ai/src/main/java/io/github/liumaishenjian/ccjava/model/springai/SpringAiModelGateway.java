@@ -53,7 +53,8 @@ import static io.github.liumaishenjian.ccjava.core.ModelGatewayException.Failure
  *
  * @since 0.1.0
  */
-public final class SpringAiModelGateway implements StreamingModelGateway {
+public final class SpringAiModelGateway implements StreamingModelGateway,
+        io.github.liumaishenjian.ccjava.core.ContextSummarizer {
 
     private final ChatModel chatModel;
     private final String model;
@@ -85,6 +86,13 @@ public final class SpringAiModelGateway implements StreamingModelGateway {
         this.model = requireText(model, "model");
         this.promptMapper = new SpringAiPromptMapper();
         this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics 不能为空");
+    }
+
+    /** 摘要复用当前路由的同一个 ChatModel 和模型身份，不重新解析凭证或启动 Agent Loop。 */
+    @Override
+    public Optional<io.github.liumaishenjian.ccjava.domain.SummaryCandidate> summarize(
+            io.github.liumaishenjian.ccjava.domain.SummaryRequest request, CancellationToken cancellation) {
+        return new SpringAiContextSummarizer(chatModel, model).summarize(request, cancellation);
     }
 
     @Override

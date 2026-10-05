@@ -49,6 +49,7 @@ public record SessionCommandEvent(SessionCommandKind kind, CommandId commandId, 
      */
     public record TaskListPayload(long boardRevision, int totalTasks, boolean truncated,
                                   List<TaskView> tasks) implements SessionCommandPayload {
+        /** 冻结最多 50 项的展示列表，并核对非负计数与总量关系。 */
         public TaskListPayload {
             if (boardRevision < 0 || totalTasks < 0) throw new IllegalArgumentException("Task 计数无效");
             tasks = List.copyOf(Objects.requireNonNull(tasks, "tasks 不能为空"));
@@ -72,6 +73,7 @@ public record SessionCommandEvent(SessionCommandKind kind, CommandId commandId, 
     public record TaskView(String taskId, long revision, String status, String subject,
                            boolean blocked, List<String> blockerIds, String owner,
                            String activeForm, boolean recoveryRequired) {
+        /** 校验安全身份、有界摘要与最多 32 个阻塞项；可选 owner 和动作短语允许 null。 */
         public TaskView {
             taskId = boundedSafeId(taskId);
             if (revision < 1) throw new IllegalArgumentException("Task revision 无效");
@@ -100,6 +102,7 @@ public record SessionCommandEvent(SessionCommandKind kind, CommandId commandId, 
     public record PlanPayload(String planId, String status, String approvalGate, Integer nextStep,
                               Integer activeStep, String objective, List<PlanStepView> steps,
                               String workspaceDigest) implements SessionCommandPayload {
+        /** 冻结最多 128 步的安全投影，并校验状态、身份、目标及摘要边界。 */
         public PlanPayload {
             planId = boundedSafeId(planId);
             status = boundedEnum(status, "status");
@@ -120,6 +123,7 @@ public record SessionCommandEvent(SessionCommandKind kind, CommandId commandId, 
      * @param expectedDigest 预期工作区摘要
      */
     public record PlanStepView(int ordinal, String title, String detail, String expectedDigest) {
+        /** 校验正数序号与展示文本边界，不携带可执行工具参数。 */
         public PlanStepView {
             if (ordinal < 1) throw new IllegalArgumentException("ordinal 非法");
             title = boundedText(title, "title", 200);

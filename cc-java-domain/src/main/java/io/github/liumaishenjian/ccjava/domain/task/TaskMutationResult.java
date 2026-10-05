@@ -24,6 +24,9 @@ public record TaskMutationResult(TaskBoardSnapshot snapshot, Optional<TaskItemVi
         if (diagnostic.isPresent() && task.isPresent()) throw new IllegalArgumentException("拒绝结果不能携带 Task");
     }
 
-    /** mutation 是否已经成功提交。 */
+    /**
+     * 按结构化诊断分支判断 mutation 是否已经成功提交。
+     * @return 无拒绝诊断时为 true；删除成功也可没有 task 投影
+     */
     public boolean succeeded() { return diagnostic.isEmpty(); }
 }

@@ -25,7 +25,13 @@ public record TaskBoardSeed(TaskBoardId parentBoardId, TaskBoardSnapshot snapsho
         if (parentBoardId.equals(snapshot.boardId())) throw new IllegalArgumentException("Fork Board 必须使用新 identity");
     }
 
-    /** 从 source 快照构造新 owner 的安全 Fork seed。 */
+    /**
+     * 从 source 快照构造新 owner 的安全 Fork seed。
+     * @param source 来源 Board 的完整不可变快照
+     * @param targetBoardId 与来源不同的新 Board 身份
+     * @param targetOwner 新 Session 所有者
+     * @return 保留任务身份与依赖、清除活动领取的新 lineage seed
+     */
     public static TaskBoardSeed fork(TaskBoardSnapshot source, TaskBoardId targetBoardId, SessionId targetOwner) {
         Map<TaskId, TaskItemView> tasks = new LinkedHashMap<>();
         source.tasks().forEach((id, view) -> {

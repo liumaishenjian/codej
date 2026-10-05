@@ -69,7 +69,16 @@ public record SessionRecoverySnapshot(
         }
     }
 
-    /** 兼容现有恢复调用，默认没有持久 Plan。 */
+    /**
+     * 兼容现有恢复调用，默认没有持久 Plan。
+     * @param sessionId 被恢复的 Session 身份
+     * @param spec Session 创建配置
+     * @param messages 已验证的完整规范消息链
+     * @param runIds 历史 Run 身份
+     * @param parentSessionId 可选 Fork 来源
+     * @param issues 必须由恢复 Gate 处理的安全问题
+     * @param skillRecords 已验证的 Skill 恢复记录
+     */
     public SessionRecoverySnapshot(SessionId sessionId, SessionSpec spec, List<AgentMessage> messages,
             List<RunId> runIds, Optional<SessionId> parentSessionId, List<SessionRecoveryIssue> issues,
             List<SkillRecoveryRecord> skillRecords) {
@@ -77,7 +86,17 @@ public record SessionRecoverySnapshot(
                 Optional.empty(), Optional.empty());
     }
 
-    /** 兼容已有持久 PlanDocument、但尚无 PlanArtifact 的恢复调用。 */
+    /**
+     * 兼容已有持久 PlanDocument、但尚无 PlanArtifact 的恢复调用。
+     * @param sessionId 被恢复的 Session 身份
+     * @param spec Session 创建配置
+     * @param messages 已验证的完整规范消息链
+     * @param runIds 历史 Run 身份
+     * @param parentSessionId 可选 Fork 来源
+     * @param issues 必须由恢复 Gate 处理的安全问题
+     * @param skillRecords 已验证的 Skill 恢复记录
+     * @param plan 可选的旧结构化计划投影，不自动重放执行
+     */
     public SessionRecoverySnapshot(SessionId sessionId, SessionSpec spec, List<AgentMessage> messages,
             List<RunId> runIds, Optional<SessionId> parentSessionId, List<SessionRecoveryIssue> issues,
             List<SkillRecoveryRecord> skillRecords, Optional<PlanRecoveryProjection> plan) {

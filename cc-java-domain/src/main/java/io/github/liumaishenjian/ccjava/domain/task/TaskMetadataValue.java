@@ -12,7 +12,10 @@ import java.nio.charset.StandardCharsets;
 public sealed interface TaskMetadataValue permits TaskMetadataValue.BooleanValue,
         TaskMetadataValue.IntegerValue, TaskMetadataValue.StringValue {
 
-    /** 返回独立 canonical JSON 编码所需的 UTF-8 字节数。 */
+    /**
+     * 返回独立 canonical JSON 编码所需的 UTF-8 字节数。
+     * @return 包含必要引号与转义的单个标量字节预算
+     */
     int canonicalJsonBytes();
 
     /**

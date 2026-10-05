@@ -101,11 +101,6 @@ public sealed interface SessionCommandIntent permits SessionCommandIntent.Help, 
         @Override public SessionCommandKind kind() { return SessionCommandKind.PERMISSIONS; }
     }
 
-    /**
-     * 请求恢复指定 Session。
-     *
-     * @param sessionId 仅供后续 S06 recovery-gated adapter 消费的会话标识
-     */
     /** 查询当前项目计划安全投影。 */
     record PlanStatus() implements SessionCommandIntent {
         @Override public SessionCommandKind kind() { return SessionCommandKind.PLAN_STATUS; }
@@ -119,6 +114,7 @@ public sealed interface SessionCommandIntent permits SessionCommandIntent.Help, 
      * @param workspaceDigest 创建时工作区摘要
      */
     record Plan(String objective, List<PlanStepInput> steps, String workspaceDigest) implements SessionCommandIntent {
+        /** 校验有界目标、摘要与步骤数量，并冻结步骤输入。 */
         public Plan {
             if (invalidText(objective) || steps == null || steps.isEmpty() || steps.size() > 128
                     || invalidText(workspaceDigest)) throw new IllegalArgumentException("plan 参数非法");
@@ -134,12 +130,16 @@ public sealed interface SessionCommandIntent permits SessionCommandIntent.Help, 
      * @param workspaceDigest {@code plan.proposed} 随同该计划发布的服务端工作区摘要
      */
     record PlanApprove(String planId, String workspaceDigest) implements SessionCommandIntent {
+        /** 校验审批绑定文本；空计划身份仅保留旧协议兼容。 */
         public PlanApprove {
             if ((planId == null || (!planId.isEmpty() && invalidText(planId))) || invalidText(workspaceDigest)) {
                 throw new IllegalArgumentException("plan approval binding 非法");
             }
         }
-        /** 旧内部协议兼容入口；新 Surface 必须同时绑定 planId。 */
+        /**
+         * 旧内部协议兼容入口；新 Surface 必须同时绑定 planId。
+         * @param workspaceDigest 服务端发布的工作区摘要
+         */
         public PlanApprove(String workspaceDigest) { this("", workspaceDigest); }
         @Override public SessionCommandKind kind() { return SessionCommandKind.PLAN_APPROVE; }
     }
@@ -150,6 +150,7 @@ public sealed interface SessionCommandIntent permits SessionCommandIntent.Help, 
      * @param planId Surface 实际展示的 Plan 身份；空串仅供旧内部协议兼容
      */
     record PlanReject(String planId) implements SessionCommandIntent {
+        /** 校验待拒绝的计划身份，允许旧协议使用空串。 */
         public PlanReject {
             if (planId == null || (!planId.isEmpty() && invalidText(planId))) {
                 throw new IllegalArgumentException("planId 非法");
@@ -166,6 +167,7 @@ public sealed interface SessionCommandIntent permits SessionCommandIntent.Help, 
      * @param workspaceDigest 开始步骤前的工作区摘要
      */
     record PlanStepBegin(String workspaceDigest) implements SessionCommandIntent {
+        /** 校验执行前摘要的非空与有界文本约束。 */
         public PlanStepBegin { if (invalidText(workspaceDigest)) throw new IllegalArgumentException("workspaceDigest 非法"); }
         @Override public SessionCommandKind kind() { return SessionCommandKind.PLAN_STEP_BEGIN; }
     }
@@ -176,6 +178,7 @@ public sealed interface SessionCommandIntent permits SessionCommandIntent.Help, 
      * @param workspaceDigest 完成步骤后的工作区摘要
      */
     record PlanStepComplete(String workspaceDigest) implements SessionCommandIntent {
+        /** 要求显式提供执行后摘要，不允许无摘要完成。 */
         public PlanStepComplete {
             if (invalidText(workspaceDigest)) throw new IllegalArgumentException("workspaceDigest 非法");
         }
@@ -190,6 +193,7 @@ public sealed interface SessionCommandIntent permits SessionCommandIntent.Help, 
      * @param maxSteps 防止无限执行的显式上限
      */
     record PlanExecute(String planId, String workspaceDigest, int maxSteps) implements SessionCommandIntent {
+        /** 校验计划和摘要绑定，并将本次步骤预算限制在 1 到 128。 */
         public PlanExecute {
             if (invalidText(planId) || invalidText(workspaceDigest)
                     || maxSteps < 1 || maxSteps > 128) throw new IllegalArgumentException("plan execute binding 非法");
@@ -206,12 +210,17 @@ public sealed interface SessionCommandIntent permits SessionCommandIntent.Help, 
      * @param expectedDigest 预期工作区摘要
      */
     record PlanStepInput(int ordinal, String title, String detail, String expectedDigest) {
+        /** 校验正数序号与有界文本，不把详情当成工具参数。 */
         public PlanStepInput {
             if (ordinal < 1 || invalidText(title) || invalidText(detail) || invalidText(expectedDigest))
                 throw new IllegalArgumentException("plan step 参数非法");
         }
     }
 
+    /**
+     * 请求恢复指定 Session；实际恢复仍由适配器实施恢复 Gate。
+     * @param sessionId 待恢复的 Session 身份
+     */
     record Resume(SessionId sessionId) implements SessionCommandIntent {
         /**
          * 验证恢复目标标识。

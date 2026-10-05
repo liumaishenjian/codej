@@ -29,9 +29,15 @@ public record TaskMetadataPatch(Map<String, TaskMetadataValue> upserts, Set<Stri
         }
     }
 
-    /** 返回空 patch。 */
+    /**
+     * 创建不声明任何 metadata 操作的增量。
+     * @return upsert 与 removal 集合均为空的不可变 patch
+     */
     public static TaskMetadataPatch empty() { return new TaskMetadataPatch(Map.of(), Set.of()); }
 
-    /** patch 是否不产生 metadata 变化。 */
+    /**
+     * 判断 patch 是否未声明操作，不比较应用前后的元数据值。
+     * @return upsert 与 removal 均为空时为 true
+     */
     public boolean isEmpty() { return upserts.isEmpty() && removals.isEmpty(); }
 }

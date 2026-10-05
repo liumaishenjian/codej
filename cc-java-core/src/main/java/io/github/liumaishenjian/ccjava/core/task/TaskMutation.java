@@ -18,13 +18,17 @@ public sealed interface TaskMutation permits TaskMutation.Create, TaskMutation.E
         TaskMutation.Claim, TaskMutation.ResumeClaim, TaskMutation.Release, TaskMutation.Assign,
         TaskMutation.Reassign, TaskMutation.Dependency, TaskMutation.Delete {
 
-    /** 同 actor 域内的幂等调用身份。 */
+    /**
+     * 获取同 actor 域内的幂等调用身份。
+     * @return 与 actor、Session、Run 共同限定重试范围的调用 ID
+     */
     TaskCallId callId();
 
     /**
      * 返回 mutation 的目标 Task；CREATE 尚未分配 ID，因此为空。
      *
      * <p>封闭 switch 使新增 mutation 必须同时决定诊断 identity，避免资源拒绝静默丢失 task_id。</p>
+     * @return 已有目标的身份；CREATE 为 empty
      */
     default Optional<TaskId> targetId() {
         return switch (this) {

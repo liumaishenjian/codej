@@ -1,3 +1,4 @@
+import {isAuthCommand} from './auth.js';
 import {useEffect, useRef, useState, useSyncExternalStore} from 'react';
 import {useApp, useInput, useWindowSize} from 'ink';
 import {edit, emptyDraft, glyphs, moveDraftVertical, moveDraftWord, type Draft} from './editor.js';
@@ -16,6 +17,18 @@ export function ExperienceRuntimeApp({client, workspace}: {client: RuntimeClient
   const [now, setNow] = useState(Date.now);
   const exiting = useRef(false);
   const restoredInput = useRef<number | undefined>(undefined);
+  // 秘密只在短期 ref 中，固定容量避免每次按键产生不可清零的副本。
+  const secret = useRef({bytes: new Uint8Array(16_384), count: 0, owner: ''});
+  const clearSecret = () => {secret.current.bytes.fill(0); secret.current.count = 0;};
+  useEffect(() => {
+    const sync = () => {
+      const s = runtime.state, p = runtime.auth.panel;
+      const owner = s.connection === 'ready' && p?.phase === 'secret' ? s.session + ':' + p.operation + ':' + (p.promptId ?? 'legacy') : '';
+      if (owner !== secret.current.owner) {clearSecret(); secret.current.owner = owner;}
+    };
+    sync(); const unsubscribe = runtime.subscribe(sync);
+    return () => {unsubscribe(); clearSecret(); secret.current.owner = '';};
+  }, [runtime]);
   const {columns, rows} = useWindowSize();
   const {exit} = useApp();
   useEffect(() => {runtime.connect(); return () => runtime.dispose();}, [runtime]);
@@ -40,7 +53,7 @@ export function ExperienceRuntimeApp({client, workspace}: {client: RuntimeClient
   }, [pendingKey]);
   // 普通界面历史由Static保管；键盘只需测量活动面板，展开时才测量完整记录。
   const measuredState = ui.expanded ? readingState(state, ui) : {...state, blocks: noHistory};
-  const currentFrame = runtimeFrame(measuredState, ui, columns, runtimeViewportHeight(rows), now);
+  const currentFrame = runtimeFrame(measuredState, ui, columns, runtimeViewportHeight(rows), now, false, runtime.auth.authorizationUrl);
   const previousTotal = useRef(currentFrame.total);
   const viewPositions = useRef(new Map<boolean, {scroll: number; total: number}>());
   useEffect(() => {
@@ -49,9 +62,45 @@ export function ExperienceRuntimeApp({client, workspace}: {client: RuntimeClient
   }, [currentFrame.total]);
   useInput((input, key) => {
     if (key.eventType === 'release' || exiting.current) return;
+    // 使用当前控制器而非上一帧闭包；同一输入批次重复 Enter 不会启动第二次 helper。
+    const auth = runtime.auth.panel;
     if (key.ctrl && input === 'c') {
-      exiting.current = true; runtime.cancel();
+      clearSecret(); exiting.current = true; runtime.cancel();
       void client.shutdown().catch(() => {}).finally(() => exit()); return;
+    }
+    if (auth?.phase === 'secret') {
+      if (key.escape) {clearSecret(); runtime.cancel(); return;}
+      if (runtime.state.connection !== 'ready') {clearSecret(); return;}
+      if (columns < 40 || rows < 24) return;
+      if (key.ctrl || key.meta || key.tab) return;
+      if (key.return) {
+        // 多行粘贴只能拒绝，绝不将其中的换行解释成提交。
+        if (input !== '\r' && input !== '\n' && input !== '') return;
+        if (!secret.current.count) return;
+        const bytes = secret.current.bytes.slice(0, secret.current.count);
+        clearSecret(); runtime.auth.submitSecret(bytes); return;
+      }
+      if (key.backspace || key.delete) {
+        if (secret.current.count) secret.current.bytes[--secret.current.count] = 0;
+      } else if (input && /^[\x20-\x7e]+$/.test(input) && secret.current.count + input.length <= 16_384) {
+        for (let i = 0; i < input.length; i++) secret.current.bytes[secret.current.count++] = input.charCodeAt(i);
+      }
+      runtime.auth.secretCount(secret.current.count); return;
+    }
+    if (auth?.phase === 'login') {
+      if (key.escape) {clearSecret(); runtime.cancel();}
+      return;
+    }
+    if (state.auth) {
+      if (key.escape) runtime.cancel();
+      else if (columns >= 40 && rows >= 24 && state.connection === 'ready') {
+        if (key.upArrow) runtime.auth.move(-1);
+        else if (key.downArrow || key.tab) runtime.auth.move(1);
+        else if (key.return && !key.meta && !key.ctrl) runtime.auth.enter();
+        else if (key.backspace || key.delete) runtime.auth.input('', true);
+        else if (!key.ctrl && !key.meta && input) runtime.auth.input(input);
+      }
+      return;
     }
     if (key.escape) {
       if (ui.editing && columns >= 40 && rows >= 24) setUi(previous => ({...previous, editing: false}));
@@ -180,7 +229,8 @@ export function ExperienceRuntimeApp({client, workspace}: {client: RuntimeClient
       if (matches.length && (key.tab || key.upArrow || key.downArrow)) {setUi(previous => ({...previous, focus: (previous.focus + (key.upArrow || key.shift ? matches.length - 1 : 1)) % matches.length})); return;}
       if (key.return && !key.meta && !key.ctrl) {
         const prompt = matches.length && !runtimeCommands.includes(ui.draft.text) ? matches[ui.focus % matches.length]! : ui.draft.text;
-        if (runtime.submit(prompt)) setUi(previous => ({...previous, draft: emptyDraft(), focus: 0, recall: -1, scroll: 0, readLimit: undefined, history: [...previous.history, prompt].slice(-30)}));
+        if (runtime.submit(prompt)) setUi(previous => ({...previous, draft: emptyDraft(), focus: 0, recall: -1, scroll: 0, readLimit: undefined,
+          history: isAuthCommand(prompt) ? previous.history : [...previous.history, prompt].slice(-30)}));
         return;
       }
       if (key.upArrow || key.downArrow) {
@@ -212,5 +262,6 @@ export function ExperienceRuntimeApp({client, workspace}: {client: RuntimeClient
       else updateDraft(updated);
     }
   });
-  return <NativeHistoryScreen state={state} ui={ui} columns={columns} rows={rows} now={now}/>;
+  return <NativeHistoryScreen state={state} ui={ui} columns={columns} rows={rows} now={now}
+    authorizationUrl={runtime.auth.authorizationUrl}/>;
 }

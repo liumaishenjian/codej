@@ -36,7 +36,11 @@ public final class WebSearchException extends Exception {
         this(failure, retryAfterSeconds, Optional.empty());
     }
 
-    /** 创建带 403 安全原因的失败。 */
+    /**
+     * 创建带 403 安全原因且不含远端正文的失败。
+     * @param failure 必须为 FORBIDDEN 的封闭分类
+     * @param forbiddenReason 仅从受信状态或头信号形成的非空原因
+     */
     public WebSearchException(WebSearchFailure failure, WebForbiddenReason forbiddenReason) {
         this(failure, OptionalLong.empty(), Optional.of(forbiddenReason));
     }
@@ -66,6 +70,9 @@ public final class WebSearchException extends Exception {
      */
     public OptionalLong retryAfterSeconds() { return retryAfterSeconds; }
 
-    /** 返回 403 可观察的安全原因。 */
+    /**
+     * 返回 403 可观察的安全原因。
+     * @return 已记录的封闭原因；未提供或非 403 时为空
+     */
     public Optional<WebForbiddenReason> forbiddenReason() { return forbiddenReason; }
 }

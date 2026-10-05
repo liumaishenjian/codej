@@ -59,7 +59,10 @@ public interface FinalAssistantHandler {
         return true;
     }
 
-    /** 返回保持历史 Agent Runtime 语义的兼容处理器。 */
+    /**
+     * 返回保持历史 Agent Runtime 语义的兼容处理器。
+     * @return 无附加终态验证、接受候选最终响应的处理器
+     */
     static FinalAssistantHandler acceptAll() {
         return (ignoredSession, ignoredRun, ignoredAssistant) -> true;
     }

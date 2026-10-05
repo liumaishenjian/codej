@@ -70,13 +70,28 @@ public final class TaskListService {
         restore(Objects.requireNonNull(recoveredEvents, "recoveredEvents 不能为空"));
     }
 
-    /** 从 Fork seed 创建无历史幂等索引的新 Board。 */
+    /**
+     * 从 Fork seed 创建无历史幂等索引的新 Board。
+     * @param seed 已清除活动领取的新 Board 初始快照
+     * @param clock 后续 mutation 的时间源
+     * @param runState 当前 claim Run 的终止查询端口
+     * @param journal durable-before-visible 的追加端口
+     * @return 安装 seed、未重放任何历史事件的新服务
+     */
     public static TaskListService fromSeed(TaskBoardSeed seed, Clock clock, TaskRunState runState,
             TaskMutationJournal journal) {
         return fromSeed(seed, clock, runState, journal, List.of());
     }
 
-    /** 从 Fork seed 与其后 canonical 成功事件恢复 Board。 */
+    /**
+     * 从 Fork seed 与其后 canonical 成功事件恢复 Board。
+     * @param seed 新 Board 的 lineage 初始快照
+     * @param clock 后续 mutation 的时间源
+     * @param runState 当前 claim Run 的终止查询端口
+     * @param journal durable-before-visible 的追加端口
+     * @param events seed 之后已验证的规范成功事件，不执行工具副作用
+     * @return 安装 seed 并恢复事件状态的服务
+     */
     public static TaskListService fromSeed(TaskBoardSeed seed, Clock clock, TaskRunState runState,
             TaskMutationJournal journal, List<TaskMutationEvent> events) {
         TaskBoardSnapshot snapshot = Objects.requireNonNull(seed, "seed 不能为空").snapshot();
@@ -87,7 +102,10 @@ public final class TaskListService {
         return service;
     }
 
-    /** 返回当前不可变 Board 投影，供可信装配、持久化和测试使用。 */
+    /**
+     * 返回当前不可变 Board 投影，供可信装配、持久化和测试使用。
+     * @return 包含当前任务、墓碑和派生依赖状态的完整快照，不按 actor scope 过滤
+     */
     public synchronized TaskBoardSnapshot snapshot() { return snapshotView(); }
 
     /**

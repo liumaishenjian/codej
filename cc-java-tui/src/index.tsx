@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import process from 'node:process';
 import {render} from 'ink';
+import {attachPiAuth} from './pi-auth-client.js';
+import {piAuthEnvironment} from './pi-auth-environment.js';
 import {AgentTui} from './app.js';
 import {ExperienceRuntimeApp} from './experience/runtime-app.js';
 import {parseArguments} from './entry-options.js';
@@ -15,7 +17,8 @@ delete process.env.CC_JAVA_SPIKE_COMMAND_BASE64;
 delete process.env.CC_JAVA_SPIKE_PROMPT_BASE64;
 const nonInteractive = options.prompt !== undefined || !process.stdin.isTTY || !process.stdout.isTTY;
 const runTimeoutMs = nonInteractive ? parseJavaRunTimeoutMillis(options.child.args) : undefined;
-const child = new StdioClient(options.child);
+const child = attachPiAuth(new StdioClient(options.child), {...options.child,
+  env: piAuthEnvironment(options.child.env ?? process.env)});
 const removeExitGuard = installProcessExitGuard(child);
 
 try {

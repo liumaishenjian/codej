@@ -64,17 +64,31 @@ public final class TaskUpdateTool implements AgentTool {
     private final Function<ToolInvocation, TaskBoardCapability> capabilities;
     private final TaskActorDirectory actors;
 
-    /** 绑定宿主持有的 Board 服务与不可由模型提交的 capability。 */
+    /**
+     * 绑定固定宿主能力；默认可分配 actor 仅为该 capability 的 actor。
+     * @param service 统一任务 mutation 服务
+     * @param capability 不可由模型提交的固定能力
+     */
     public TaskUpdateTool(TaskListService service, TaskBoardCapability capability) {
         this(service, ignored -> capability, candidate -> candidate.equals(capability.actorId()));
     }
 
-    /** 绑定宿主持有的 Board、capability 与可分配 actor 目录。 */
+    /**
+     * 绑定宿主持有的 Board、capability 与可分配 actor 目录。
+     * @param service 统一任务 mutation 服务
+     * @param capability 执行时仍须匹配真实 Session/Run 的固定能力
+     * @param actors 用于拒绝未知或不可分配 owner 的可信目录
+     */
     public TaskUpdateTool(TaskListService service, TaskBoardCapability capability, TaskActorDirectory actors) {
         this(service, ignored -> capability, actors);
     }
 
-    /** 绑定动态可信 capability 与可分配 actor 目录。 */
+    /**
+     * 绑定动态可信 capability 与可分配 actor 目录。
+     * @param service 非空的统一任务 mutation 服务
+     * @param capabilities 按真实 ToolInvocation 生成能力的宿主函数
+     * @param actors 非空的可信 actor 目录，不由模型任意创建 owner
+     */
     public TaskUpdateTool(TaskListService service,
             Function<ToolInvocation, TaskBoardCapability> capabilities,
             TaskActorDirectory actors) {

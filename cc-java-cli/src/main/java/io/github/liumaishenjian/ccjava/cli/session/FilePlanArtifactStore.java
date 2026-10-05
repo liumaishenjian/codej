@@ -69,7 +69,11 @@ public final class FilePlanArtifactStore implements PlanArtifactStore {
     private final ObjectMapper mapper = JsonMapper.builder()
             .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).build();
 
-    /** 创建绑定单个 Session 的 store。 */
+    /**
+     * 创建绑定单个 Session 的 store，并验证 Session 目录边界。
+     * @param sessionDirectory 已存在的 Session 目录，末级名称必须匹配 Session 身份
+     * @param sessionId 非空的唯一所有者身份
+     */
     public FilePlanArtifactStore(Path sessionDirectory, SessionId sessionId) {
         this(sessionDirectory, sessionId, artifact -> { });
     }

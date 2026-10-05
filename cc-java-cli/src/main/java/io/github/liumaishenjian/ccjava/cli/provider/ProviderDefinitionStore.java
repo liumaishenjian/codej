@@ -1,6 +1,7 @@
 package io.github.liumaishenjian.ccjava.cli.provider;
 
 import io.github.liumaishenjian.ccjava.cli.auth.ProviderAuthException;
+import io.github.liumaishenjian.ccjava.cli.auth.PiCredentialIdentity;
 import io.github.liumaishenjian.ccjava.cli.auth.RestrictedFileSecurity;
 import io.github.liumaishenjian.ccjava.core.CancellationToken;
 import io.github.liumaishenjian.ccjava.domain.model.ProviderSelectionSnapshot;
@@ -55,6 +56,8 @@ public final class ProviderDefinitionStore {
             "providerId", "kind", "displayName", "baseUri", "apiVariant", "models",
             "defaultModelId", "staticHeaders", "connectTimeoutSeconds", "requestTimeoutSeconds");
     private static final Set<String> SELECTION_FIELDS = Set.of("providerId", "modelId");
+    private static final Set<String> PI_SELECTION_FIELDS = Set.of(
+            "providerId", "modelId", "backend", "authMethod", "profileId");
     private static final Set<String> MODEL_OVERRIDE_FIELDS = Set.of("providerId", "addedModels", "removedModels");
 
     private final RestrictedFileSecurity security;
@@ -169,7 +172,8 @@ public final class ProviderDefinitionStore {
             boolean found = old.customDefinitions().stream()
                     .anyMatch(value -> value.providerId().equals(providerId));
             if (!found) throw failure(ProviderAuthException.Code.PROVIDER_UNKNOWN, false);
-            if (old.defaultSelection().filter(value -> value.providerId().equals(providerId)).isPresent()) {
+            if (old.defaultSelection().filter(value -> value.backend().equals("spring-ai")
+                    && value.providerId().equals(providerId)).isPresent()) {
                 throw invalid();
             }
             List<ProviderDefinition> values = old.customDefinitions().stream()
@@ -222,8 +226,8 @@ public final class ProviderDefinitionStore {
             ProviderDefinition effective = old.catalog().require(providerId);
             if (add && effective.models().contains(modelId) || !add && !effective.models().contains(modelId)) throw invalid();
             if (!add && (baseline.defaultModelId().equals(modelId)
-                    || old.defaultSelection().filter(value -> value.providerId().equals(providerId)
-                    && value.modelId().equals(modelId)).isPresent())) throw invalid();
+                    || old.defaultSelection().filter(value -> value.backend().equals("spring-ai")
+                    && value.providerId().equals(providerId) && value.modelId().equals(modelId)).isPresent())) throw invalid();
             List<ProviderCatalog.ModelOverride> overrides = new ArrayList<>(old.modelOverrides());
             ProviderCatalog.ModelOverride prior = overrides.stream()
                     .filter(value -> value.providerId().equals(providerId)).findFirst()
@@ -335,9 +339,17 @@ public final class ProviderDefinitionStore {
         Optional<DefaultSelection> selection = Optional.empty();
         JsonNode selected = root.get("defaultSelection");
         if (selected != null && !selected.isNull()) {
-            requireExactFields(selected, SELECTION_FIELDS);
             try {
-                selection = Optional.of(new DefaultSelection(text(selected, "providerId"), text(selected, "modelId")));
+                if (selected.has("backend")) {
+                    requireExactFields(selected, PI_SELECTION_FIELDS);
+                    if (!"pi".equals(text(selected, "backend"))) throw corrupt();
+                    selection = Optional.of(new DefaultSelection(text(selected, "providerId"),
+                            text(selected, "modelId"), text(selected, "backend"), text(selected, "authMethod"),
+                            Optional.of(text(selected, "profileId"))));
+                } else {
+                    requireExactFields(selected, SELECTION_FIELDS);
+                    selection = Optional.of(new DefaultSelection(text(selected, "providerId"), text(selected, "modelId")));
+                }
                 requireSelection(partial.catalog(), selection.orElseThrow());
             } catch (RuntimeException invalid) {
                 throw corrupt();
@@ -382,7 +394,11 @@ public final class ProviderDefinitionStore {
         root.put("schemaVersion", 1);
         root.put("generation", snapshot.generation());
         snapshot.defaultSelection().ifPresent(value -> root.put("defaultSelection",
-                Map.of("providerId", value.providerId(), "modelId", value.modelId())));
+                value.backend().equals("pi")
+                        ? Map.of("providerId", value.providerId(), "modelId", value.modelId(),
+                                "backend", value.backend(), "authMethod", value.authMethod(),
+                                "profileId", value.profileId().orElseThrow())
+                        : Map.of("providerId", value.providerId(), "modelId", value.modelId())));
         List<Object> providers = new ArrayList<>();
         snapshot.customDefinitions().stream().sorted(Comparator.comparing(ProviderDefinition::providerId))
                 .forEach(value -> providers.add(serialize(value)));
@@ -480,6 +496,8 @@ public final class ProviderDefinitionStore {
     }
 
     private static void requireSelection(ProviderCatalog catalog, DefaultSelection selection) {
+        // Pi canonical 已用包内静态目录验证，不查询同名 legacy definition。
+        if (selection.backend().equals("pi")) return;
         ProviderDefinition definition;
         try {
             definition = catalog.require(selection.providerId());
@@ -603,17 +621,45 @@ public final class ProviderDefinitionStore {
     }
 
     /**
-     * provider/model 默认选择；不包含 profile 或 credential。
+     * 非秘密默认选择；legacy 延续 Provider 默认 profile，Pi 显式绑定完整身份。
      *
      * @param providerId 默认 Provider 的稳定标识
      * @param modelId 默认模型的精确标识
+     * @param backend spring-ai 或 pi，不根据同名 Provider 推断
+     * @param authMethod API_KEY 或 OAUTH
+     * @param profileId legacy 必须为空；Pi 必须为明确的 profile 名，不含凭据版本
      */
-    public record DefaultSelection(String providerId, String modelId) {
-        /** 复用 Domain selection 的完整 identity 校验。 */
+    public record DefaultSelection(String providerId, String modelId, String backend,
+                                   String authMethod, Optional<String> profileId) {
+        /**
+         * 保留旧两字段默认及原磁盘格式，不自动迁移。
+         * @param providerId 旧 Provider 标识
+         * @param modelId 旧模型标识
+         */
+        public DefaultSelection(String providerId, String modelId) {
+            this(providerId, modelId, "spring-ai", "API_KEY", Optional.empty());
+        }
+
+        /** 复用完整身份契约与包内目录；错误不携带私有输入或底层 cause。 */
         public DefaultSelection {
-            ProviderSelectionSnapshot checked = new ProviderSelectionSnapshot(providerId, "selection", modelId);
-            providerId = checked.providerId();
-            modelId = checked.modelId();
+            try {
+                Objects.requireNonNull(profileId);
+                new ProviderSelectionSnapshot(providerId, profileId.orElse("selection"), modelId, backend, authMethod);
+                if ("spring-ai".equals(backend)) {
+                    if (profileId.isPresent()) throw invalid();
+                } else {
+                    PiCredentialIdentity identity = new PiCredentialIdentity(backend, providerId,
+                            PiCredentialIdentity.AuthMethod.valueOf(authMethod), profileId.orElseThrow());
+                    PiProviderCatalog catalog = new PiProviderCatalog();
+                    String method = identity.authMethod() == PiCredentialIdentity.AuthMethod.API_KEY ? "api_key" : "oauth";
+                    if (catalog.require(providerId).authMethods().stream().noneMatch(value -> value.id().equals(method))) {
+                        throw invalid();
+                    }
+                    catalog.requireModel(providerId, modelId);
+                }
+            } catch (RuntimeException invalidIdentity) {
+                throw invalid();
+            }
         }
     }
 

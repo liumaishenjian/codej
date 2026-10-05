@@ -53,7 +53,10 @@ public record WorkspaceSnapshot(
         return new WorkspaceSnapshot(RepositoryState.NON_REPOSITORY, "none", 0, 0, 0);
     }
 
-    /** Git 探测故障时的 fail-closed 摘要。 */
+    /**
+     * Git 探测故障时的 fail-closed 摘要。
+     * @return UNKNOWN 分类与零计数，不得把它解释为已确认非仓库或干净工作区
+     */
     public static WorkspaceSnapshot unknownRepositoryState() {
         return new WorkspaceSnapshot(RepositoryState.UNKNOWN, "unknown", 0, 0, 0);
     }

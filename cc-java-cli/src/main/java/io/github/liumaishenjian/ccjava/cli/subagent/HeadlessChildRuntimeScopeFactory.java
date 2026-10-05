@@ -1,5 +1,6 @@
 package io.github.liumaishenjian.ccjava.cli.subagent;
 
+import io.github.liumaishenjian.ccjava.cli.provider.RunModelSourceRegistry;
 import io.github.liumaishenjian.ccjava.cli.session.FileCheckpointCoordinator;
 import io.github.liumaishenjian.ccjava.cli.session.FileSessionStore;
 import io.github.liumaishenjian.ccjava.core.AgentIdGenerator;
@@ -31,7 +32,11 @@ import io.github.liumaishenjian.ccjava.core.subagent.AgentSupervisor;
 import io.github.liumaishenjian.ccjava.core.subagent.ChildRuntimeScope;
 import io.github.liumaishenjian.ccjava.core.subagent.ChildRuntimeScopeFactory;
 import io.github.liumaishenjian.ccjava.core.subagent.DelegateAgentTool;
+import io.github.liumaishenjian.ccjava.core.subagent.PreparedChildRuntime;
+import io.github.liumaishenjian.ccjava.domain.SessionId;
+import io.github.liumaishenjian.ccjava.domain.RunId;
 import io.github.liumaishenjian.ccjava.domain.SessionSpec;
+import io.github.liumaishenjian.ccjava.domain.ResourceCleanupStatus;
 import io.github.liumaishenjian.ccjava.domain.execution.ExecutionBackendPreference;
 import io.github.liumaishenjian.ccjava.domain.execution.ExecutionShell;
 import io.github.liumaishenjian.ccjava.domain.subagent.AgentDefinitionSnapshot;
@@ -83,6 +88,7 @@ public final class HeadlessChildRuntimeScopeFactory implements ChildRuntimeScope
     private final ExecutionBackendPreference executionBackend;
     private final ExecutionShell executionShell;
     private final Function<ChildTaskRequest, Optional<ChildTaskBoardAccess>> taskBoardAccess;
+    private final RunModelSourceRegistry modelSources;
     private final ConcurrentMap<DelegationId, WorktreeLease> retainedWorktrees =
             new ConcurrentHashMap<>();
 
@@ -208,6 +214,33 @@ public final class HeadlessChildRuntimeScopeFactory implements ChildRuntimeScope
             ExecutionBackendPreference executionBackend,
             ExecutionShell executionShell,
             Function<ChildTaskRequest, Optional<ChildTaskBoardAccess>> taskBoardAccess) {
+        this(parentWorkspace, sessionRoot, gateway, approvals, ids, lifecycle, hooks, supervisor,
+                executionBackend, executionShell, taskBoardAccess, null);
+    }
+
+    /**
+     * 创建必须在入队前捕获实际父Run模型来源的生产装配。
+     * @param parentWorkspace canonical父workspace
+     * @param sessionRoot 子Session持久化根
+     * @param gateway 仅供未启用modelSources的旧静态兼容装配使用
+     * @param approvals 审批端口
+     * @param ids 宿主身份生成器
+     * @param lifecycle 生命周期分发器
+     * @param hooks Hook协调器
+     * @param supervisor 延迟取得共享Supervisor
+     * @param executionBackend 父级执行后端
+     * @param executionShell 固定shell语义
+     * @param taskBoardAccess 宿主Task Board范围
+     * @param modelSources 真实Run的冻结来源登记；空仅保留旧静态构造兼容
+     */
+    public HeadlessChildRuntimeScopeFactory(
+            Path parentWorkspace, Path sessionRoot, ModelGateway gateway, ApprovalHandler approvals,
+            AgentIdGenerator ids, LifecycleDispatcher lifecycle, HookCoordinator hooks,
+            Supplier<AgentSupervisor> supervisor, ExecutionBackendPreference executionBackend,
+            ExecutionShell executionShell,
+            Function<ChildTaskRequest, Optional<ChildTaskBoardAccess>> taskBoardAccess,
+            RunModelSourceRegistry modelSources) {
+        this.modelSources = modelSources;
         this.parentWorkspace = Objects.requireNonNull(parentWorkspace)
                 .toAbsolutePath()
                 .normalize();
@@ -233,11 +266,42 @@ public final class HeadlessChildRuntimeScopeFactory implements ChildRuntimeScope
         this.worktrees = available;
     }
 
+    @Override public boolean requiresParentIdentity() { return modelSources != null; }
+
+    /** 只在提交线程捕获来源；每个出队child随后创建自己的scope与Context。 */
+    @Override public PreparedChildRuntime prepare(SessionId parentSessionId, RunId parentRunId,
+            AgentDefinitionSnapshot definition, ChildTaskRequest request, CancellationToken cancellationToken) {
+        if (modelSources == null) {
+            return ChildRuntimeScopeFactory.super.prepare(parentSessionId, parentRunId, definition, request,
+                    cancellationToken);
+        }
+        if (cancellationToken.isCancellationRequested()) throw new IllegalStateException("Child submission cancelled");
+        RunModelSourceRegistry.Prepared captured = modelSources.capture(parentSessionId, parentRunId,
+                definition.modelOverride());
+        if (cancellationToken.isCancellationRequested()) throw new IllegalStateException("Child submission cancelled");
+        return (effectiveRequest, token) -> {
+            ChildModelRun modelRun = ChildModelRun.open(modelSources, captured,
+                    request.requestedBudget().duration(), token);
+            try {
+                return createScoped(definition, effectiveRequest, modelRun.cancellation(), modelRun);
+            } catch (RuntimeException | Error failure) {
+                try { modelRun.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
+                throw failure;
+            }
+        };
+    }
+
     @Override
     public ChildRuntimeScope create(
             AgentDefinitionSnapshot definition,
             ChildTaskRequest request,
             CancellationToken cancellationToken) {
+        if (modelSources != null) throw new IllegalStateException("Child model source must be prepared before enqueue");
+        return createScoped(definition, request, cancellationToken, null);
+    }
+
+    private ChildRuntimeScope createScoped(AgentDefinitionSnapshot definition, ChildTaskRequest request,
+            CancellationToken cancellationToken, ChildModelRun modelRun) {
         Objects.requireNonNull(definition);
         Objects.requireNonNull(request);
         Objects.requireNonNull(cancellationToken);
@@ -263,6 +327,9 @@ public final class HeadlessChildRuntimeScopeFactory implements ChildRuntimeScope
             workspace = worktrees.enter(lease);
             disposition.set(lease.disposition().name());
         }
+        FileSessionStore acquiredSessions = null;
+        AgentSession acquiredChild = null;
+        InMemorySessionPermissionState acquiredPermissions = null;
         try {
             LocalWorkspaceBootstrap bootstrap = LocalWorkspaceBootstrap.open(
                     workspace,
@@ -312,6 +379,7 @@ public final class HeadlessChildRuntimeScopeFactory implements ChildRuntimeScope
             ToolRegistry registry = new ToolRegistry(visible);
             InMemorySessionPermissionState permissionState =
                     new InMemorySessionPermissionState();
+            acquiredPermissions = permissionState;
             PermissionPolicy policy = new PermissionPolicy(
                     definition.permissionCeiling(),
                     List.of(),
@@ -326,6 +394,7 @@ public final class HeadlessChildRuntimeScopeFactory implements ChildRuntimeScope
                     lifecycle,
                     Clock.systemUTC(),
                     HookCoordinator.disabled());
+            acquiredSessions = sessions;
             FileCheckpointCoordinator checkpoints = new FileCheckpointCoordinator(
                     sessionRoot,
                     bootstrap.workspaceGuard(),
@@ -343,22 +412,23 @@ public final class HeadlessChildRuntimeScopeFactory implements ChildRuntimeScope
                     definition.instructions(),
                     Map.of(
                             "model",
-                            definition.modelName(),
+                            modelRun == null ? definition.modelName() : modelRun.model(),
                             "parentVisibility",
                             "bounded-report",
                             "worktree",
                             Boolean.toString(request.worktree()))));
+            acquiredChild = child;
             childSessionId.set(child.id());
             AgentRuntime runtime = new AgentRuntime(
                     sessions,
                     ids,
-                    gateway,
+                    modelRun == null ? gateway : modelRun.binding().gateway(),
                     new DefaultContextAssembler(),
                     registry,
                     pipeline,
                     lifecycle,
                     sessions,
-                    ContextPreparationService.noop(),
+                    modelRun == null ? ContextPreparationService.noop() : modelRun.context(),
                     MemoryContextService.noop(),
                     InstructionContextService.noop(),
                     hooks,
@@ -366,28 +436,30 @@ public final class HeadlessChildRuntimeScopeFactory implements ChildRuntimeScope
                     io.github.liumaishenjian.ccjava.core.plugin.PluginRunCoordinator.disabled(),
                     io.github.liumaishenjian.ccjava.core.plugin.PluginRunHooks.none());
             WorktreeLease capturedLease = lease;
+            AtomicReference<ResourceCleanupStatus> cleanupState = new AtomicReference<>(ResourceCleanupStatus.NOT_STARTED);
+            if (modelRun != null) modelRun.checkActive();
             return new ChildRuntimeScope(
                     runtime,
                     child.id(),
-                    () -> {
-                        try {
-                            if (!child.isClosed()) {
-                                sessions.close(child.id());
-                            }
-                        } finally {
-                            permissionState.clear(child.id());
-                            sessions.close();
-                            if (capturedLease != null) {
-                                worktrees.leave(capturedLease);
-                                // 用户价值默认保留；remove 必须由显式 task.remove 动作触发。
-                                WorktreeLease result = worktrees.keep(capturedLease);
-                                retainedWorktrees.put(request.delegationId(), result);
-                                disposition.set(result.disposition().name());
-                            }
-                        }
+                    () -> closeChildResources(child, sessions, permissionState, capturedLease,
+                            request, disposition, modelRun, cleanupState),
+                    () -> Optional.ofNullable(disposition.get()),
+                    (sessionId, runId) -> {
+                        if (modelRun != null) modelRun.initialize(runtime, sessionId, runId);
                     },
-                    () -> Optional.ofNullable(disposition.get()));
-        } catch (Exception failure) {
+                    modelRun == null ? cancellationToken : modelRun.cancellation(),
+                    cleanupState::get);
+        } catch (Exception | Error failure) {
+            // 装配失败也收回已创建的writer/Session；不能只清理worktree而留下持久化锁。
+            if (acquiredChild != null) {
+                try { acquiredSessions.close(acquiredChild.id()); }
+                catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
+                if (acquiredPermissions != null) acquiredPermissions.clear(acquiredChild.id());
+            }
+            if (acquiredSessions != null) {
+                try { acquiredSessions.close(); }
+                catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
+            }
             if (lease != null) {
                 try {
                     worktrees.leave(lease);
@@ -396,11 +468,42 @@ public final class HeadlessChildRuntimeScopeFactory implements ChildRuntimeScope
                 WorktreeLease result = worktrees.removeClean(lease);
                 disposition.set(result.disposition().name());
             }
-            if (failure instanceof RuntimeException runtime) {
-                throw runtime;
-            }
+            if (failure instanceof RuntimeException runtime) throw runtime;
+            if (failure instanceof Error error) throw error;
             throw new IllegalStateException("子 Runtime scope 创建失败", failure);
         }
+    }
+
+    /** 先撤销后代捕获入口；单个清理失败不妨碍其余资源收回，运行终态仍由Supervisor独立保存。 */
+    private void closeChildResources(AgentSession child, FileSessionStore sessions,
+            InMemorySessionPermissionState permissions, WorktreeLease lease, ChildTaskRequest request,
+            AtomicReference<String> disposition, ChildModelRun modelRun,
+            AtomicReference<ResourceCleanupStatus> cleanupState) {
+        cleanupState.set(ResourceCleanupStatus.CLEANING);
+        List<AutoCloseable> cleanup = new ArrayList<>();
+        if (modelRun != null) cleanup.add(modelRun);
+        cleanup.add(() -> { if (!child.isClosed()) sessions.close(child.id()); });
+        cleanup.add(() -> permissions.clear(child.id()));
+        cleanup.add(sessions);
+        if (lease != null) cleanup.add(() -> {
+            worktrees.leave(lease);
+            // 用户价值默认保留；remove仍必须由显式task.remove触发。
+            WorktreeLease kept = worktrees.keep(lease);
+            retainedWorktrees.put(request.delegationId(), kept);
+            disposition.set(kept.disposition().name());
+            if (kept.disposition() != WorktreeDisposition.KEPT) {
+                throw new IllegalStateException("Worktree ownership release unconfirmed");
+            }
+        });
+        boolean failed = false;
+        for (AutoCloseable resource : cleanup) {
+            try { resource.close(); } catch (Exception failure) { failed = true; }
+        }
+        boolean modelConfirmed = modelRun == null || modelRun.cleanupStatus() == ResourceCleanupStatus.RELEASED;
+        boolean storeConfirmed = sessions.cleanupStatus() == ResourceCleanupStatus.RELEASED;
+        cleanupState.set(!failed && modelConfirmed && storeConfirmed
+                ? ResourceCleanupStatus.RELEASED : ResourceCleanupStatus.UNCONFIRMED);
+        if (failed) throw new IllegalStateException("Child scope cleanup unconfirmed");
     }
 
     @Override

@@ -11,9 +11,16 @@ import io.github.liumaishenjian.ccjava.domain.RunId;
  */
 @FunctionalInterface
 public interface TaskRunState {
-    /** 目标 Run 是否已经到达任一终态。 */
+    /**
+     * 查询目标 Run 是否已经到达任一终态，不触发恢复或重放。
+     * @param runId claim 绑定的 Run 身份
+     * @return 已确定终止时为 true，不把未知状态当作终止
+     */
     boolean terminated(RunId runId);
 
-    /** 默认没有 Run 被判定终止的实现。 */
+    /**
+     * 返回不把任何 Run 判定为终止的默认实现。
+     * @return 始终返回 false 的保守查询端口
+     */
     static TaskRunState noneTerminated() { return ignored -> false; }
 }

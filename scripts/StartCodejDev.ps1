@@ -57,8 +57,9 @@ if (-not (Test-Path -LiteralPath $options.Workspace -PathType Container)) {
     exit 2
 }
 $node = Get-CodejNodeVersion
-if (-not $node.Present -or -not $node.Supported) {
-    [Console]::Error.WriteLine("codej requires Node.js 22 or newer; current: $($node.Description)")
+if (-not $node.Present -or -not $node.Supported -or
+        [version]($node.Description.TrimStart('v')) -lt [version]'22.19.0') {
+    [Console]::Error.WriteLine("codej requires Node.js 22.19.0 or newer; current: $($node.Description)")
     exit 2
 }
 $tuiDirectory = Join-Path $repositoryRoot 'cc-java-tui'
@@ -84,9 +85,30 @@ $dependencyClasspath = (Get-Content -LiteralPath $buildState.Paths.ClasspathFile
 $separator = [IO.Path]::PathSeparator
 $mainClasses = Join-Path $repositoryRoot 'cc-java-cli\target\classes'
 $classpath = "$mainClasses$separator$dependencyClasspath"
+# 显式绑定源码启动器固定入口；缺组件由对应路由失败关闭，不下载、不从工作区发现、不回退。
+$browserBridge = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'cc-java-provider-pi/login.mjs'))
+$piWorker = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'cc-java-provider-pi/worker.mjs'))
+$piAuthCli = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'cc-java-tui/dist/src/pi-auth-cli.js'))
+$browserProperties = @("-Dcodej.nodeExecutable=$($node.Executable)",
+    "-Dcodej.piWorker=$piWorker", "-Dcodej.piBridge=$browserBridge", "-Dcodej.piAuthCli=$piAuthCli")
 if ($null -ne $options.ProviderControlArguments) {
+    $control = @($options.ProviderControlArguments)
+    $backendIndex = [Array]::IndexOf($control, '--backend')
+    $piBackend = $control -contains '--backend=pi' -or
+        ($backendIndex -ge 0 -and $backendIndex + 1 -lt $control.Count -and $control[$backendIndex + 1] -ceq 'pi')
+    $envReference = @($control | Where-Object { $_ -eq '--from-env' -or $_ -like '--from-env=*' }).Count -gt 0
+    # 私有TTY壳也是TUI编译产物；只在需要它的Pi登录路径构建，不增加ENV/旧控制路径依赖。
+    if ($control.Count -ge 2 -and $control[0] -ceq 'auth' -and $control[1] -ceq 'login' -and $piBackend -and -not $envReference) {
+        Push-Location $tuiDirectory
+        try {
+            & npm.cmd --silent run build
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        }
+        finally { Pop-Location }
+        if (-not (Test-Path -LiteralPath $piAuthCli -PathType Leaf)) { throw 'Compiled Pi authentication CLI missing' }
+    }
     $env:CC_JAVA_REPOSITORY_ROOT = $repositoryRoot
-    & $java.Executable '-Dfile.encoding=UTF-8' "-Duser.home=$installationHome" '-cp' $classpath `
+    & $java.Executable '-Dfile.encoding=UTF-8' "-Duser.home=$installationHome" @browserProperties '-cp' $classpath `
         'io.github.liumaishenjian.ccjava.cli.CcJavaCliMain' @($options.ProviderControlArguments)
     exit $LASTEXITCODE
 }
@@ -108,6 +130,9 @@ $childCommand = @(
     '--context-safety-margin-tokens',
     [string]$options.ContextSafetyMarginTokens
 )
+if ($browserProperties.Count -gt 0) {
+    $childCommand = @($childCommand[0]) + $browserProperties + @($childCommand[1..($childCommand.Count - 1)])
+}
 if (-not [string]::IsNullOrWhiteSpace($options.Model)) {
     $childCommand += @('--model', $options.Model)
 }

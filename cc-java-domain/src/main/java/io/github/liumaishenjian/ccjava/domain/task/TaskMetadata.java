@@ -31,7 +31,11 @@ public record TaskMetadata(Map<String, TaskMetadataValue> values) {
         if (canonicalJsonBytes(values) > 4_096) throw new IllegalArgumentException("Task metadata 超过 UTF-8 上限");
     }
 
-    /** 应用独立 upsert/removal patch，并重新验证完整结果预算。 */
+    /**
+     * 应用独立 upsert/removal patch，并重新验证完整结果预算。
+     * @param patch 非空的增量更新，不允许同一 key 同时更新与删除
+     * @return 应用后新的不可变元数据；完整结果超限时抛出异常
+     */
     public TaskMetadata apply(TaskMetadataPatch patch) {
         Objects.requireNonNull(patch, "patch 不能为空");
         TreeMap<String, TaskMetadataValue> next = new TreeMap<>(values);
@@ -40,7 +44,10 @@ public record TaskMetadata(Map<String, TaskMetadataValue> values) {
         return new TaskMetadata(next);
     }
 
-    /** 返回 canonical JSON UTF-8 字节数，仅用于资源治理而不暴露正文。 */
+    /**
+     * 返回 canonical JSON UTF-8 字节数，仅用于资源治理而不暴露正文。
+     * @return 包含对象标点、key 与标量编码的总字节数
+     */
     public int canonicalJsonBytes() { return canonicalJsonBytes(values); }
 
     private static int canonicalJsonBytes(Map<String, TaskMetadataValue> source) {

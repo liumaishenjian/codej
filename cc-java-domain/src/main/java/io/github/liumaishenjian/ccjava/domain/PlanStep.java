@@ -13,6 +13,7 @@ import java.util.Objects;
  * @param action 受限结构化执行意图或内部 Agent Run 标记
  */
 public record PlanStep(int ordinal, String title, String detail, String expectedDigest, PlanStepAction action) {
+    /** 校验正数序号、有界文本和非空执行意图，不从说明文本解析命令。 */
     public PlanStep {
         if (ordinal < 1) throw new IllegalArgumentException("ordinal 必须从 1 开始");
         title = text(title, "title", 200);
@@ -21,12 +22,23 @@ public record PlanStep(int ordinal, String title, String detail, String expected
         action = Objects.requireNonNull(action, "action 不能为空");
     }
 
+    /**
+     * 创建由获批后的正常 Agent Run 落实的自然语言步骤。
+     * @param ordinal 从 1 开始的步骤序号
+     * @param title 有界用户可见标题
+     * @param detail 有界规划说明，不当作 Shell 输入
+     * @param expectedDigest 执行前用于冲突检测的摘要
+     */
     public PlanStep(int ordinal, String title, String detail, String expectedDigest) {
         this(ordinal, title, detail, expectedDigest,
                 PlanStepAction.agentRunMarker());
     }
 
-    /** 将步骤的执行前摘要推进到上一步真实完成后的工作区摘要。 */
+    /**
+     * 将步骤的执行前摘要推进到上一步真实完成后的工作区摘要。
+     * @param digest 上一步完成后的有效工作区摘要
+     * @return 仅替换预期摘要的新步骤
+     */
     public PlanStep withExpectedDigest(String digest) {
         return new PlanStep(ordinal, title, detail, digest, action);
     }

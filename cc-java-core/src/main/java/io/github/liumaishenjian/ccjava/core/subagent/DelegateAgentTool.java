@@ -69,7 +69,8 @@ public final class DelegateAgentTool implements AgentTool {
     }
     @Override public ToolExecutionOutcome execute(ToolInvocation invocation){
         ChildTaskRequest request=request(invocation.call().arguments());
-        ChildTaskHandle handle=supervisor.submit(request,invocation.cancellationToken());
+        ChildTaskHandle handle=supervisor.submit(invocation.sessionId(), invocation.runId(),
+                request, invocation.cancellationToken());
         ChildTaskReport report;
         if (request.background()) {
             report = handle.inspect();
@@ -124,6 +125,7 @@ public final class DelegateAgentTool implements AgentTool {
     }
     private static String render(ChildTaskReport report){return "taskId="+report.taskId().value()+"; status="+report.status().name().toLowerCase(Locale.ROOT)
             +"; failure="+report.failureCode().name().toLowerCase(Locale.ROOT)+"; modelTurns="+report.modelTurns()+"; toolCalls="+report.toolCalls()
+            +"; cleanup="+report.cleanupStatus().name().toLowerCase(Locale.ROOT)
             +"; verified="+report.verified()+"; summary="+report.summary()
             +report.worktreeDisposition().map(value -> "; worktree="+value.toLowerCase(Locale.ROOT)).orElse("");}
 }

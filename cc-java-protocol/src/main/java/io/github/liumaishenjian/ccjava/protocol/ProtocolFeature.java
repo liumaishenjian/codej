@@ -32,10 +32,17 @@ public enum ProtocolFeature {
     ProtocolFeature() { this.wireName = name(); }
     ProtocolFeature(String wireName) { this.wireName = wireName; }
 
-    /** 返回 initialize wire 上的稳定 capability 名称。 */
+    /**
+     * 返回 initialize wire 上的稳定 capability 名称。
+     * @return 协商使用的协议文本，不保证等于 Java 枚举名
+     */
     public String wireName() { return wireName; }
 
-    /** 按稳定 wire 名称解析，不把 Java enum 名泄漏为新协议。 */
+    /**
+     * 按稳定 wire 名称解析，不把 Java enum 名泄漏为新协议。
+     * @param value 待精确匹配的协议名称
+     * @return 对应能力；未知名称或 null 抛出 IllegalArgumentException
+     */
     public static ProtocolFeature fromWireName(String value) {
         for (ProtocolFeature feature : values()) {
             if (feature.wireName.equals(value)) return feature;

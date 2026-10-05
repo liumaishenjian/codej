@@ -437,6 +437,23 @@ public final class AgentRuntime {
      *
      * <p>该接缝只供需要在 RunFinished 前验证结构化模型终态的宿主使用；Tool Loop、Context、
      * Session 和取消仍由本 Runtime 唯一拥有。</p>
+     *
+     * @param sessionStore 当前进程的 Session Store
+     * @param idGenerator Run ID 来源
+     * @param modelGateway 单回合模型端口，不自行执行工具循环
+     * @param contextAssembler 追加式 Context 组装器
+     * @param toolRegistry 当前可见 Tool Registry
+     * @param toolPipeline 统一 Tool 执行管线
+     * @param lifecycle 可失败的观察生命周期分发器
+     * @param sessionJournal 必须成功的规范 Session journal
+     * @param contextPreparation 每回合 Projection 准备与清理服务
+     * @param memoryContext ready-only Memory Projection 服务
+     * @param instructionContext Instructions Projection 服务
+     * @param hooks S09 Hook 协调器
+     * @param skills Skill Run 协调器
+     * @param plugins Plugin generation Run 生命周期协调器
+     * @param pluginHooks Plugin Run-scoped Hook templates
+     * @param finalAssistantHandler RunFinished 前的确定性终态验证器
      */
     public AgentRuntime(
             SessionStore sessionStore,
@@ -511,9 +528,37 @@ public final class AgentRuntime {
      * @return Run 终态摘要
      */
     public AgentRunResult run(SessionId sessionId, AgentRunRequest request, RunInitializer initializer) {
+        return run(sessionId, request, initializer, CancellationToken.none());
+    }
+
+    /**
+     * 将启动阶段取消连接到 Runtime 自有取消源，再执行 USER_PROMPT 与既有运行生命周期。
+     *
+     * <p>取消输入只提供信号，不提供 Run ID；初始化器仍只接收 Runtime 生成的真实身份。
+     * 包含 Hook 阻断、journal 异常和初始化失败在内的所有退出都会解除启动订阅。
+     * 活动 Run 的精确取消继续通过 {@link #cancel(SessionId, RunId)} 完成。
+     * 启动输入的剩余墙钟预算只收窄原限制；已耗尽时按启动取消收口，不能因缺少通知而请求模型。</p>
+     * @param sessionId 目标 Session
+     * @param request 用户消息及显式限制
+     * @param initializer 首个模型之前的真实身份初始化
+     * @param startupCancellation USER_PROMPT 之前即可生效的取消输入
+     * @return 原有生命周期产生的唯一终态摘要
+     */
+    public AgentRunResult run(SessionId sessionId, AgentRunRequest request, RunInitializer initializer,
+            CancellationToken startupCancellation) {
+        Objects.requireNonNull(startupCancellation, "startupCancellation 不能为空");
         Objects.requireNonNull(sessionId, "sessionId 不能为空");
         Objects.requireNonNull(request, "request 不能为空");
         Objects.requireNonNull(initializer, "initializer 不能为空");
+        Optional<java.time.Duration> startupRemaining = startupCancellation.remainingTime();
+        boolean startupExpired = startupRemaining.map(time -> time.isZero() || time.isNegative()).orElse(false);
+        if (!startupExpired && startupRemaining.isPresent()
+                && request.limits().runDeadline().map(time -> startupRemaining.orElseThrow().compareTo(time) < 0)
+                        .orElse(true)) {
+            var limits = request.limits();
+            request = new AgentRunRequest(request.userMessage(), new io.github.liumaishenjian.ccjava.domain.AgentLimits(
+                    limits.totalModelTurns(), limits.totalToolCalls(), startupRemaining), request.explicitSkill());
+        }
         AgentSession session = sessionStore.find(sessionId)
                 .orElseThrow(() -> new IllegalArgumentException(
                         "Session 不存在: " + sessionId.value()));
@@ -523,7 +568,18 @@ public final class AgentRuntime {
         CancellationSource cancellation = request.limits().runDeadline()
                 .map(CancellationSource::new)
                 .orElseGet(CancellationSource::new);
+        if (startupExpired || startupCancellation.isCancellationRequested()) cancellation.cancel();
 
+        try (CancellationToken.Registration startupRegistration =
+                startupCancellation.onCancellation(cancellation::cancel)) {
+            return runPrepared(session, sessionId, runId, state, cancellation, request, initializer);
+        }
+    }
+
+    /** 保持既有 journal、Hook、Plugin 与 Loop 顺序；启动订阅由外层所有。 */
+    private AgentRunResult runPrepared(AgentSession session, SessionId sessionId, RunId runId,
+            AgentRunState state, CancellationSource cancellation, AgentRunRequest request,
+            RunInitializer initializer) {
         HookAggregateResult promptHook = hooks.evaluate(
                 new HookInvocation(
                         HookEventKind.USER_PROMPT,
@@ -619,7 +675,7 @@ public final class AgentRuntime {
                                 "runId", runId.value()))),
                 cancellation.token());
         Thread deadlineThread = request.limits().runDeadline()
-                .map(duration -> startDeadline(duration, activeRun))
+                .map(duration -> startDeadline(cancellation.token().remainingTime().orElse(duration), activeRun))
                 .orElse(null);
 
         AgentRunResult result;

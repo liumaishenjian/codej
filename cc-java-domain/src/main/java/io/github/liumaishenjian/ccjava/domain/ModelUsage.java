@@ -5,7 +5,7 @@ package io.github.liumaishenjian.ccjava.domain;
  *
  * @param inputTokens 输入消息和 Tool Schema 消耗的 Token
  * @param outputTokens 模型输出消耗的 Token
- * @param totalTokens Provider 报告的总 Token
+ * @param totalTokens Provider 报告或Adapter按已报告分项、相同计数口径精确合成的总Token；不表示价格
  * @since 0.1.0
  */
 public record ModelUsage(int inputTokens, int outputTokens, int totalTokens) {

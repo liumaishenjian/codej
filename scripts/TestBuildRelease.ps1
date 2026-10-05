@@ -20,7 +20,8 @@ $sbom = Get-Content -LiteralPath $sbomPath -Raw | ConvertFrom-Json
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 $components = @($sbom.components)
 if ($components.Count -eq 0) { throw 'CycloneDX components must not be empty' }
-foreach ($required in @('codej-launcher.mjs', 'install.ps1', 'install.sh', 'tui/dist/src/index.js')) {
+foreach ($required in @('codej-launcher.mjs', 'install.ps1', 'install.sh', 'tui/dist/src/index.js',
+        'tui/dist/src/pi-auth-cli.js', 'pi/worker.mjs', 'pi/login.mjs', 'pi/node_modules/@earendil-works/pi-ai/package.json')) {
     if (-not (Test-Path -LiteralPath (Join-Path $release $required) -PathType Leaf)) {
         throw "Installable release file missing: $required"
     }
@@ -45,6 +46,13 @@ Assert-Coordinate 'info.picocli' 'picocli' '4.7.7'
 Assert-Coordinate 'org.springframework.ai' 'spring-ai-anthropic' '2.0.0'
 Assert-Coordinate 'com.anthropic' 'anthropic-java-core' '2.40.1'
 Assert-Coordinate 'io.github.liumaishenjian' 'cc-java-core' '0.1.1'
+Assert-Coordinate 'io.github.liumaishenjian' 'cc-java-model-pi' '0.1.1'
+if (@($components | Where-Object { $_.name -eq '@earendil-works/pi-ai' -and $_.version -eq '0.85.1' }).Count -ne 1) {
+    throw 'Pinned installed Pi SDK missing from SBOM'
+}
+if (@(Get-ChildItem -LiteralPath (Join-Path $release 'pi') -Filter '*.test.mjs' -File -Force).Count -ne 0) {
+    throw 'Project Pi tests entered the production package'
+}
 $nodeComponents = @($components | Where-Object { $_.purl -like 'pkg:npm/*' })
 if ($nodeComponents.Count -lt 3) { throw 'TUI npm components missing from SBOM' }
 if ($sbom.metadata.component.group -ne 'io.github.liumaishenjian' `
@@ -53,7 +61,7 @@ if ($sbom.metadata.component.group -ne 'io.github.liumaishenjian' `
     throw 'Application Maven coordinate is incorrect'
 }
 
-$artifactFiles = @(Get-ChildItem -LiteralPath $release -File -Recurse |
+$artifactFiles = @(Get-ChildItem -LiteralPath $release -File -Recurse -Force |
     Where-Object Name -ne 'SHA256SUMS')
 $checksumLines = @(Get-Content -LiteralPath $checksumsPath)
 if ($checksumLines.Count -ne $artifactFiles.Count) { throw 'Checksum coverage count mismatch' }
@@ -95,6 +103,27 @@ try {
 } finally {
     [IO.File]::WriteAllBytes((Join-Path $release 'app/cc-java-cli.jar'), $originalCliBytes)
 }
+# Pi生产入口和隐藏文件也必须在实际启动器中失败关闭，不只依赖Fake摘要测试。
+$piEntry = Join-Path $release 'pi/worker.mjs'
+$piBytes = [IO.File]::ReadAllBytes($piEntry)
+$hiddenProbe = Join-Path $release 'pi/.integrity-negative-probe'
+try {
+    [IO.File]::AppendAllText($piEntry, "`n// test identity drift`n")
+    $piDrift = & (Join-Path $release 'codej.cmd') --version 2>&1
+    if ($LASTEXITCODE -eq 0 -or ($piDrift -join "`n") -notlike '*packaged build identity drift detected*') {
+        throw 'Pi entry drift did not fail closed before Java/authentication access'
+    }
+    [IO.File]::WriteAllBytes($piEntry, $piBytes)
+    [IO.File]::WriteAllText($hiddenProbe, 'fixture')
+    [IO.File]::SetAttributes($hiddenProbe, [IO.FileAttributes]::Hidden)
+    $piHiddenDrift = & (Join-Path $release 'codej.cmd') --version 2>&1
+    if ($LASTEXITCODE -eq 0 -or ($piHiddenDrift -join "`n") -notlike '*packaged build identity drift detected*') {
+        throw 'Hidden Pi runtime drift did not fail closed'
+    }
+} finally {
+    [IO.File]::WriteAllBytes($piEntry, $piBytes)
+    if (Test-Path -LiteralPath $hiddenProbe) { Remove-Item -LiteralPath $hiddenProbe -Force }
+}
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 $reportedVersion = & (Join-Path $release 'codej.cmd') --version
 $currentCommit = (& git -C $root rev-parse HEAD).Trim()
@@ -113,22 +142,65 @@ if ($LASTEXITCODE -ne 0 -or $manifest.build.currentCommit -ne $currentCommit `
         -or $reportedVersion -notlike "codej $($manifest.version) commit=$currentCommit source=* cli=$releaseCliDigest tui=$releaseTuiDigest") {
     throw 'Product launcher build identity drift detected'
 }
-$stdioInput = Join-Path $release 'stdio-input.ndjson'
-@(
-    '{"version":0,"type":"initialize","requestId":"installed-init","sequence":1,"payload":{}}',
-    '{"version":0,"type":"shutdown","requestId":"installed-stop","sequence":2,"payload":{}}'
-) | Set-Content -LiteralPath $stdioInput -Encoding utf8NoBOM
-$stdioOut = Join-Path $release 'stdio-output.ndjson'; $stdioErr = Join-Path $release 'stdio-error.txt'
-$stdioProcess = Start-Process -FilePath (Join-Path $release 'codej.cmd') -ArgumentList '--stdio' `
-    -WorkingDirectory $root -NoNewWindow -PassThru -RedirectStandardInput $stdioInput `
-    -RedirectStandardOutput $stdioOut -RedirectStandardError $stdioErr
-if (-not $stdioProcess.WaitForExit(15000)) { $stdioProcess.Kill($true); throw 'Installed launcher stdio did not exit' }
-$stdioEvents = @(Get-Content -LiteralPath $stdioOut | ForEach-Object { $_ | ConvertFrom-Json })
-if ($stdioProcess.ExitCode -ne 0 -or @($stdioEvents | Where-Object type -eq 'initialized').Count -ne 1 `
-        -or (Get-Item -LiteralPath $stdioErr).Length -ne 0) {
-    throw 'Installed launcher Java stdio smoke failed'
+# 原 smoke 会以维护者真实 user.home 打开认证/Session；测试适配器只追加临时 home，
+# 仍走包内 codej.cmd/launcher/真实 JVM，保留原 stdout、零 stderr、exit0 与15秒断言。
+$stdioFixture = Join-Path ([IO.Path]::GetTempPath()) "codej-release-stdio-$([guid]::NewGuid().ToString('N'))"
+$stdioHome = Join-Path $stdioFixture 'home'; $stdioWorkspace = Join-Path $stdioFixture 'workspace'
+New-Item -ItemType Directory -Path $stdioHome,$stdioWorkspace -Force | Out-Null
+try {
+    $guard = Join-Path $stdioFixture 'home-guard.mjs'
+    $invocation = Join-Path $stdioFixture 'java-invoked.txt'
+    # 测试专用Node预加载仅在真实launcher的spawn边界补充home；不替换exe/包/协议，也不放入产品环境。
+    $guardSource = @'
+import cp from 'node:child_process';
+import {syncBuiltinESMExports} from 'node:module';
+import {writeFileSync} from 'node:fs';
+const original = cp.spawnSync;
+cp.spawnSync = function(executable, args, options) {
+  if (Array.isArray(args) && args.includes('io.github.liumaishenjian.ccjava.cli.CcJavaCliMain')) {
+    if (args.some(arg => arg.startsWith('-Duser.home='))) throw Error('AMBIGUOUS_TEST_HOME');
+    args = ['-Duser.home=' + __HOME__, ...args];
+    writeFileSync(__INVOCATION__, 'actual-java-boundary\n');
+  }
+  return Reflect.apply(original, this, [executable, args, options]);
+};
+syncBuiltinESMExports();
+'@
+    $guardSource.Replace('__HOME__', ($stdioHome | ConvertTo-Json -Compress)).Replace('__INVOCATION__', ($invocation | ConvertTo-Json -Compress)) |
+        Set-Content -LiteralPath $guard -Encoding utf8NoBOM
+    $info = [Diagnostics.ProcessStartInfo]::new($env:ComSpec)
+    $info.Arguments = '/d /s /c ""' + (Join-Path $release 'codej.cmd') + '" --stdio"'
+    $info.WorkingDirectory = $stdioWorkspace; $info.UseShellExecute = $false; $info.CreateNoWindow = $true
+    $info.RedirectStandardInput = $true; $info.RedirectStandardOutput = $true; $info.RedirectStandardError = $true
+    $info.StandardOutputEncoding = [Text.Encoding]::UTF8; $info.StandardErrorEncoding = [Text.Encoding]::UTF8
+    $info.Environment.Clear()
+    foreach ($name in @('PATH','PATHEXT','SystemRoot','WINDIR','TEMP','TMP','ComSpec')) {
+        $value = [Environment]::GetEnvironmentVariable($name, 'Process')
+        if ($null -ne $value) { $info.Environment[$name] = $value }
+    }
+    $info.Environment['NODE_OPTIONS'] = '--import=' + ([Uri]::new($guard)).AbsoluteUri
+    $info.Environment['HOME'] = $stdioHome; $info.Environment['USERPROFILE'] = $stdioHome
+    $stdioProcess = [Diagnostics.Process]::Start($info)
+    $outRead = $stdioProcess.StandardOutput.ReadToEndAsync(); $errRead = $stdioProcess.StandardError.ReadToEndAsync()
+    $stdioProcess.StandardInput.WriteLine('{"version":0,"type":"initialize","requestId":"installed-init","sequence":1,"payload":{}}')
+    $stdioProcess.StandardInput.WriteLine('{"version":0,"type":"shutdown","requestId":"installed-stop","sequence":2,"payload":{}}')
+    $stdioProcess.StandardInput.Close()
+    if (-not $stdioProcess.WaitForExit(15000)) { $stdioProcess.Kill($true); throw 'Installed launcher stdio did not exit' }
+    $stdioEvents = @($outRead.GetAwaiter().GetResult() -split "`n" | Where-Object { $_.Trim().Length -gt 0 } | ForEach-Object { $_ | ConvertFrom-Json })
+    $stdioError = $errRead.GetAwaiter().GetResult()
+    if ($stdioProcess.ExitCode -ne 0 -or @($stdioEvents | Where-Object type -eq 'initialized').Count -ne 1 `
+            -or $stdioError.Length -ne 0) {
+        $codes = @($stdioEvents | ForEach-Object { if ($_.payload.code -match '^[A-Z_]+$') { $_.payload.code } }) -join ','
+        throw "Installed launcher Java stdio smoke failed: exit=$($stdioProcess.ExitCode), events=$($stdioEvents.Count), codes=$codes, stderrBytes=$($stdioError.Length)"
+    }
+    if (-not (Test-Path -LiteralPath $invocation -PathType Leaf) `
+            -or @(Get-ChildItem -LiteralPath $stdioHome -Filter 'session.jsonl' -Recurse -Force).Count -ne 1) {
+        throw 'Installed launcher did not create its Session under the isolated home'
+    }
+    $stdioProcess.Dispose()
+} finally {
+    Remove-Item -LiteralPath $stdioFixture -Recurse -Force
 }
-Remove-Item -LiteralPath $stdioInput,$stdioOut,$stdioErr -Force
 
 $attestationPath = Join-Path $root 'target/codej-build-attestation.json'
 $attestationText = Get-Content -LiteralPath $attestationPath -Raw
@@ -173,4 +245,4 @@ if ($publicManifest.publicReleaseAllowed -ne $true) {
     throw 'Apache-2.0 LICENSE did not unlock explicit public release build'
 }
 
-Write-Output "S14 release self-test passed: $($components.Count) Maven components, checksums=$($checksumLines.Count)."
+Write-Output "S14 release self-test passed: $($components.Count) SBOM components, checksums=$($checksumLines.Count)."

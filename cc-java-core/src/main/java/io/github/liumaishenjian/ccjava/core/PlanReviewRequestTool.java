@@ -49,7 +49,12 @@ public final class PlanReviewRequestTool implements AgentTool {
     private final Supplier<Optional<String>> reviewBlockReason;
     private volatile PlanArtifact reviewArtifact;
 
-    /** 绑定当前 Session 的 durable 工件 store，不增加额外的 review readiness Gate。 */
+    /**
+     * 绑定当前 Session 的 durable 工件 store，不增加额外的 review readiness Gate。
+     * @param store 持久化工件端口，仍执行修订 CAS
+     * @param sessionId 所属 Session 身份
+     * @param clock 待审修订提交时间源
+     */
     public PlanReviewRequestTool(PlanArtifactStore store,
                                  io.github.liumaishenjian.ccjava.domain.SessionId sessionId,
                                  Clock clock) {
@@ -113,7 +118,10 @@ public final class PlanReviewRequestTool implements AgentTool {
                 reviewArtifact.revision()));
     }
 
-    /** 返回本次 Run 成功提交的 review revision。 */
+    /**
+     * 返回本次 Run 成功提交的 review revision。
+     * @return 本工具最近成功提交的待审工件；尚未成功提交时为空
+     */
     public synchronized java.util.Optional<PlanArtifact> reviewArtifact() {
         return java.util.Optional.ofNullable(reviewArtifact);
     }

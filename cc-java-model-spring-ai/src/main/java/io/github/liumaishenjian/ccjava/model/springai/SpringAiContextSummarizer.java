@@ -137,9 +137,12 @@ public final class SpringAiContextSummarizer implements ContextSummarizer {
             return Optional.empty();
         }
         Generation generation = response.getResult();
+        String finish = generation.getMetadata().getFinishReason();
+        // 同源Anthropic摘要使用end_turn表示正常完成；不把长度截断或工具终态当作可用摘要。
+        boolean completed = "stop".equalsIgnoreCase(finish) || "end_turn".equalsIgnoreCase(finish);
         if (generation.getOutput() == null
                 || !generation.getOutput().getToolCalls().isEmpty()
-                || !"stop".equalsIgnoreCase(generation.getMetadata().getFinishReason())) {
+                || !completed) {
             return Optional.empty();
         }
         String text = generation.getOutput().getText();

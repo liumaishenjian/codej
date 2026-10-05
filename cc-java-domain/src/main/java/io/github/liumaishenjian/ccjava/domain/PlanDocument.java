@@ -14,6 +14,7 @@ import java.util.Objects;
  */
 public record PlanDocument(String id, String objective, List<PlanStep> steps,
                            PlanStatus status, String workspaceDigest) {
+    /** 校验有界文本和连续步骤序号，并冻结步骤集合；不批准或执行计划。 */
     public PlanDocument {
         id = text(id, "id", 128);
         objective = text(objective, "objective", 8_000);
@@ -25,6 +26,11 @@ public record PlanDocument(String id, String objective, List<PlanStep> steps,
         status = Objects.requireNonNull(status, "status 不能为空");
         workspaceDigest = text(workspaceDigest, "workspaceDigest", 256);
     }
+    /**
+     * 生成保留目标、步骤与摘要的新状态文档；合法状态迁移由协调器负责。
+     * @param next 非空的目标状态
+     * @return 只替换状态的不可变文档
+     */
     public PlanDocument withStatus(PlanStatus next) {
         return new PlanDocument(id, objective, steps, next, workspaceDigest);
     }

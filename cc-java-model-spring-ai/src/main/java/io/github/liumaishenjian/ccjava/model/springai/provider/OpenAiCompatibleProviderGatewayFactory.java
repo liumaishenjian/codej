@@ -21,8 +21,13 @@ public final class OpenAiCompatibleProviderGatewayFactory implements ProviderGat
                     configuration.baseUri().toString(), new String(key), configuration.modelId());
             var resource = new OpenAiCompatibleModelFactory().createResource(
                     settings, configuration.staticHeaders(), configuration.requestTimeout());
-            return new CloseableModelGateway(
-                    new SpringAiModelGateway(resource.chatModel(), configuration.modelId()), resource);
+            try {
+                return new CloseableModelGateway(
+                        new SpringAiModelGateway(resource.chatModel(), configuration.modelId()), resource);
+            } catch (RuntimeException | Error failure) {
+                resource.close();
+                throw failure;
+            }
         } finally {
             Arrays.fill(key, '\0');
         }

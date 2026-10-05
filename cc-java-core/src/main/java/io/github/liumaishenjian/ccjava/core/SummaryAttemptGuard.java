@@ -9,9 +9,10 @@ import java.util.Set;
 import java.util.function.Supplier;
 
 /**
- * 保存单个 Agent Run 内 C3/C4 摘要尝试的并发安全冷却状态。
+ * 保存单个 Agent Run 或一次显式操作内 C3/C4 摘要尝试的并发安全冷却状态。
  *
- * <p>Guard 在构造时绑定唯一 Run ID，只保留该 Run 的 source revision/tier 组合。
+ * <p>公开构造器绑定唯一真实 Run ID；{@link #operationLocal()} 则创建无 Run 身份的局部模式。
+ * 两种入口严格隔离，只保留所属生命周期的 source revision/tier 组合。
  * {@link #close()} 与 {@link #tryAcquire(RunId, long, SummaryTier)} 使用同一把锁，因此
  * close 和 acquire 竞态只会产生“占用在线性化点前完成”或“关闭后拒绝”两种结果；关闭
  * 完成后不会残留跨 Run Key，也不会接受新的摘要尝试。</p>
@@ -25,7 +26,7 @@ import java.util.function.Supplier;
 public final class SummaryAttemptGuard implements AutoCloseable {
 
     private final Object lifecycleLock = new Object();
-    private final RunId runId;
+    private final Optional<RunId> runId;
     private final Set<Key> attempts = new HashSet<>();
     private boolean closed;
 
@@ -35,7 +36,58 @@ public final class SummaryAttemptGuard implements AutoCloseable {
      * @param runId 唯一所有者 Run
      */
     public SummaryAttemptGuard(RunId runId) {
-        this.runId = Objects.requireNonNull(runId, "runId 不能为空");
+        this.runId = Optional.of(Objects.requireNonNull(runId, "runId 不能为空"));
+    }
+
+    private SummaryAttemptGuard() {
+        this.runId = Optional.empty();
+    }
+
+    /**
+     * 创建一次显式操作独占的 Guard；它不是 Run，不能接受任何 Run ID。
+     *
+     * @return 每次操作必须新建并在结束时关闭的局部 Guard
+     */
+    public static SummaryAttemptGuard operationLocal() {
+        return new SummaryAttemptGuard();
+    }
+
+    /**
+     * 校验真实 Run 所有权及开放状态，即使本次 reduction 无需摘要也不能跳过。
+     *
+     * @param requestedRunId 必须与构造时绑定的真实 Run 一致
+     */
+    public void checkRun(RunId requestedRunId) {
+        Objects.requireNonNull(requestedRunId, "requestedRunId 不能为空");
+        if (runId.isEmpty() || !runId.orElseThrow().equals(requestedRunId)) {
+            throw new IllegalArgumentException("摘要尝试不属于当前 Guard 绑定的 Run");
+        }
+        synchronized (lifecycleLock) {
+            ensureOpen();
+        }
+    }
+
+    /** 校验操作局部模式及开放状态；普通 Run Guard 不能借此省略身份校验。 */
+    public void checkOperationLocal() {
+        if (runId.isPresent()) {
+            throw new IllegalStateException("Run Guard 不能用作操作局部 Guard");
+        }
+        synchronized (lifecycleLock) {
+            ensureOpen();
+        }
+    }
+
+    /**
+     * 不带 Run ID 地占用当前显式操作的一次摘要尝试。
+     *
+     * @param sourceRevision 当前规范历史 revision
+     * @param tier 摘要层级
+     * @return 当前操作中该 revision/tier 首次占用时为 true
+     * @throws IllegalStateException 非局部模式或已关闭时
+     */
+    public boolean tryAcquire(long sourceRevision, SummaryTier tier) {
+        checkOperationLocal();
+        return acquire(sourceRevision, tier);
     }
 
     /**
@@ -52,11 +104,12 @@ public final class SummaryAttemptGuard implements AutoCloseable {
             RunId requestedRunId,
             long sourceRevision,
             SummaryTier tier) {
-        Objects.requireNonNull(requestedRunId, "requestedRunId 不能为空");
+        checkRun(requestedRunId);
+        return acquire(sourceRevision, tier);
+    }
+
+    private boolean acquire(long sourceRevision, SummaryTier tier) {
         Objects.requireNonNull(tier, "tier 不能为空");
-        if (!runId.equals(requestedRunId)) {
-            throw new IllegalArgumentException("摘要尝试不属于当前 Guard 绑定的 Run");
-        }
         if (sourceRevision < 0) {
             throw new IllegalArgumentException("sourceRevision 不能为负数");
         }

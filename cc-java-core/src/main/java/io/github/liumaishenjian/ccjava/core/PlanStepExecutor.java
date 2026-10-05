@@ -12,10 +12,23 @@ import java.util.Objects;
  */
 @FunctionalInterface
 public interface PlanStepExecutor {
-    /** 执行一个已经通过 Plan Gate 的步骤。 */
+    /**
+     * 执行一个已经通过 Plan Gate 的步骤。
+     * @param step 当前独占领取的计划步骤
+     * @param cancellationToken 必须传播到真实执行边界的取消与时间预算
+     * @return 非空的类型化执行结果
+     */
     PlanStepExecutionResult execute(PlanStep step, CancellationToken cancellationToken);
 
-    /** 生产适配器的统一 Pipeline 执行工厂。 */
+    /**
+     * 创建将显式工具意图交给统一 Pipeline 的执行器。
+     * <p>该适配器沿用步骤的预期摘要，不重新扫描工作区；需要真实执行后摘要的宿主应提供
+     * 自己的执行适配器。内部 Agent Run 标记不应提交至此入口。</p>
+     * @param pipeline 非空的统一工具管线
+     * @param session 工具执行所属的非空 Session
+     * @param runId 工具事实绑定的非空 Run 身份
+     * @return 绑定 Session 和 Run 的步骤执行器
+     */
     static PlanStepExecutor pipeline(
             ToolExecutionPipeline pipeline, AgentSession session, RunId runId) {
         Objects.requireNonNull(pipeline, "pipeline 不能为空");
@@ -37,7 +50,11 @@ public interface PlanStepExecutor {
         };
     }
 
-    /** 校验执行结果，避免实现返回空值或伪造摘要。 */
+    /**
+     * 拒绝执行器返回空结果；本方法不验证摘要真实性。
+     * @param result 执行器返回的结果
+     * @return 原结果对象；null 时抛出异常
+     */
     static PlanStepExecutionResult requireResult(PlanStepExecutionResult result) {
         return Objects.requireNonNull(result, "Plan step result 不能为空");
     }

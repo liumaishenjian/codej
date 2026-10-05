@@ -20,7 +20,10 @@ public interface PlanVerificationSkipCoordinator {
      */
     boolean approve(PlanVerificationSkipDecision proposed);
 
-    /** 返回拒绝所有提议的安全默认实现。 */
+    /**
+     * 返回拒绝所有提议的安全默认实现。
+     * @return 不签发授权且始终返回 false 的协调器
+     */
     static PlanVerificationSkipCoordinator unavailable() {
         return ignored -> false;
     }

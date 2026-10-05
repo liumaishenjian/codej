@@ -42,7 +42,7 @@ public final class SummaryReductionCoordinator implements AutoCloseable {
      *
      * @param summarizer 仅生成摘要候选、不得执行 Tool 的 Port
      * @param estimator 对候选 Projection 重新计算容量的 Core 策略
-     * @param attemptGuard 绑定唯一 Run 的 tier 冷却与关闭线性化 Guard
+     * @param attemptGuard 绑定唯一 Run 或显式操作的 tier 冷却与关闭线性化 Guard
      */
     public SummaryReductionCoordinator(
             ContextSummarizer summarizer,
@@ -69,7 +69,9 @@ public final class SummaryReductionCoordinator implements AutoCloseable {
             ContextProjection previousProjection,
             SummaryReductionPolicy policy,
             CancellationToken cancellationToken) {
-        return reduceInternal(runId, request, previousProjection, policy, cancellationToken, false);
+        attemptGuard.checkRun(runId);
+        return reduceInternal((revision, tier) -> attemptGuard.tryAcquire(runId, revision, tier),
+                request, previousProjection, policy, cancellationToken, false);
     }
 
     /**
@@ -92,17 +94,40 @@ public final class SummaryReductionCoordinator implements AutoCloseable {
             ContextProjection previousProjection,
             SummaryReductionPolicy policy,
             CancellationToken cancellationToken) {
-        return reduceInternal(runId, request, previousProjection, policy, cancellationToken, true);
+        attemptGuard.checkRun(runId);
+        return reduceInternal((revision, tier) -> attemptGuard.tryAcquire(runId, revision, tier),
+                request, previousProjection, policy, cancellationToken, true);
+    }
+
+    /**
+     * 执行无 Run 身份的显式摘要；调用方必须为每次操作新建局部 Guard 并关闭 Coordinator。
+     *
+     * <p>只省略 Run 身份，不省略 C3/C4 次序、冷却、候选及取消 Gate。
+     * Run 级 Coordinator 不能通过此入口绕过所有权检查。</p>
+     *
+     * @param request 原始 Canonical 快照和容量边界
+     * @param previousProjection C1/C2 后的完整 Projection
+     * @param policy 摘要资格及输出限制
+     * @param cancellationToken 提交前必须检查的取消令牌
+     * @return 采用候选或保留原 Projection 的终态
+     */
+    public SummaryOutcome reduceExplicitly(
+            ProjectionRequest request,
+            ContextProjection previousProjection,
+            SummaryReductionPolicy policy,
+            CancellationToken cancellationToken) {
+        attemptGuard.checkOperationLocal();
+        return reduceInternal(attemptGuard::tryAcquire,
+                request, previousProjection, policy, cancellationToken, true);
     }
 
     private SummaryOutcome reduceInternal(
-            RunId runId,
+            AttemptEntry entry,
             ProjectionRequest request,
             ContextProjection previousProjection,
             SummaryReductionPolicy policy,
             CancellationToken cancellationToken,
             boolean explicitRequest) {
-        Objects.requireNonNull(runId, "runId 不能为空");
         if (!attemptGuard.isOpen()) {
             throw new IllegalStateException("SummaryReductionCoordinator 已关闭");
         }
@@ -140,7 +165,7 @@ public final class SummaryReductionCoordinator implements AutoCloseable {
                     SummaryTier.C3_ROLLING));
         } else {
             Attempt c3 = attempt(
-                    runId,
+                    entry,
                     request,
                     previousProjection,
                     policy,
@@ -181,7 +206,7 @@ public final class SummaryReductionCoordinator implements AutoCloseable {
             return unchanged(previousProjection, attempts, diagnostics);
         }
         Attempt c4 = attempt(
-                runId,
+                entry,
                 request,
                 previousProjection,
                 policy,
@@ -206,7 +231,7 @@ public final class SummaryReductionCoordinator implements AutoCloseable {
     }
 
     private Attempt attempt(
-            RunId runId,
+            AttemptEntry entry,
             ProjectionRequest projectionRequest,
             ContextProjection previous,
             SummaryReductionPolicy policy,
@@ -215,7 +240,7 @@ public final class SummaryReductionCoordinator implements AutoCloseable {
             List<String> anchors,
             List<SummaryTier> attempts,
             CancellationToken cancellationToken) {
-        if (!attemptGuard.tryAcquire(runId, projectionRequest.sourceRevision(), tier)) {
+        if (!entry.acquire(projectionRequest.sourceRevision(), tier)) {
             return Attempt.rejected(SummaryDiagnostic.tier(
                     SummaryDiagnostic.Kind.ATTEMPT_COOLDOWN, tier));
         }
@@ -543,6 +568,12 @@ public final class SummaryReductionCoordinator implements AutoCloseable {
                 attempts,
                 complete,
                 Optional.empty());
+    }
+
+    /** 内部占用策略固定入口身份，不把缺失身份编码成 null 或合成 Run ID。 */
+    @FunctionalInterface
+    private interface AttemptEntry {
+        boolean acquire(long revision, SummaryTier tier);
     }
 
     private record Range(int fromInclusive, int toExclusive) {

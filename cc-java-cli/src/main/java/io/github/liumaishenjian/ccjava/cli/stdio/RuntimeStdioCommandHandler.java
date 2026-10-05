@@ -462,6 +462,8 @@ public final class RuntimeStdioCommandHandler
 
     private boolean questionnaireV1;
     private boolean experienceV1;
+    private boolean authLifecycleV1;
+    private boolean piProviderV1;
     private boolean directedChunkInputV1;
 
     private StdioProtocol.Disposition initialize(
@@ -476,13 +478,17 @@ public final class RuntimeStdioCommandHandler
                         "initialize 不能携带 Session 或 Run");
             }
             for (String capability : java.util.List.of(
-                    "questionnaireV1", "experienceV1", "directedChunkInputV1")) {
+                    "questionnaireV1", "experienceV1", "directedChunkInputV1", "authLifecycleV1", "piProviderV1")) {
                 JsonNode flag = command.payload().get(capability);
                 if (flag != null && !flag.isBoolean()) throw protocolError("INVALID_PAYLOAD", command, "能力标记必须为 boolean");
             }
             questionnaireV1 = command.payload().has("questionnaireV1") && command.payload().get("questionnaireV1").booleanValue();
             experienceV1 = command.payload().has("experienceV1") && command.payload().get("experienceV1").booleanValue();
-            approvals.enableFilePreviews(experienceV1);
+              approvals.enableFilePreviews(experienceV1);
+              authLifecycleV1 = providerAuth != null && command.payload().has("authLifecycleV1")
+                      && command.payload().get("authLifecycleV1").booleanValue();
+              piProviderV1 = authLifecycleV1 && providerAuth.supportsPiControl()
+                      && command.payload().has("piProviderV1") && command.payload().get("piProviderV1").booleanValue();
             directedChunkInputV1 = command.payload().has("directedChunkInputV1")
                     && command.payload().get("directedChunkInputV1").booleanValue();
 
@@ -500,11 +506,20 @@ public final class RuntimeStdioCommandHandler
         payload.put("protocolVersion", StdioProtocol.VERSION);
         if (questionnaireV1) payload.put("questionnaireV1", true);
         if (experienceV1) payload.put("experienceV1", true);
+        if (authLifecycleV1) {
+            payload.put("authLifecycleV1", true);
+            payload.put("openRouterBrowserAuthV1", io.github.liumaishenjian.ccjava.cli.auth.BrowserAuthConfiguration.available());
+        }
+        if (piProviderV1) {
+            payload.put("piProviderV1", true);
+            payload.put("piWorkerAvailable", providerAuth.piComponentAvailable());
+        }
         if (directedChunkInputV1) payload.put("directedChunkInputV1", true);
         var sessionOpen = application.sessionOpenResult();
         payload.put("openMode", sessionOpen.mode().name().toLowerCase(Locale.ROOT));
         payload.put("readOnly", sessionOpen.readOnly());
-        payload.put("modelConfigured", modelConfigured());
+        // 未装配认证服务的嵌入式/Fake宿主没有配置权威；缺字段表示Unknown，不能谎报未配置。
+        if (providerAuth != null) payload.put("modelConfigured", modelConfigured());
         sessionOpen.parentSessionId().ifPresent(parent ->
                 payload.put("parentSessionId", parent.value()));
         ArrayNode warnings = codec.arrayNode();
@@ -977,11 +992,13 @@ public final class RuntimeStdioCommandHandler
         }
     }
 
-    private ObjectNode taskPayload(io.github.liumaishenjian.ccjava.domain.subagent.ChildTaskReport report) {
-        ObjectNode payload = codec.objectNode();
+    /** 纯任务快照投影；运行终态不证明 owned 资源已释放，不读取 Runtime 或本机配置。 */
+    static ObjectNode taskPayload(io.github.liumaishenjian.ccjava.domain.subagent.ChildTaskReport report) {
+        ObjectNode payload = tools.jackson.databind.node.JsonNodeFactory.instance.objectNode();
         payload.put("taskId", report.taskId().value());
         payload.put("definitionId", report.definitionId().value());
         payload.put("status", report.status().name().toLowerCase(Locale.ROOT));
+        payload.put("cleanupStatus", report.cleanupStatus().name().toLowerCase(Locale.ROOT));
         payload.put("failure", report.failureCode().name().toLowerCase(Locale.ROOT));
         payload.put("modelTurns", report.modelTurns());
         payload.put("toolCalls", report.toolCalls());
@@ -1448,12 +1465,20 @@ public final class RuntimeStdioCommandHandler
         }
         String controlId = requiredSessionCommandText(command, "controlId");
         String intent = requiredSessionCommandText(command, "intent");
+        codec.validateProviderControlArguments(command.payload(), command.requestId());
         JsonNode arguments = command.payload().get("arguments");
+        boolean pi = arguments.has("backend") && "pi".equals(arguments.get("backend").stringValue());
+        if (pi && !piProviderV1) throw protocolError("INVALID_STATE", command, "未协商 Pi Provider 能力");
+        if ((intent.equals("auth.activate") || intent.startsWith("auth.logout.")) && !authLifecycleV1) {
+            throw protocolError("INVALID_STATE", command, "未协商认证生命周期能力");
+        }
         ObjectNode result = codec.objectNode();
         String status = "succeeded";
         String code = "OK";
         try {
-            switch (intent) {
+            if (pi) {
+                result = PiProviderControl.execute(intent, arguments, providerAuth, application.sessionId().value(), codec);
+            } else switch (intent) {
                 case "providers.configure" -> {
                     var configured = providerAuth.configureCodejProvider(
                             new io.github.liumaishenjian.ccjava.cli.runtime.ProviderAuthApplicationService
@@ -1537,6 +1562,24 @@ public final class RuntimeStdioCommandHandler
                     result.put("providerId", probe.providerId()); result.put("profileId", probe.profileId());
                     result.put("modelId", probe.modelId()); result.put("outcome", probe.outcome().name());
                     result.put("probedAt", probe.probedAt().toString());
+                }
+                case "auth.activate" -> {
+                    var profile = providerAuth.activateLogin(requiredArgument(arguments, "providerId"),
+                            requiredArgument(arguments, "profileId"), CancellationToken.none());
+                    result.put("providerId", profile.providerId()); result.put("profileId", profile.profileId());
+                    result.put("localStatus", profile.status().name());
+                }
+                case "auth.logout.prepare" -> {
+                    var preview = providerAuth.prepareLogout(requiredArgument(arguments, "providerId"),
+                            requiredArgument(arguments, "profileId"), application.sessionId().value(), CancellationToken.none());
+                    result.put("providerId", preview.providerId()); result.put("profileId", preview.profileId());
+                    result.put("confirmationId", preview.confirmationId());
+                }
+                case "auth.logout.commit" -> {
+                    var logout = providerAuth.commitLogout(requiredArgument(arguments, "confirmationId"),
+                            application.sessionId().value(), CancellationToken.none());
+                    result.put("providerId", logout.providerId()); result.put("profileId", logout.profileId());
+                    result.put("remoteRevoked", false);
                 }
                 case "auth.logout" -> {
                     var logout = providerAuth.logout(requiredArgument(arguments, "providerId"),
@@ -2150,7 +2193,7 @@ public final class RuntimeStdioCommandHandler
                     : application.run(message);
             emitTerminal(run, result);
         } catch (RuntimeException exception) {
-            emitUnexpectedFailure(run);
+            emitUnexpectedFailure(run, exception);
         }
     }
 
@@ -2158,7 +2201,7 @@ public final class RuntimeStdioCommandHandler
         try {
             emitTerminal(run, application.runPlan(task));
         } catch (RuntimeException exception) {
-            emitUnexpectedFailure(run);
+            emitUnexpectedFailure(run, exception);
         }
     }
 
@@ -2187,7 +2230,7 @@ public final class RuntimeStdioCommandHandler
         } catch (HeadlessRuntimeSession.PlanExecutionWorkspaceDriftException drift) {
             // typed session-level plan.execution.blocked 已在抛出前发布；不得再伪造成 run.failed。
         } catch (RuntimeException exception) {
-            emitUnexpectedFailure(run);
+            emitUnexpectedFailure(run, exception);
         }
     }
 
@@ -2252,7 +2295,7 @@ public final class RuntimeStdioCommandHandler
             completed.put("stopReason", "internal_error");
             run.events.emit("skill.completed", run.requestId, Optional.of(application.sessionId().value()),
                     Optional.ofNullable(run.runId).map(RunId::value), completed);
-            emitUnexpectedFailure(run);
+            emitUnexpectedFailure(run, exception);
         }
     }
 
@@ -2814,7 +2857,7 @@ public final class RuntimeStdioCommandHandler
         return normalized.substring(0, end) + "…";
     }
 
-    private void emitUnexpectedFailure(ActiveRun run) {
+    private void emitUnexpectedFailure(ActiveRun run, RuntimeException exception) {
         boolean failedBeforeStart;
         synchronized (lock) {
             if (activeRun != run) {
@@ -2824,7 +2867,8 @@ public final class RuntimeStdioCommandHandler
         }
         if (failedBeforeStart) {
             ObjectNode payload = codec.objectNode();
-            payload.put("code", "RUNTIME_LAUNCH_FAILED");
+            payload.put("code", exception instanceof io.github.liumaishenjian.ccjava.core.ModelContextBudgetException
+                    ? "MODEL_CONTEXT_BUDGET_INCOMPATIBLE" : "RUNTIME_LAUNCH_FAILED");
             payload.put("stopReason", "internal_error");
             boolean scheduleSteering = releaseRunBeforeTerminal(run, false);
             try {

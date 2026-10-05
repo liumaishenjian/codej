@@ -81,6 +81,8 @@ public final class FileSessionStore implements SessionStore, SessionJournal,
             new LinkedHashMap<>();
     private final Map<SessionId, java.util.Set<RunId>> terminatedTaskRuns = new LinkedHashMap<>();
     private final List<OpenSession> inspectedSessions = new ArrayList<>();
+    private boolean closeRequested;
+    private boolean resourceCleanupFailed;
 
     /**
      * 创建可注入 root 的持久 Store。
@@ -204,7 +206,7 @@ public final class FileSessionStore implements SessionStore, SessionJournal,
                         CancellationToken.none());
             }
         } finally {
-            opened.release();
+            release(opened);
         }
     }
 
@@ -306,7 +308,11 @@ public final class FileSessionStore implements SessionStore, SessionJournal,
         }
     }
 
-    /** 返回仅在 durable writer 可用时存在的 Session-owned Task Board 服务。 */
+    /**
+     * 返回仅在 durable writer 可用时存在的 Session-owned Task Board 服务。
+     * @param id 非空的目标 Session 身份
+     * @return 可写任务板；未打开、只读或已 fence 时为空
+     */
     public synchronized Optional<io.github.liumaishenjian.ccjava.core.task.TaskListService> taskBoard(SessionId id) {
         OpenSession opened = writerSessions.get(Objects.requireNonNull(id, "id 不能为空"));
         if (opened == null || opened.readOnly || opened.session.isFenced()) return Optional.empty();
@@ -314,21 +320,25 @@ public final class FileSessionStore implements SessionStore, SessionJournal,
     }
 
     /**
-     * 在 Tool started 前追加 durable Checkpoint 创建事实。
-     *
-     * @param sessionId 目标 Session
-     * @param runId 当前 Run
-     * @param ordinal Tool ordinal
-     * @param summary 安全 Checkpoint 摘要
-     * @param preDigest pre-image digest 或固定 {@code ABSENT}
+     * 持久化 Session-owned Plan 的完整安全投影；调用者必须在每次状态迁移后调用。
+     * @param sessionId 持有可用 writer 的目标 Session
+     * @param document 当前计划文档
+     * @param state 与文档对应的执行状态
      */
-    /** 持久化 Session-owned Plan 的完整安全投影；调用者必须在每次状态迁移后调用。 */
     public synchronized void planSnapshot(
             SessionId sessionId, PlanDocument document, PlanExecutionState state) {
         OpenSession opened = writer(sessionId);
         appendAndAdvance(opened, codec.encodePlanSnapshot(opened.nextSequence, document, state));
     }
 
+    /**
+     * 在 Tool started 前追加 durable Checkpoint 创建事实。
+     * @param sessionId 目标 Session
+     * @param runId 当前 Run
+     * @param ordinal Tool ordinal
+     * @param summary 安全 Checkpoint 摘要
+     * @param preDigest pre-image digest 或固定 {@code ABSENT}
+     */
     public synchronized void checkpointCreated(
             SessionId sessionId,
             RunId runId,
@@ -386,11 +396,12 @@ public final class FileSessionStore implements SessionStore, SessionJournal,
      */
     @Override
     public synchronized void close() {
+        closeRequested = true;
         for (OpenSession session : new ArrayList<>(writerSessions.values())) {
             try {
                 close(session.session.id());
             } catch (RuntimeException ignored) {
-                session.release();
+                release(session);
             }
         }
         writerSessions.clear();
@@ -398,9 +409,25 @@ public final class FileSessionStore implements SessionStore, SessionJournal,
             if (!inspected.session.isClosed()) {
                 SessionStoreAccess.discardRecoveredSession(inspected.session);
             }
-            inspected.release();
+            release(inspected);
         }
         inspectedSessions.clear();
+    }
+
+    /**
+     * 查询本Store声明的channel/lock清理证据，保留原best-effort close接口。
+     * @return 关闭IO异常为sticky UNCONFIRMED；map清空本身不证明资源释放
+     */
+    public synchronized io.github.liumaishenjian.ccjava.domain.ResourceCleanupStatus cleanupStatus() {
+        if (resourceCleanupFailed) return io.github.liumaishenjian.ccjava.domain.ResourceCleanupStatus.UNCONFIRMED;
+        if (!closeRequested) return io.github.liumaishenjian.ccjava.domain.ResourceCleanupStatus.NOT_STARTED;
+        return writerSessions.isEmpty() && inspectedSessions.isEmpty()
+                ? io.github.liumaishenjian.ccjava.domain.ResourceCleanupStatus.RELEASED
+                : io.github.liumaishenjian.ccjava.domain.ResourceCleanupStatus.CLEANING;
+    }
+
+    private void release(OpenSession session) {
+        if (!session.release()) resourceCleanupFailed = true;
     }
 
     private SessionOpenResult createResult(
@@ -436,7 +463,7 @@ public final class FileSessionStore implements SessionStore, SessionJournal,
             writerSessions.remove(id, opened);
             taskBoards.remove(id);
             terminatedTaskRuns.remove(id);
-            opened.release();
+            release(opened);
             rollbackNewSession(id);
             throw failure;
         }
@@ -656,7 +683,7 @@ public final class FileSessionStore implements SessionStore, SessionJournal,
             writerSessions.remove(targetId, target);
             taskBoards.remove(targetId);
             terminatedTaskRuns.remove(targetId);
-            target.release();
+            release(target);
             rollbackNewSession(targetId);
             throw failure;
         }
@@ -815,39 +842,44 @@ public final class FileSessionStore implements SessionStore, SessionJournal,
             lock = null;
             return opened;
         } catch (SessionOpenException known) {
-            releaseOpenResources(journalChannel, lock, lockChannel);
+            if (!releaseOpenResources(journalChannel, lock, lockChannel)) resourceCleanupFailed = true;
             throw known;
         } catch (IOException exception) {
-            releaseOpenResources(journalChannel, lock, lockChannel);
+            if (!releaseOpenResources(journalChannel, lock, lockChannel)) resourceCleanupFailed = true;
             throw new SessionOpenException("STORE_IO", "无法安全打开 Session Store");
         } catch (RuntimeException failure) {
-            releaseOpenResources(journalChannel, lock, lockChannel);
+            if (!releaseOpenResources(journalChannel, lock, lockChannel)) resourceCleanupFailed = true;
             throw failure;
         }
     }
 
-    private static void releaseOpenResources(
+    private static boolean releaseOpenResources(
             FileChannel journalChannel,
             FileLock lock,
             FileChannel lockChannel) {
+        boolean confirmed = true;
         try {
             if (journalChannel != null) {
                 journalChannel.close();
             }
         } catch (IOException ignored) {
+            confirmed = false;
         }
         try {
             if (lock != null && lock.isValid()) {
                 lock.release();
             }
         } catch (IOException ignored) {
+            confirmed = false;
         }
         try {
             if (lockChannel != null) {
                 lockChannel.close();
             }
         } catch (IOException ignored) {
+            confirmed = false;
         }
+        return confirmed;
     }
 
     private JournalRead readJournal(SessionId id) {
@@ -1196,25 +1228,30 @@ public final class FileSessionStore implements SessionStore, SessionJournal,
             return new OpenSession(session, true, nextSequence, null, null, null);
         }
 
-        private void release() {
+        private boolean release() {
+            boolean confirmed = true;
             try {
                 if (lock != null && lock.isValid()) {
                     lock.release();
                 }
             } catch (IOException ignored) {
+                confirmed = false;
             }
             try {
                 if (channel != null) {
                     channel.close();
                 }
             } catch (IOException ignored) {
+                confirmed = false;
             }
             try {
                 if (lockChannel != null) {
                     lockChannel.close();
                 }
             } catch (IOException ignored) {
+                confirmed = false;
             }
+            return confirmed;
         }
     }
 }

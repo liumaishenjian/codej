@@ -69,6 +69,7 @@ class TaskToolProductionCompositionTest {
     void approvedPlanReusesTaskCreatedDuringPlanningAfterListAndGetDiscovery(@TempDir Path root)
             throws Exception {
         Path workspace = Files.createDirectory(root.resolve("workspace-discovery"));
+        Files.writeString(workspace.resolve("verification.txt"), "public task fixture input");
         CopyOnWriteArrayList<ModelRequest> requests = new CopyOnWriteArrayList<>();
         java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
         String markdown = "# 中文执行计划\n\n## 拟定步骤\n1. 检查已有任务。\n";
@@ -83,7 +84,7 @@ class TaskToolProductionCompositionTest {
                 case 3 -> ModelTurn.text("规划完成");
                 case 4 -> ModelTurn.tools(List.of(new ToolCall("list", "task_list", JsonObject.empty())));
                 case 5 -> ModelTurn.tools(List.of(new ToolCall("get", "task_get",
-                        new JsonObject(Map.of("task_id", "task-1")))));
+                        new JsonObject(Map.of("task_id", "task-1"))), workspaceVerification()));
                 case 6 -> ModelTurn.tools(List.of(new ToolCall("claim", "task_update", new JsonObject(Map.of(
                         "task_id", "task-1", "status", "IN_PROGRESS", "active_form", "正在检查已有任务")))));
                 case 7 -> ModelTurn.tools(List.of(new ToolCall("complete", "task_update", new JsonObject(Map.of(
@@ -292,6 +293,7 @@ class TaskToolProductionCompositionTest {
     @Test
     void completedTaskCanBeListedBeforeEvidenceValidFinalResponse(@TempDir Path root) throws Exception {
         Path workspace = Files.createDirectory(root.resolve("workspace-post-completion-list"));
+        Files.writeString(workspace.resolve("verification.txt"), "public task fixture input");
         CopyOnWriteArrayList<ModelRequest> requests = new CopyOnWriteArrayList<>();
         java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
         String markdown = "# 中文执行计划\n\n## 拟定步骤\n1. 完成唯一任务。\n";
@@ -309,7 +311,7 @@ class TaskToolProductionCompositionTest {
                 case 5 -> ModelTurn.text("规划完成");
                 case 6 -> ModelTurn.tools(List.of(new ToolCall("list-before", "task_list", JsonObject.empty())));
                 case 7 -> ModelTurn.tools(List.of(new ToolCall("get", "task_get",
-                        new JsonObject(Map.of("task_id", "task-2")))));
+                        new JsonObject(Map.of("task_id", "task-2"))), workspaceVerification()));
                 case 8 -> ModelTurn.tools(List.of(new ToolCall("claim", "task_update", new JsonObject(Map.of(
                         "task_id", "task-2", "status", "IN_PROGRESS", "active_form", "正在执行中文任务")))));
                 case 9 -> ModelTurn.tools(List.of(new ToolCall("complete", "task_update", new JsonObject(Map.of(
@@ -356,6 +358,7 @@ class TaskToolProductionCompositionTest {
     @Test
     void incompleteTaskWithholdsFinalResponseUntilSameIdentityCompletes(@TempDir Path root) throws Exception {
         Path workspace = Files.createDirectory(root.resolve("workspace-advisory-task"));
+        Files.writeString(workspace.resolve("verification.txt"), "public task fixture input");
         CopyOnWriteArrayList<ModelRequest> requests = new CopyOnWriteArrayList<>();
         java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
         String markdown = "# 中文执行计划\n\n## 拟定步骤\n1. 完成唯一任务。\n";
@@ -370,7 +373,7 @@ class TaskToolProductionCompositionTest {
                 case 3 -> ModelTurn.text("规划完成");
                 case 4 -> ModelTurn.tools(List.of(new ToolCall("list", "task_list", JsonObject.empty())));
                 case 5 -> ModelTurn.tools(List.of(new ToolCall("get", "task_get",
-                        new JsonObject(Map.of("task_id", "task-1")))));
+                        new JsonObject(Map.of("task_id", "task-1"))), workspaceVerification()));
                 case 6 -> ModelTurn.tools(List.of(new ToolCall("claim", "task_update", new JsonObject(Map.of(
                         "task_id", "task-1", "status", "IN_PROGRESS", "active_form", "正在执行中文任务")))));
                 case 7 -> ModelTurn.text("错误声称任务已经完成");
@@ -545,6 +548,11 @@ class TaskToolProductionCompositionTest {
                 .filteredOn(definition -> definition.name().startsWith("task_"))
                 .extracting(definition -> definition.name())
                 .containsExactlyInAnyOrderElementsOf(TASK_TOOLS));
+    }
+
+    /** ADR-098要求实际工作区操作作交付证据；Task CRUD仍单独验证身份和完成状态。 */
+    private static ToolCall workspaceVerification() {
+        return new ToolCall("workspace-verification", "read_file", new JsonObject(Map.of("path", "verification.txt")));
     }
 
     private static HeadlessRuntimeSession productionRuntime(

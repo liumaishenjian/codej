@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.github.liumaishenjian.ccjava.domain.subagent.*;
+import io.github.liumaishenjian.ccjava.domain.ResourceCleanupStatus;
 import java.time.Duration;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
@@ -28,7 +29,30 @@ class FileChildTaskJournalTest {
                 assertThat(report.taskId()).isEqualTo(incomplete);
                 assertThat(report.status()).isEqualTo(ChildTaskStatus.INTERRUPTED_UNKNOWN);
                 assertThat(report.verified()).isFalse();
+                assertThat(report.cleanupStatus()).isEqualTo(ResourceCleanupStatus.UNKNOWN);
             });
+        }
+    }
+
+    @Test
+    void terminalPersistsOnlyItsCleanupSnapshotAndDoesNotPermitLaterCleanupEvents() throws Exception {
+        var id = new ChildTaskId("task-cleanup-snapshot");
+        try (var journal = new FileChildTaskJournal(temp)) {
+            journal.requested(id); journal.started(id);
+            journal.terminal(new ChildTaskReport(id, new AgentDefinitionId("research"), ChildTaskStatus.SUCCEEDED,
+                    ChildTaskFailureCode.NONE, 1, 0, 0, Duration.ZERO, "completed", true, Optional.empty())
+                    .withCleanupStatus(ResourceCleanupStatus.CLEANING));
+            assertThat(journal.interruptedUnknown()).isEmpty();
+        }
+        var path = temp.resolve("child-tasks.jsonl");
+        var lines = java.nio.file.Files.readAllLines(path);
+        assertThat(lines).hasSize(3);
+        assertThat(lines.getLast()).contains("\"cleanupStatus\":\"CLEANING\"")
+                .doesNotContain("RELEASED", "private close detail");
+        java.nio.file.Files.writeString(path, "{\"taskId\":\"task-cleanup-snapshot\",\"event\":\"cleanup\"}\n",
+                java.nio.file.StandardOpenOption.APPEND);
+        try (var journal = new FileChildTaskJournal(temp)) {
+            assertThatThrownBy(journal::interruptedUnknown).isInstanceOf(IllegalStateException.class);
         }
     }
 

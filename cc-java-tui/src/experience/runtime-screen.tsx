@@ -1,4 +1,5 @@
 import {fileReviewRows} from './file-review.js';
+import {authRows} from './auth-screen.js';
 import stringWidth from 'string-width';
 import {glyphs} from './editor.js';
 import type {Draft} from './editor.js';
@@ -37,7 +38,7 @@ export function visitQuestion(ui: RuntimeUi, panel: QuestionsPanel, index: numbe
   const focus = target ? questionFocus[target.id] ?? 0 : 0;
   return {...ui, question, questionFocus, focus, editing: false, panelScroll: 0};
 }
-export const runtimeCommands = ['/plan', '/help'];
+export const runtimeCommands = ['/plan', '/help', '/login', '/logout', '/connect', '/auth', '/models'];
 export function questionAnswers(panel: QuestionsPanel, ui: RuntimeUi): Answer[] {
   return panel.questions.map(q => ui.answers[q.id] ?? {questionId: q.id, optionIds: [], freeText: ''});
 }
@@ -200,7 +201,10 @@ function resultSummaryText(block: ToolRecord): string {
   const counts = summary.replacements !== undefined ? ' · ' + summary.replacements + ' 处替换' : '';
   return operation + ' ' + summary.path + verified + counts;
 }
-export function runtimeFrame(state: RuntimeSnapshot, ui: RuntimeUi, width: number, height: number, now = Date.now(), hideHeader = false): {rows: Row[]; bodyRows: Row[]; fixedRows: Row[]; total: number; maxScroll: number; maxPanelScroll: number} {
+export function runtimeFrame(state: RuntimeSnapshot, ui: RuntimeUi, width: number, height: number, now = Date.now(), hideHeaderOrAuthorizationUrl: boolean | string = false, authorizationUrl?: string): {rows: Row[]; bodyRows: Row[]; fixedRows: Row[]; total: number; maxScroll: number; maxPanelScroll: number} {
+  // 保留历史的 hideHeader 第六参数，同时兼容认证链接的旧调用形态。
+  const hideHeader = typeof hideHeaderOrAuthorizationUrl === 'boolean' ? hideHeaderOrAuthorizationUrl : false;
+  const authUrl = typeof hideHeaderOrAuthorizationUrl === 'string' ? hideHeaderOrAuthorizationUrl : authorizationUrl;
   const panel = writer(Math.max(12, width)), detail = writer(Math.max(12, width));
   const muted = (text: string) => [span(text, palette.muted)];
   const rule = () => panel.add(muted('─'.repeat(width)));
@@ -214,7 +218,9 @@ export function runtimeFrame(state: RuntimeSnapshot, ui: RuntimeUi, width: numbe
   const pending = state.pending;
   const noticeRows = state.notice ? lines([span(state.notice, palette.accent)], Math.max(12, width)) : [];
   let fixed: Row[] = []; let maxPanelScroll = 0;
-  if (pending?.kind === 'approval') {
+  if (state.auth) {
+    panel.rows.push(...authRows(state.auth, width, height, authUrl));
+  } else if (pending?.kind === 'approval') {
     detail.add([span(pending.command ? ' ' + (pending.shell || '命令审批') : ' 操作审批', undefined, true)]); detail.blank();
     if (pending.command) {detail.add('  ' + pending.command); detail.add(muted('  目录：' + pending.directory));}
     else {
@@ -314,6 +320,6 @@ export function runtimeFrame(state: RuntimeSnapshot, ui: RuntimeUi, width: numbe
   const visible = body.rows.slice(top, end);
   return {rows: [...visible, ...fixed].slice(-height), bodyRows: body.rows, fixedRows: fixed, total: body.rows.length, maxScroll: maximum, maxPanelScroll};
 }
-export function RuntimeScreen({state, ui, columns, rows, now}: {state: RuntimeSnapshot; ui: RuntimeUi; columns: number; rows: number; now: number}) {
-  return <RowView columns={columns} rows={runtimeFrame(state, ui, columns, rows, now).rows}/>;
+export function RuntimeScreen({state, ui, columns, rows, now, authorizationUrl}: {state: RuntimeSnapshot; ui: RuntimeUi; columns: number; rows: number; now: number; authorizationUrl?: string}) {
+  return <RowView columns={columns} rows={runtimeFrame(state, ui, columns, rows, now, false, authorizationUrl).rows}/>;
 }

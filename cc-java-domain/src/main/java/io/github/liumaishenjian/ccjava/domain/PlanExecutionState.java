@@ -15,6 +15,7 @@ import java.util.Objects;
 public record PlanExecutionState(String planId, PlanApprovalGate approvalGate,
                                  Integer nextStep, Integer activeStep,
                                  PlanStatus status, String workspaceDigest) {
+    /** 校验摘要、正数步骤游标及审批前无活动步骤的不变量。 */
     public PlanExecutionState {
         planId = require(planId, "planId", 128);
         approvalGate = Objects.requireNonNull(approvalGate, "approvalGate 不能为空");
@@ -29,6 +30,10 @@ public record PlanExecutionState(String planId, PlanApprovalGate approvalGate,
             throw new IllegalArgumentException("未批准不能有活动步骤");
         }
     }
+    /**
+     * 判断计划审批 Gate 是否允许进入副作用执行阶段，不替代逐工具权限和摘要检查。
+     * @return Gate 为 APPROVED 时为 true
+     */
     public boolean sideEffectsAllowed() { return approvalGate == PlanApprovalGate.APPROVED; }
     private static String require(String value, String name, int max) {
         Objects.requireNonNull(value, name + " 不能为空");

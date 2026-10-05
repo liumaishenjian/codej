@@ -32,6 +32,9 @@ public record TaskMutationEvent(TaskActorId actorId, SessionId actorSessionId, R
         if (!result.succeeded()) throw new IllegalArgumentException("Task mutation event 必须是成功结果");
     }
 
-    /** 返回 canonical post-state。 */
+    /**
+     * 返回成功 mutation 对应的规范提交后状态。
+     * @return 本事件结果携带的不可变完整 Board 快照
+     */
     public TaskBoardSnapshot snapshot() { return result.snapshot(); }
 }

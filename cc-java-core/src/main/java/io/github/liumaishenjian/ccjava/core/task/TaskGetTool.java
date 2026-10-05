@@ -27,12 +27,20 @@ public final class TaskGetTool implements AgentTool {
     private final TaskListService service;
     private final java.util.function.Function<ToolInvocation, TaskBoardCapability> capabilities;
 
-    /** 绑定宿主持有的 Board 服务与只读 capability。 */
+    /**
+     * 绑定宿主持有的 Board 服务与读取能力；本工具不执行 mutation。
+     * @param service 统一任务服务
+     * @param capability 固定的宿主能力，实际读取仍校验身份与 scope
+     */
     public TaskGetTool(TaskListService service, TaskBoardCapability capability) {
         this(service, ignored -> capability);
     }
 
-    /** 绑定按真实 ToolInvocation Session/Run 生成 capability 的宿主工厂。 */
+    /**
+     * 绑定按真实 ToolInvocation Session/Run 生成 capability 的宿主工厂。
+     * @param service 非空的统一任务服务
+     * @param capabilities 从真实调用生成能力的可信函数，不从模型参数构造身份
+     */
     public TaskGetTool(TaskListService service,
             java.util.function.Function<ToolInvocation, TaskBoardCapability> capabilities) {
         this.service = Objects.requireNonNull(service, "service 不能为空");

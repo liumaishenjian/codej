@@ -1,4 +1,4 @@
-import type {ProtocolEvent} from './protocol.js';
+import type {ProtocolEvent, ResourceCleanupStatus} from './protocol.js';
 import {
   appendToolOutput as appendOutputChunk,
   EMPTY_TOOL_OUTPUT,
@@ -181,6 +181,8 @@ export interface CheckpointUndoView {
 }
 
 export interface ChildTaskView {
+  /** 保留 Java 当时的独立清理快照，不能根据运行终态或 Worktree 状态推断释放。 */
+  readonly cleanupStatus: ResourceCleanupStatus;
   readonly taskId: string;
   readonly definitionId: string;
   readonly status: 'queued' | 'starting' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted_unknown';
@@ -499,6 +501,7 @@ function applyEvent(state: TuiState, event: ProtocolEvent): TuiState {
         taskId: String(event.payload.taskId),
         definitionId: String(event.payload.definitionId),
         status: event.payload.status as ChildTaskView['status'],
+        cleanupStatus: (event.payload.cleanupStatus ?? 'unknown') as ResourceCleanupStatus,
         failure: String(event.payload.failure),
         modelTurns: Number(event.payload.modelTurns),
         toolCalls: Number(event.payload.toolCalls),
@@ -535,7 +538,9 @@ function applyEvent(state: TuiState, event: ProtocolEvent): TuiState {
       return applyRunCommandResult(state, event);
     case 'run.launch.failed':
       return rejectUnstartedSubmission(state, event.requestId,
-        'Java 已接受请求，但 Runtime 启动失败；不会自动重放');
+        event.payload.code === 'MODEL_CONTEXT_BUDGET_INCOMPATIBLE'
+          ? '模型窗口不足以容纳当前保留预算；请选择更大窗口模型，或显式调整 Context 参数。'
+          : 'Java 已接受请求，但 Runtime 启动失败；不会自动重放');
     case 'run.started':
       return updateCurrentRun(state, event, run => ({
         ...run,

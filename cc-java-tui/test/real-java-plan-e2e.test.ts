@@ -1,7 +1,6 @@
 import {execFile} from 'node:child_process';
 import fs from 'node:fs/promises';
 import {promisify} from 'node:util';
-import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import React from 'react';
@@ -18,6 +17,23 @@ const moduleClassDirectories = [
   'cc-java-cli', 'cc-java-core', 'cc-java-domain', 'cc-java-model-spring-ai', 'cc-java-tools-local',
   'cc-java-tools-web', 'cc-java-mcp', 'cc-java-protocol', 'cc-java-sdk',
 ].map(module => path.resolve(workspacePath, module, 'target', 'classes'));
+// Windows 沙箱的系统 TEMP 可能由另一用户拥有；把跨进程 Fixture 放到仓库 target，
+// 既保持 workspace/session 隔离，也让 Java 可以完成 realpath/ACL 校验。
+const fixtureParentRoot = path.resolve(workspacePath, 'target', '.tui-real-java-fixtures');
+const createFixtureParent = async (prefix: string): Promise<string> => {
+  await fs.mkdir(fixtureParentRoot, {recursive: true});
+  return fs.mkdtemp(path.join(fixtureParentRoot, prefix));
+};
+const currentJavaUserName = async (): Promise<string> => {
+  const command = process.platform === 'win32' ? 'whoami' : 'id';
+  const args = process.platform === 'win32' ? [] : ['-un'];
+  const {stdout} = await execFileAsync(command, args);
+  const value = stdout.trim();
+  return process.platform === 'win32' ? (value.split('\\').at(-1) ?? value) : value;
+};
+const javaArgs = async (classpath: string, ...mainArgs: string[]): Promise<string[]> => [
+  `-Duser.name=${await currentJavaUserName()}`, '-cp', classpath, ...mainArgs,
+];
 
 /** Cross-process contract: this deliberately starts the compiled Java CLI, not the fake child. */
 describe('real Java stdio plan flow', () => {
@@ -33,11 +49,11 @@ describe('real Java stdio plan flow', () => {
     expect(planFakeClasspath,
       'CC_JAVA_PLAN_FAKE_CLASSPATH must point to the deterministic Plan model fixture').toBeTruthy();
     const launchClasspath = [planFakeClasspath!, effectiveClasspath].join(path.delimiter);
-    const fixtureParent = await fs.mkdtemp(path.join(os.tmpdir(), 'codej-plan-acceptance-'));
+    const fixtureParent = await createFixtureParent('codej-plan-acceptance-');
     const client = new StdioClient({
       executable: 'java',
-      args: ['-cp', launchClasspath,
-        'io.github.liumaishenjian.ccjava.cli.stdio.StdioProtocolFixtureMain', 'plan-runtime', fixtureParent],
+      args: await javaArgs(launchClasspath,
+        'io.github.liumaishenjian.ccjava.cli.stdio.StdioProtocolFixtureMain', 'plan-runtime', fixtureParent),
       cwd: workspace,
       env: {...process.env, CC_JAVA_PLAN_FAKE_CLASSPATH: planFakeClasspath!},
     }, {shutdownTimeoutMs: 2_000});
@@ -263,10 +279,11 @@ describe('real Java stdio plan flow', () => {
       : [...moduleClassDirectories, dependencyClasspath].join(path.delimiter);
     expect(planFakeClasspath,
       'CC_JAVA_PLAN_FAKE_CLASSPATH must point to the deterministic Plan model fixture').toBeTruthy();
+    const fixtureParent = await createFixtureParent('codej-plan-resume-');
     const client = new StdioClient({
       executable: 'java',
-      args: ['-cp', [planFakeClasspath!, effectiveClasspath].join(path.delimiter),
-        'io.github.liumaishenjian.ccjava.cli.stdio.StdioProtocolFixtureMain', 'plan-runtime-resume', os.tmpdir()],
+      args: await javaArgs([planFakeClasspath!, effectiveClasspath].join(path.delimiter),
+        'io.github.liumaishenjian.ccjava.cli.stdio.StdioProtocolFixtureMain', 'plan-runtime-resume', fixtureParent),
       cwd: workspace,
       env: {...process.env, CC_JAVA_PLAN_FAKE_CLASSPATH: planFakeClasspath!},
     }, {shutdownTimeoutMs: 2_000});
@@ -370,6 +387,7 @@ describe('real Java stdio plan flow', () => {
     } finally {
       await client.shutdown();
       view.unmount();
+      await fs.rm(fixtureParent, {recursive: true, force: true});
     }
     await waitFor(() => exit !== undefined, () => diagnostic(events, failures, exit));
     expect(exit?.code).toBe(0);
@@ -387,11 +405,11 @@ describe('real Java stdio plan flow', () => {
       : [...moduleClassDirectories, dependencyClasspath].join(path.delimiter);
     expect(fixtureClasses,
       'CC_JAVA_PLAN_FAKE_CLASSPATH must point to deterministic Java fixture classes').toBeTruthy();
-    const fixtureParent = await fs.mkdtemp(path.join(os.tmpdir(), 'codej-task-acceptance-'));
+    const fixtureParent = await createFixtureParent('codej-task-acceptance-');
     const client = new StdioClient({
       executable: 'java',
-      args: ['-cp', [fixtureClasses!, effectiveClasspath].join(path.delimiter),
-        'io.github.liumaishenjian.ccjava.cli.stdio.StdioProtocolFixtureMain', 'task-runtime', fixtureParent],
+      args: await javaArgs([fixtureClasses!, effectiveClasspath].join(path.delimiter),
+        'io.github.liumaishenjian.ccjava.cli.stdio.StdioProtocolFixtureMain', 'task-runtime', fixtureParent),
       cwd: workspace,
       env: {...process.env, CC_JAVA_PLAN_FAKE_CLASSPATH: fixtureClasses!},
     }, {shutdownTimeoutMs: 2_000});
@@ -447,11 +465,11 @@ describe('real Java stdio plan flow', () => {
     const effectiveClasspath = dependencyClasspath === undefined
       ? classpath!
       : [...moduleClassDirectories, dependencyClasspath].join(path.delimiter);
-    const fixtureParent = await fs.mkdtemp(path.join(os.tmpdir(), 'codej-xlsx-plan-acceptance-'));
+    const fixtureParent = await createFixtureParent('codej-xlsx-plan-acceptance-');
     const client = new StdioClient({
       executable: 'java',
-      args: ['-cp', [fixtureClasses!, effectiveClasspath].join(path.delimiter),
-        'io.github.liumaishenjian.ccjava.cli.stdio.StdioProtocolFixtureMain', 'xlsx-plan-runtime', fixtureParent],
+      args: await javaArgs([fixtureClasses!, effectiveClasspath].join(path.delimiter),
+        'io.github.liumaishenjian.ccjava.cli.stdio.StdioProtocolFixtureMain', 'xlsx-plan-runtime', fixtureParent),
       cwd: workspacePath,
       env: {...process.env, CC_JAVA_PLAN_FAKE_CLASSPATH: fixtureClasses!},
     }, {shutdownTimeoutMs: 2_000});
@@ -625,11 +643,11 @@ describe('real Java stdio plan flow', () => {
     const effectiveClasspath = dependencyClasspath === undefined
       ? classpath!
       : [...moduleClassDirectories, dependencyClasspath].join(path.delimiter);
-    const fixtureParent = await fs.mkdtemp(path.join(os.tmpdir(), 'codej-task-timeout-'));
+    const fixtureParent = await createFixtureParent('codej-task-timeout-');
     const client = new StdioClient({
       executable: 'java',
-      args: ['-cp', [fixtureClasses!, effectiveClasspath].join(path.delimiter),
-        'io.github.liumaishenjian.ccjava.cli.stdio.StdioProtocolFixtureMain', 'task-timeout-runtime', fixtureParent],
+      args: await javaArgs([fixtureClasses!, effectiveClasspath].join(path.delimiter),
+        'io.github.liumaishenjian.ccjava.cli.stdio.StdioProtocolFixtureMain', 'task-timeout-runtime', fixtureParent),
       cwd: workspacePath,
       env: {...process.env, CC_JAVA_PLAN_FAKE_CLASSPATH: fixtureClasses!},
     }, {shutdownTimeoutMs: 2_000});
@@ -701,8 +719,8 @@ describe('real Java stdio plan flow', () => {
     const launchClasspath = [planFakeClasspath!, effectiveClasspath].join(path.delimiter);
     const client = new StdioClient({
       executable: 'java',
-      args: ['-cp', launchClasspath,
-        'io.github.liumaishenjian.ccjava.cli.stdio.StdioProtocolFixtureMain', 'permission-runtime', workspace],
+      args: await javaArgs(launchClasspath,
+        'io.github.liumaishenjian.ccjava.cli.stdio.StdioProtocolFixtureMain', 'permission-runtime', workspace),
       cwd: workspace,
       env: {...process.env, CC_JAVA_PLAN_FAKE_CLASSPATH: planFakeClasspath!},
     }, {shutdownTimeoutMs: 2_000});
@@ -771,7 +789,8 @@ function diagnostic(
   const completedTools = events.filter(event => event.type === 'tool.completed')
     .map(event => safeToolName(event.payload.toolName)).join(',');
   const failedTools = events.filter(event => event.type === 'tool.failed')
-    .map(event => `${safeToolName(event.payload.toolName)}:${safeWireToken(event.payload.errorCode)}`).join(',');
+    .map(event => `${safeToolName(event.payload.toolName)}:${safeWireToken(event.payload.errorCode)}`
+      + `/${safeWireToken(event.payload.failureCategory)}/${safeWireToken(event.payload.exitCode)}`).join(',');
   const commandResults = events.filter(event => event.type === 'run.command.result')
     .map(event => `${safeWireToken(event.payload.commandType)}:${safeWireToken(event.payload.disposition)}`)
     .join(',');

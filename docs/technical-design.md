@@ -2296,3 +2296,139 @@ Plan继续复用现有原子review接口，生成run结束前禁止确认，批�
 ### 2026-09-12 验证工具职责纠正（ADR-098）
 
 PLAN-01：宿主从实际注册的可信内置Tool中，按READ_WORKSPACE/WRITE_WORKSPACE/EXECUTE_PROCESS/NETWORK_OR_REMOTE效应和Workspace适用性生成验证集合；交互、Session状态和编排不得进入。集合同时用于定义说明、声明和审核/恢复校验。CLI-05/09：审核恢复只以同Run真实plan.review.requested判定，原Tool失败事实不变，不新增协议字段。
+
+### 2026-09-12 工具执行呈现（ADR-099）
+
+新TUI按Run/turn/ordinal关联工具，仅相邻同类成功搜索折叠，取消和错误保留独立状态。结果项数来自既有returnedItems，缺失不等于零。命令以有界终端行预览增量；原始终态输出与宿主脱敏事实保持权威，显示层不解析输出决定成功。Ctrl+O两种视图分别保存滚动位置，切换不清空草稿或审批焦点；当前命令审批未解决前显示等待审批。协议和Java管线不变。
+
+### 2026-09-12 Markdown正文布局（ADR-100）
+
+CLI-03：Marked table由专门Row/Span布局处理，按实际终端宽度分配列宽、保留单元格样式及对齐，无法容纳或折行过高时切换键值呈现。代码行保留侧边线、缩进与空行；普通列表续行悬挂缩进。复用现有解析器、string-width与有界缓存，不新增依赖或协议。流式未闭合语法仍交Marked处理，稳定前缀增量缓存未实现。
+
+### 2026-09-12 Markdown块上下文（ADR-101）
+
+CLI-03：列表项标记与正文缩进分离，内部块先按悬挂缩进布局，仅首内容行附加本项标记；子列表保持自身层级。引用前缀在段落折行、标题、分隔线、空行及窄表键值回退中保留。Marked继续承担语法解析；无Java/stdio变更。
+
+### 2026-09-12 原生历史与可变尾部（ADR-102）
+
+CLI-01/03/04/09：使用公共Ink Static以不可变items数组追加稳定前缀；保留尚可被finalText修正的当前回合回答、未结束工具分组及可恢复审核失败。活动区小于终端高度，避免公共Ink在Windows整屏回退清空历史。普通模式不捕获鼠标；Ctrl+O仍渲染完整记录的有界详情。参考普通模式与可选AlternateScreen的差异见ADR-102，无Java或协议变更。
+
+
+### 2026-09-12 多行输入对齐（ADR-103）
+
+CLI-04：新Draft适配已有input-editor.ts的reduceComposer MoveUp/MoveDown，复用字素、宽字符、视觉列与目标列策略；仅适配文字和光标，不创建第二套垂直移动算法。主输入边界仍调用现有历史，面板内只编辑。
+
+
+### 2026-09-12 核心命令补全（ADR-104）
+
+CLI-04：在候选循环分支之前处理非Shift的Tab，用已有edit更新当前选中命令及参数空格；完成后候选自然消失。保持现有↑↓、Shift+Tab选择与面板Tab切题，Runtime提交/权限管线不变。
+
+
+### 2026-09-12 核心交互整批收口（ADR-105）
+
+CLI-04/05/09：Draft词移动复用reduceComposer；纯导航保留recall，编辑正文才退出历史。RuntimeUi按请求内questionId保存焦点，visitQuestion统一切题，pending身份变化时清理。runtimeViewportHeight作为按键和原生历史渲染的同一高度来源，避免两行预留导致详情范围不一致。无Java/stdio变更。
+
+
+### 2026-09-12 长会话呈现批次（ADR-106）
+
+CLI-03/04/09：普通键盘测量只处理活动面板；正文WeakMap按不可变blocks与宽度/展开/审批/模型目录依赖复用，最多4个投影。消息Markdown按消息对象弱引用缓存最多3个宽度。Static稳定扫描从已封存位置开始，按blocks/status缓存，活动切片身份随实际记录变化。Runtime替换数组/记录发布变化，不允许原位修改后期待缓存失效。
+
+
+### 2026-09-12 核心结果交付批次（ADR-107）
+
+ADR-107 继续由 Marked 解析、Span 承载样式、RowView 使用公共 Ink Text。链接地址保留可见文本；ADR-110进一步为合格网页目标添加结构化href并在绘制边界生成OSC8；italic/strikethrough 随折行传播。Marked checkbox token 由列表标记统一呈现，防止重复；递归深度超限降级显示 raw。
+
+
+### 2026-09-12 日常核心流程整批（ADR-108）
+
+ADR-108：Runtime保持同步状态，以streaming标记区分可合并的文本/工具输出；RuntimePresentation只合并50ms内视图发布，非streaming更新立即覆盖并清理计时器，卸载取消订阅。RowView以WeakMap缓存同样式相邻Span的绘制段；排版字素不变。问卷导航限宽、选项按高度移动窗口，提示计入详情预算；新面板身份首帧重置编辑状态。
+
+
+### 2026-09-12 长内容阅读整批（ADR-109）
+
+ADR-109：readLimit只记录数量，readingState从最新blocks生成缓存切片，保留最新pending/status/notice，避免冻结旧脱敏结果；显式进入/End使用Runtime最新已接收数量，不依赖50ms延迟的呈现快照。Marked token LRU独立于宽度，与现有行/消息缓存分工；最大32项与1048576 UTF-16原文单元。
+
+
+### 2026-09-12 网页来源链接（ADR-110）
+
+Marked → webTarget → Span.href → 字素排版 → paintSpans → terminal-link → 公共Ink Text。目标只允许无控制字符的绝对HTTP/HTTPS，URL负责规范化；绘制前再次验证。合并段须具有相同href，每段独立闭合。可见文本始终包含地址，现有缓存无需终端能力键。无文件解析、自动打开、Java或stdio变更。
+
+
+### 2026-09-12 文件预览协议（ADR-111）
+
+experienceV1初始化启用StdioApprovalCoordinator文件预览；默认关闭，仅BUILT_IN文件工具产生FileChange，安全相对目标失败则无预览。单侧6000 UTF-16上限，异常控制字符及SecretCandidatePolicy命中均空正文拒显；approval.requested添加fileChange(status,before,after)，不加入Session/日志，旧客户端保留原摘要。TUI消费有界可选字段，仅在审批面板显示意图片段，不读取磁盘或推测执行结果。执行前WorkspaceGuard/内容冲突复检及取消流程不变；不声称检测能识别全部秘密。
+
+
+### 2026-09-12 启动握手纠正（ADR-112）
+
+run.command.result分开处理accepted、queued和rejected；queued保留request关联，等待run.started，steering.discarded结束未开始请求。取消期间等宿主给出Run ID后发送取消，不自动重发。TaskMetadata.KEY_PATTERN是Domain校验与TaskCreateTool propertyNames唯一规则，非法键提示不回显原键或值。
+
+
+### 2026-09-12 交付诊断（ADR-113）
+
+DeliveryDiagnostics只保留白名单种类/结果码、封闭阶段与路由标签，64项内存环、连续重复计数上限999999；不保存原始身份/正文/参数/路径/异常。异常且无pending的详情末尾显示12项，布局缓存之外投影，避免缓存冻结诊断。终态finalText与completionNotice独立处理；空结果只检查本Run，plan无审核仍明确提示。run.cancelled主动置取消意图；transport failure把活动工具标为显示层失败transport_lost并提示结果未知，不更改真实后端状态。
+
+
+### 2026-09-12 提交恢复状态（ADR-114）
+
+Runtime使用awaitingAcceptance与submittedInput区分发送与接受；accepted/queued/started后清除可恢复输入，只有明确拒绝或尚未接受时的protocol.error进入rejectSubmission。rejectedInput带本地递增ID，React仅消费一次，空Composer才填回，已有草稿保持。计划决策在finish前先恢复pending；拒绝后的相邻protocol.error不再清空面板。已接受的计划出现错误时保留运行等待终态，不恢复成可重复执行审核。
+
+
+### 2026-09-13 问卷结果确认（ADR-115）
+
+Runtime将答案摘要暂存于控制requestId，使用现有experienceV1的callId与当前run、问卷工具名确认终态，一次性消费。拒绝/运行结束/断连/释放清理；contentRedacted禁止本地绕过遮蔽。无callId的旧宿主不推断确认。与工具更新同一次patch追加notice，避免原生历史提前封存。
+
+
+### 2026-09-13 工具到交付（ADR-116）
+
+Runtime工具记录保留可用callId；错身份与终态后的start/output/result不再修改记录。run.completed无finalText时检查最后工具之后且当前turn的正文。runtimeBody默认隐藏内部计划成功调用，expanded提供逐项真实参数/结果；这是独立排障偏差，非参考Task JSON视觉复刻。
+
+
+### 2026-09-13 命令Shell契约（ADR-117）
+
+RunCommandTool实例化时从LocalCommandExecutor.display获取稳定Shell身份，生成并缓存ToolDefinition；仅补充description，schema/Effect/Source/取消/超时/输出预算不变。PowerShell与sh方言说明独立编写，不传可执行路径或环境值，不读取参考Prompt。
+
+
+### 2026-09-13 文件审阅（ADR-118）
+
+StdioApprovalCoordinator复用会话WorkspaceGuard、WorkspaceTextSnapshotReader及原有countOccurrences/canReplace/replaceCanonicalText，不登记Read证据。读取上限24KB、前后各6000字符，替换扩张先计算上限。experienceV1的fileChange新增scope=file/fragment；TUI使用固定diff9.0.0 structuredPatch（3行上下文、50ms/12000编辑预算）并WeakMap缓存含预算失败。工具记录按Run/ordinal保存fileChange，redacted清理；模型与执行流程不变。
+
+### ADR-119 文件工具实际结果摘要
+
+文件工具的成功摘要必须来自 Java ToolResultMetadata 的白名单 continuation，而不是从正文或审批预览猜测。stdio 仅投影相对 path、operation、replacements、removedLines、addedLines；TUI 默认显示路径与替换数，详情显示正文。失败、取消、脱敏和未知摘要保持原状态。该摘要不参与授权、锁定、Git diff 或计划验收。
+
+### ADR-120 落盘后实际结果核验
+
+文件 Tool 在原子写入后必须通过同一 WorkspaceGuard 重新解析真实目标，并在有界读取内核对路径、文件大小和字节内容。只有核验成功的结果 continuation 才能携带 verification=verified；TUI 将其显示为已核验。核验是一次性事实，不是锁、持续监视、权限或 OS Sandbox。失败统一进入文件冲突或安全拒绝，不产生成功摘要。
+
+### ADR-121 计划内部工具可见边界
+
+计划编排工具保留在 Runtime 内部用于状态和审核，但不投影成普通对话行。TUI 只显示计划面板、通用审核通知和最终正文；Task CRUD、计划工件、审核请求和验收声明不能凭工具存在自动成为用户交互。
+
+### ADR-122 `/plan` 确认到真实交付
+
+计划决定通过 `plan.review.resolve` 原子进入 `plan.execution.accepted`，再由 Java Runtime 启动执行 Run。只有 durable PlanArtifact 完成核验后才发布 `plan.verification.completed`；TUI 的最终正文只消费终态 `finalText`，不把审批成功、Task 更新或单个 Tool 成功当成交付。跨进程真实计划测试 6/6 通过；Windows 临时目录 realpath 的沙箱限制单独记录为测试环境差距。
+
+计划内部验证方式失败和恢复只在本轮内存中累积必要摘要，终态统一投影给用户；内部 Tool Record 仍隐藏。这样既不丢失“为什么未完成/如何纠正”的交付解释，也不把内部 Task 或校正调用变成对话流水。真实 Java→stdio→Ink 计划/问卷场景 7/7 通过。
+
+### ADR-123 演示层历史分页提示清理
+
+普通终端滚屏由宿主终端处理，离线演示不再插入“更早内容／PgUp 回看”状态行。Ctrl+O 详情视图保留必要的阅读操作提示；该清理不改变输入焦点、终端滚轮或详情阅读状态。
+
+### ADR-124 长工具输出排版缓存
+
+命令摘要和详情排版均受 Java 输出上限及 TUI 行宽约束；`runtime-screen` 按不可变 `ToolRecord`、宽度和视图模式缓存折行结果。流式更新创建新记录，旧缓存不跨记录持有；缓存不改变输出脱敏、截断、终态和审批契约。
+
+### ADR-125 模型失败摘要
+
+真实 Java 终态携带的模型失败摘要只允许 category、HTTP 类别、尝试次数和是否收到输出；TUI 映射为安全中文提示。无效摘要不进入界面，回退到 stopReason。该摘要帮助用户处理真实 Provider 失败，但不把在线成功率或具体 Provider 质量写成能力证据。
+
+Spring AI 适配器在建立 Publisher、订阅和聚合响应解码的边界捕获未分类 `RuntimeException`，统一生成 `PROVIDER_ERROR` 的 `ModelFailureSummary`。诊断只保留固定阶段与 `UNKNOWN` 原因，异常对象仅作为 JVM 内部 cause；因此 SDK/端点异常不会以原文、URL、凭证或响应正文穿透到 stdio、TUI 或普通日志。
+
+### ADR-126 可恢复工具参数失败
+
+TUI 保留 Java 白名单化的 `argumentChangeRequired`、`retryable` 与 `failureCategory` 元数据。活动回合明确提示错误已返回模型修正或等待重试；没有宿主关联证据时，终态只显示中性工具失败，不猜测后续调用是否修正旧调用。该投影不自动重试、不改写参数，也不改变权限和计划 Gate。
+
+### ADR-127 流式工具输出尾窗
+
+正在运行的 ToolRecord 和当前回合 assistant Message 只对最近 16,384 个字符折行，完成或取消后恢复使用 Java 已有的有界正文；折叠视图保留最近三行并说明尾窗，详情视图不改变宿主结果。body projection 缓存绑定运行状态，不能让终态复用运行中尾窗。该优化只限制重复排版成本，不改变输出截断、脱敏、取消、审批或终态。

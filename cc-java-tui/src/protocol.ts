@@ -1380,6 +1380,17 @@ function validateOptionalToolPresentation(
       || payload.failureReasonCode !== 'verification_tool_unavailable')) {
     throw new ProtocolViolation(`${type} 包含未知安全失败原因`);
   }
+  if ('failureCategory' in payload
+    && (type !== 'tool.failed'
+      || typeof payload.failureCategory !== 'string'
+      || !/^[a-z][a-z0-9_]{0,63}$/u.test(payload.failureCategory))) {
+    throw new ProtocolViolation(`${type} 包含无效安全失败分类`);
+  }
+  for (const field of ['retryable', 'argumentChangeRequired'] as const) {
+    if (field in payload && (type !== 'tool.failed' || typeof payload[field] !== 'boolean')) {
+      throw new ProtocolViolation(`${type} 包含无效参数校验标记`);
+    }
+  }
   if ('recoveredFailureOrdinal' in payload
     && (type !== 'tool.completed'
       || payload.toolName !== 'declare_plan_evidence'

@@ -79,18 +79,16 @@ class TaskToolProductionCompositionTest {
                         new JsonObject(Map.of("subject", "检查已有任务。")))));
                 case 1 -> ModelTurn.tools(List.of(new ToolCall("plan", "revise_plan_artifact",
                         new JsonObject(Map.of("markdown", markdown)))));
-                case 2 -> ModelTurn.tools(List.of(new ToolCall("evidence", "declare_plan_evidence",
-                        new JsonObject(Map.of("requirementId", "task-read", "kind", "VERIFICATION",
-                                "locator", "task_get", "label", "已读取规划任务", "required", true)))));
-                case 3 -> ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review", JsonObject.empty())));
-                case 4 -> ModelTurn.text("规划完成");
-                case 5 -> ModelTurn.tools(List.of(new ToolCall("list", "task_list", JsonObject.empty())));
-                case 6 -> ModelTurn.tools(List.of(new ToolCall("get", "task_get",
+                case 2 -> ModelTurn.tools(List.of(completionRequirement(), new ToolCall("review", "request_plan_review", JsonObject.empty())));
+                case 3 -> ModelTurn.text("规划完成");
+                case 4 -> ModelTurn.tools(List.of(new ToolCall("list", "task_list", JsonObject.empty())));
+                case 5 -> ModelTurn.tools(List.of(new ToolCall("get", "task_get",
                         new JsonObject(Map.of("task_id", "task-1")))));
-                case 7 -> ModelTurn.tools(List.of(new ToolCall("claim", "task_update", new JsonObject(Map.of(
+                case 6 -> ModelTurn.tools(List.of(new ToolCall("claim", "task_update", new JsonObject(Map.of(
                         "task_id", "task-1", "status", "IN_PROGRESS", "active_form", "正在检查已有任务")))));
-                case 8 -> ModelTurn.tools(List.of(new ToolCall("complete", "task_update", new JsonObject(Map.of(
+                case 7 -> ModelTurn.tools(List.of(new ToolCall("complete", "task_update", new JsonObject(Map.of(
                         "task_id", "task-1", "status", "COMPLETED")))));
+                case 8 -> ModelTurn.tools(List.of(verificationCommand()));
                 case 9 -> ModelTurn.text("已使用规划阶段创建的任务身份");
                 default -> throw new IllegalStateException("任务发现流程不得额外调用模型");
             };
@@ -307,19 +305,17 @@ class TaskToolProductionCompositionTest {
                         new JsonObject(Map.of("subject", "完成唯一任务。")))));
                 case 3 -> ModelTurn.tools(List.of(new ToolCall("plan", "revise_plan_artifact",
                         new JsonObject(Map.of("markdown", markdown)))));
-                case 4 -> ModelTurn.tools(List.of(new ToolCall("evidence", "declare_plan_evidence",
-                        new JsonObject(Map.of("requirementId", "task-transition", "kind", "VERIFICATION",
-                                "locator", "task_update", "label", "任务状态已验证", "required", true)))));
-                case 5 -> ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review", JsonObject.empty())));
-                case 6 -> ModelTurn.text("规划完成");
-                case 7 -> ModelTurn.tools(List.of(new ToolCall("list-before", "task_list", JsonObject.empty())));
-                case 8 -> ModelTurn.tools(List.of(new ToolCall("get", "task_get",
+                case 4 -> ModelTurn.tools(List.of(completionRequirement(), new ToolCall("review", "request_plan_review", JsonObject.empty())));
+                case 5 -> ModelTurn.text("规划完成");
+                case 6 -> ModelTurn.tools(List.of(new ToolCall("list-before", "task_list", JsonObject.empty())));
+                case 7 -> ModelTurn.tools(List.of(new ToolCall("get", "task_get",
                         new JsonObject(Map.of("task_id", "task-2")))));
-                case 9 -> ModelTurn.tools(List.of(new ToolCall("claim", "task_update", new JsonObject(Map.of(
+                case 8 -> ModelTurn.tools(List.of(new ToolCall("claim", "task_update", new JsonObject(Map.of(
                         "task_id", "task-2", "status", "IN_PROGRESS", "active_form", "正在执行中文任务")))));
-                case 10 -> ModelTurn.tools(List.of(new ToolCall("complete", "task_update", new JsonObject(Map.of(
+                case 9 -> ModelTurn.tools(List.of(new ToolCall("complete", "task_update", new JsonObject(Map.of(
                         "task_id", "task-2", "status", "COMPLETED")))));
-                case 11 -> ModelTurn.tools(List.of(new ToolCall("list-after", "task_list", JsonObject.empty())));
+                case 10 -> ModelTurn.tools(List.of(new ToolCall("list-after", "task_list", JsonObject.empty())));
+                case 11 -> ModelTurn.tools(List.of(verificationCommand()));
                 case 12 -> ModelTurn.text("任务完成后仍可读取并正常结束");
                 default -> throw new IllegalStateException("完成后读取流程不得额外调用模型");
             };
@@ -370,19 +366,17 @@ class TaskToolProductionCompositionTest {
                         new JsonObject(Map.of("subject", "完成唯一任务。")))));
                 case 1 -> ModelTurn.tools(List.of(new ToolCall("plan", "revise_plan_artifact",
                         new JsonObject(Map.of("markdown", markdown)))));
-                case 2 -> ModelTurn.tools(List.of(new ToolCall("evidence", "declare_plan_evidence",
-                        new JsonObject(Map.of("requirementId", "task-transition", "kind", "VERIFICATION",
-                                "locator", "task_update", "label", "任务状态已验证", "required", true)))));
-                case 3 -> ModelTurn.tools(List.of(new ToolCall("review", "request_plan_review", JsonObject.empty())));
-                case 4 -> ModelTurn.text("规划完成");
-                case 5 -> ModelTurn.tools(List.of(new ToolCall("list", "task_list", JsonObject.empty())));
-                case 6 -> ModelTurn.tools(List.of(new ToolCall("get", "task_get",
+                case 2 -> ModelTurn.tools(List.of(completionRequirement(), new ToolCall("review", "request_plan_review", JsonObject.empty())));
+                case 3 -> ModelTurn.text("规划完成");
+                case 4 -> ModelTurn.tools(List.of(new ToolCall("list", "task_list", JsonObject.empty())));
+                case 5 -> ModelTurn.tools(List.of(new ToolCall("get", "task_get",
                         new JsonObject(Map.of("task_id", "task-1")))));
-                case 7 -> ModelTurn.tools(List.of(new ToolCall("claim", "task_update", new JsonObject(Map.of(
+                case 6 -> ModelTurn.tools(List.of(new ToolCall("claim", "task_update", new JsonObject(Map.of(
                         "task_id", "task-1", "status", "IN_PROGRESS", "active_form", "正在执行中文任务")))));
-                case 8 -> ModelTurn.text("错误声称任务已经完成");
-                case 9 -> ModelTurn.tools(List.of(new ToolCall("complete", "task_update", new JsonObject(Map.of(
+                case 7 -> ModelTurn.text("错误声称任务已经完成");
+                case 8 -> ModelTurn.tools(List.of(new ToolCall("complete", "task_update", new JsonObject(Map.of(
                         "task_id", "task-1", "status", "COMPLETED")))));
+                case 9 -> ModelTurn.tools(List.of(verificationCommand()));
                 case 10 -> ModelTurn.text("任务和证据均已真实完成");
                 default -> throw new IllegalStateException("未完成 Task 纠正必须有界收敛");
             };
@@ -413,7 +407,7 @@ class TaskToolProductionCompositionTest {
         }
         assertThat(calls).hasValue(11);
         assertFourTaskToolsEveryTurn(requests);
-        assertThat(requests.get(9).messages()).filteredOn(
+        assertThat(requests.get(8).messages()).filteredOn(
                 io.github.liumaishenjian.ccjava.domain.SystemMessage.class::isInstance)
                 .anySatisfy(message -> assertThat(
                         ((io.github.liumaishenjian.ccjava.domain.SystemMessage) message).content())
@@ -569,5 +563,11 @@ class TaskToolProductionCompositionTest {
         return new ToolCall("task-plan-evidence", "declare_plan_evidence", new JsonObject(Map.of(
                 "requirementId", "completion-check", "kind", "VERIFICATION", "locator", "run_command",
                 "label", "执行阶段真实命令成功", "required", true)));
+    }
+
+    /** Task discovery remains a separate internal interaction; completion evidence must be a real verification Tool. */
+    private static ToolCall verificationCommand() {
+        return new ToolCall("verify", "run_command", new JsonObject(Map.of(
+                "command", "[Console]::Out.WriteLine('task-verification'); exit 0", "timeoutSeconds", 10)));
     }
 }

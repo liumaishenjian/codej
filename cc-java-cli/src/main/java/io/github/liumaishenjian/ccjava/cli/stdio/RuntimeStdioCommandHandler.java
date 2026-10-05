@@ -299,6 +299,7 @@ public final class RuntimeStdioCommandHandler
                         Objects.requireNonNull(executionShell, "executionShell 不能为空")),
                 approvals);
         approvals.bindCommandDisplay(application.commandExecutionDisplay());
+        approvals.bindPreviewGuard(application.workspaceGuard());
     }
 
     /**
@@ -314,6 +315,7 @@ public final class RuntimeStdioCommandHandler
         questions = new StdioQuestionCoordinator(this::emitUserQuestion);
         application = Objects.requireNonNull(selectedApplication, "selectedApplication 不能为空");
         approvals.bindCommandDisplay(application.commandExecutionDisplay());
+        approvals.bindPreviewGuard(application.workspaceGuard());
         this.providerAuth = Objects.requireNonNull(providerAuth, "providerAuth 不能为空");
     }
 
@@ -336,6 +338,7 @@ public final class RuntimeStdioCommandHandler
             throw new IllegalArgumentException("applicationFactory 返回 null");
         }
         approvals.bindCommandDisplay(application.commandExecutionDisplay());
+        approvals.bindPreviewGuard(application.workspaceGuard());
         this.providerAuth = Objects.requireNonNull(providerAuth, "providerAuth 不能为空");
     }
 
@@ -355,6 +358,7 @@ public final class RuntimeStdioCommandHandler
             throw new IllegalArgumentException("applicationFactory 返回 null");
         }
         approvals.bindCommandDisplay(application.commandExecutionDisplay());
+        approvals.bindPreviewGuard(application.workspaceGuard());
         providerAuth = null;
     }
     /**
@@ -369,6 +373,7 @@ public final class RuntimeStdioCommandHandler
         questions = new StdioQuestionCoordinator(this::emitUserQuestion);
         application = Objects.requireNonNull(selectedApplication, "selectedApplication 不能为空");
         approvals.bindCommandDisplay(application.commandExecutionDisplay());
+        approvals.bindPreviewGuard(application.workspaceGuard());
         providerAuth = null;
     }
     /**
@@ -414,6 +419,7 @@ public final class RuntimeStdioCommandHandler
                 runtimeOptions,
                 approvals);
         approvals.bindCommandDisplay(application.commandExecutionDisplay());
+        approvals.bindPreviewGuard(application.workspaceGuard());
     }
 
     @Override
@@ -476,6 +482,7 @@ public final class RuntimeStdioCommandHandler
             }
             questionnaireV1 = command.payload().has("questionnaireV1") && command.payload().get("questionnaireV1").booleanValue();
             experienceV1 = command.payload().has("experienceV1") && command.payload().get("experienceV1").booleanValue();
+            approvals.enableFilePreviews(experienceV1);
             directedChunkInputV1 = command.payload().has("directedChunkInputV1")
                     && command.payload().get("directedChunkInputV1").booleanValue();
 
@@ -2113,6 +2120,14 @@ public final class RuntimeStdioCommandHandler
             payload.put("operation", request.preview().operation());
             payload.put("removedLines", request.preview().removedLines());
             payload.put("addedLines", request.preview().addedLines());
+            if (experienceV1 && request.preview().change() != null) {
+                var change = request.preview().change();
+                ObjectNode content = payload.putObject("fileChange");
+                content.put("status", change.status());
+                content.put("scope", change.scope());
+                content.put("before", change.before());
+                content.put("after", change.after());
+            }
         }
         if (!request.preview().command().isEmpty()) {
             payload.put("command", request.preview().command());
@@ -2356,6 +2371,7 @@ public final class RuntimeStdioCommandHandler
                     "truncationReason",
                     after.result().metadata().truncationReason().name().toLowerCase(Locale.ROOT));
             payload.put("filteredItems", after.result().metadata().filteredItems());
+            emitFileResultSummary(after.result().metadata().continuation(), payload);
             Optional.ofNullable(run.toolModes.remove(after.ordinal()))
                     .ifPresent(mode -> payload.put("mode", mode));
             after.result().error().ifPresent(error -> {
@@ -2478,6 +2494,38 @@ public final class RuntimeStdioCommandHandler
             });
             payload.set("steps", steps);
             emit(run, "plan.proposed", payload);
+        }
+    }
+
+    /**
+     * 只投影文件 Tool 自己声明的有界结果事实；不从正文反解析路径或命中数。
+     *
+     * <p>摘要用于终端的默认行，详细正文仍由 Ctrl+O 展开。未知或非文件 Tool 的
+     * continuation 不进入用户界面，避免把内部游标误显示成执行结果。</p>
+     */
+    private void emitFileResultSummary(JsonObject continuation, ObjectNode payload) {
+        Map<String, Object> values = continuation.values();
+        Object path = values.get("path");
+        Object operation = values.get("operation");
+        if (!(path instanceof String pathValue) || pathValue.isBlank()
+                || !(operation instanceof String operationValue) || operationValue.isBlank()) {
+            return;
+        }
+        ObjectNode summary = payload.putObject("resultSummary");
+        summary.put("path", pathValue);
+        summary.put("operation", operationValue);
+        if ("verified".equals(values.get("verification"))) {
+            summary.put("verification", "verified");
+        }
+        copyNonNegative(summary, values, "replacements");
+        copyNonNegative(summary, values, "removedLines");
+        copyNonNegative(summary, values, "addedLines");
+    }
+
+    private static void copyNonNegative(ObjectNode target, Map<String, Object> source, String key) {
+        Object value = source.get(key);
+        if (value instanceof Number number && number.longValue() >= 0) {
+            target.put(key, number.longValue());
         }
     }
 

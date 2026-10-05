@@ -19,6 +19,7 @@ import io.github.liumaishenjian.ccjava.tools.local.workspace.LocalToolLimits;
 import io.github.liumaishenjian.ccjava.tools.local.workspace.ValidatedWorkspacePath;
 import io.github.liumaishenjian.ccjava.tools.local.workspace.WorkspaceAccessException;
 import io.github.liumaishenjian.ccjava.tools.local.workspace.WorkspaceGuard;
+import io.github.liumaishenjian.ccjava.tools.local.workspace.WorkspaceWriteVerification;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.time.Duration;
@@ -183,6 +184,8 @@ public final class ApplyPatchTool implements AgentTool {
                                     "文件真实路径在写入前已改变"));
                         }
                     });
+            WorkspaceWriteVerification.requireMatches(
+                    guard, path, validated.realPath(), updatedBytes);
             refreshEvidence(
                     invocation,
                     validated,

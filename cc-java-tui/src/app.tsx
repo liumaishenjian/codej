@@ -1,3 +1,4 @@
+import {CODEJ_BANNER, codejBannerColor} from './brand.js';
 import {useEffect, useReducer, useRef, useState} from 'react';
 import {Box, Static, Text, useApp, useInput, usePaste, useWindowSize} from 'ink';
 import stringWidth from 'string-width';
@@ -140,13 +141,7 @@ type PendingDurablePlanRestore = {
   readonly decision: 'APPROVE_AUTO' | 'APPROVE_USER' | 'REJECT';
 };
 
-const CODEJ_BANNER = [
-  ' ██████  ██████  ██████  ███████     ██',
-  '██      ██    ██ ██   ██ ██          ██',
-  '██      ██    ██ ██   ██ █████       ██',
-  '██      ██    ██ ██   ██ ██      ██  ██',
-  ' ██████  ██████  ██████  ███████  ████',
-] as const;
+
 
 export interface AgentTuiProps {
   readonly client: AgentClient;
@@ -1782,7 +1777,7 @@ export function AgentView({state, composer, input = '', columns, rows, composerL
                     <Text
                       key={line}
                       bold
-                      color={index < 2 ? 'cyanBright' : index < 4 ? 'blueBright' : 'magentaBright'}
+                      color={codejBannerColor(index)}
                     >
                       {line}
                     </Text>

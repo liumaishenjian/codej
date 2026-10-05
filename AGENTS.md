@@ -47,11 +47,23 @@
    [ADR-084](./docs/adr/ADR-084-s15-model-request-retry-hardening.md)、
    [ADR-085](./docs/adr/ADR-085-s15-run-command-acceptance-handshake.md)、
    [ADR-086](./docs/adr/ADR-086-s15-plan-evidence-correction-continuation.md)、
+   [ADR-119](./docs/adr/ADR-119-s15-file-result-summary.md)、
+   [ADR-120](./docs/adr/ADR-120-s15-post-write-verification.md)、
+   [ADR-121](./docs/adr/ADR-121-s15-plan-internal-tool-visibility.md)、
+   [ADR-122](./docs/adr/ADR-122-s15-plan-execution-delivery.md)、
+   [ADR-123](./docs/adr/ADR-123-s15-native-scrollback-cleanup.md)、
+   [ADR-124](./docs/adr/ADR-124-s15-bounded-tool-output-rendering.md)、
+   [ADR-125](./docs/adr/ADR-125-s15-model-failure-summary.md)、
+   [ADR-126](./docs/adr/ADR-126-s15-recoverable-tool-validation.md)、
+   [ADR-127](./docs/adr/ADR-127-s15-active-output-tail-window.md)、
+   [ADR-128](./docs/adr/ADR-128-s15-real-entry-verification-boundary.md)、
    [ADR-021](./docs/adr/ADR-021-s02-model-streaming-cli-scope.md)、
    [ADR-018](./docs/adr/ADR-018-authorized-reference-study.md)、
    [ADR-019](./docs/adr/ADR-019-s07-progressive-context-reduction.md)与
    [Stage 证据包模板](./docs/templates/stage-evidence-package.md)
+
 9. 本文档
+10. [TUI Next 重构执行路线](./docs/plans/tui-next-refactor-roadmap.md)
 
 参考架构定义长期学习目标；功能对照矩阵是当前差距和目标等级的权威记录；产品需求文档定义“做什么”；技术设计文档定义当前“如何实现”。不得通过实现细节悄悄改变产品行为，也不得让这些文档相互矛盾。
 

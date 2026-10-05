@@ -25,6 +25,17 @@ class TaskToolBatchBTest {
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-08-25T03:00:00Z"), ZoneOffset.UTC);
 
     @Test
+    void metadataKeySchemaAndCorrectionAgreeWithoutEchoingArguments() {
+        TaskCreateTool tool = fixture().create();
+        assertThat(tool.definition().inputSchemaJson())
+                .contains("\"propertyNames\":{\"pattern\":\"^" + TaskMetadata.KEY_PATTERN + "$\"}");
+        var invalid = tool.validate(json("subject", "sample", "metadata", Map.of("sampleDate", "PRIVATE_SAMPLE")));
+        assertThat(invalid.valid()).isFalse();
+        assertThat(invalid.toString()).contains("lowercase snake_case").doesNotContain("sampleDate", "PRIVATE_SAMPLE");
+        assertThat(tool.validate(json("subject", "sample", "metadata", Map.of("sample_date", "sample"))).valid()).isTrue();
+    }
+
+    @Test
     void definitionsFreezeExactNamesEffectsSourcesAndClosedSchemas() {
         Fixture fixture = fixture();
         List<AgentTool> tools = fixture.tools();

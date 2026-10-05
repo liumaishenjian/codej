@@ -22,6 +22,34 @@ class RunCommandToolTest {
     Path workspace;
 
     @Test
+    void modelDefinitionUsesSameShellAsApprovalWithoutStartingAnyProcess() {
+        for (var id : io.github.liumaishenjian.ccjava.domain.execution.ExecutionBackendId.values()) {
+            var backend = new io.github.liumaishenjian.ccjava.core.execution.ExecutionBackend() {
+                public io.github.liumaishenjian.ccjava.domain.execution.ExecutionBackendId id() { return id; }
+                public io.github.liumaishenjian.ccjava.domain.execution.ExecutionOutcome execute(
+                        io.github.liumaishenjian.ccjava.domain.execution.ExecutionRequest request,
+                        CancellationToken cancellation, io.github.liumaishenjian.ccjava.core.ToolOutputSink sink) {
+                    throw new AssertionError("读取工具定义不应启动进程");
+                }
+            };
+            var tool = new RunCommandTool(new LocalCommandExecutor(workspace, backend,
+                    io.github.liumaishenjian.ccjava.domain.execution.ExecutionShell.LINUX_SH));
+            String shell = tool.commandDisplay().shell();
+            assertThat(tool.definition()).isSameAs(tool.definition());
+            assertThat(tool.definition().description()).contains("Configured shell: " + shell + ".")
+                    .doesNotContain(workspace.toString());
+            if (shell.equals("powershell")) {
+                assertThat(tool.definition().description()).contains("Get-Content", "$LASTEXITCODE");
+            } else if (shell.equals("sh") || shell.startsWith("linux-sh/")) {
+                assertThat(tool.definition().description()).contains("POSIX sh").doesNotContain("PowerShell");
+            }
+            assertThat(tool.validate(new JsonObject(Map.of("command", "echo sample", "shell", "bash"))).valid()).isFalse();
+            assertThat(tool.definition().source()).isEqualTo(io.github.liumaishenjian.ccjava.domain.ToolSource.BUILT_IN);
+            assertThat(tool.definition().effect()).isEqualTo(io.github.liumaishenjian.ccjava.domain.ToolEffect.EXECUTE_PROCESS);
+        }
+    }
+
+    @Test
     void rejectsUnknownAndOutOfRangeArguments() {
         RunCommandTool tool = new RunCommandTool(new LocalCommandExecutor(workspace));
 

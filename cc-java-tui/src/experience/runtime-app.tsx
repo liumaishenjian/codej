@@ -1,19 +1,30 @@
 import {useEffect, useRef, useState, useSyncExternalStore} from 'react';
 import {useApp, useInput, useWindowSize} from 'ink';
-import {edit, emptyDraft, glyphs, type Draft} from './editor.js';
-import {ExperienceRuntime, type Answer, type RuntimeClient} from './runtime.js';
-import {newRuntimeUi, questionAnswers, runtimeCommands, runtimeFrame, RuntimeScreen, type RuntimeUi} from './runtime-screen.js';
+import {edit, emptyDraft, glyphs, moveDraftVertical, moveDraftWord, type Draft} from './editor.js';
+import {ExperienceRuntime, type Answer, type RecordBlock, type RuntimeClient} from './runtime.js';
+import {newRuntimeUi, questionAnswers, readingState, runtimeCommands, runtimeFrame, runtimeViewportHeight, visitQuestion, type RuntimeUi} from './runtime-screen.js';
+import {NativeHistoryScreen} from './native-history.js';
+import {RuntimePresentation} from './presentation.js';
 
 /** 真实适配器共享视觉基础，但绝不使用离线演示的计时推进或固定结果。 */
 export function ExperienceRuntimeApp({client, workspace}: {client: RuntimeClient; workspace: string}) {
+  const noHistory = useRef<RecordBlock[]>([]).current;
   const [runtime] = useState(() => new ExperienceRuntime(client, workspace));
-  const state = useSyncExternalStore(runtime.subscribe, runtime.snapshot, runtime.snapshot);
-  const [ui, setUi] = useState(newRuntimeUi);
+  const [presentation] = useState(() => new RuntimePresentation(runtime));
+  const state = useSyncExternalStore(presentation.subscribe, presentation.snapshot, presentation.snapshot);
+  const [storedUi, setUi] = useState(newRuntimeUi);
   const [now, setNow] = useState(Date.now);
   const exiting = useRef(false);
+  const restoredInput = useRef<number | undefined>(undefined);
   const {columns, rows} = useWindowSize();
   const {exit} = useApp();
   useEffect(() => {runtime.connect(); return () => runtime.dispose();}, [runtime]);
+  useEffect(() => {
+    const rejected=state.rejectedInput;
+    if(!rejected||restoredInput.current===rejected.id) return;
+    restoredInput.current=rejected.id;
+    setUi(previous=>previous.draft.text?previous:{...previous,draft:{text:rejected.text,cursor:glyphs(rejected.text).length},recall:-1,focus:0});
+  },[state.rejectedInput]);
   useEffect(() => {
     if (state.status === 'idle') return;
     const timer = setInterval(() => setNow(Date.now()), 250);
@@ -21,11 +32,17 @@ export function ExperienceRuntimeApp({client, workspace}: {client: RuntimeClient
   }, [state.status]);
   const pending = state.pending;
   const pendingKey = pending ? pending.kind + ':' + pending.event.sessionId + ':' + pending.event.sequence : '';
+  // 新面板首帧即使用新身份，不能短暂显示上一份计划的编辑框或问卷选择。
+  const ui = pendingKey && storedUi.key !== pendingKey ? {...storedUi, key: pendingKey, focus: 0, question: 0, questionFocus: {},
+    answers: {}, free: {}, feedback: emptyDraft(), editing: false, panelScroll: 0} : storedUi;
   useEffect(() => {
-    if (pendingKey) setUi(previous => previous.key === pendingKey ? previous : {...previous, key: pendingKey, focus: 0, question: 0, answers: {}, free: {}, feedback: emptyDraft(), editing: false, panelScroll: 0});
+    if (pendingKey) setUi(ui);
   }, [pendingKey]);
-  const currentFrame = runtimeFrame(state, ui, columns, rows, now);
+  // 普通界面历史由Static保管；键盘只需测量活动面板，展开时才测量完整记录。
+  const measuredState = ui.expanded ? readingState(state, ui) : {...state, blocks: noHistory};
+  const currentFrame = runtimeFrame(measuredState, ui, columns, runtimeViewportHeight(rows), now);
   const previousTotal = useRef(currentFrame.total);
+  const viewPositions = useRef(new Map<boolean, {scroll: number; total: number}>());
   useEffect(() => {
     const delta = currentFrame.total - previousTotal.current; previousTotal.current = currentFrame.total;
     if (delta && ui.scroll > 0) setUi(previous => ({...previous, scroll: Math.max(0, previous.scroll + delta)}));
@@ -43,23 +60,37 @@ export function ExperienceRuntimeApp({client, workspace}: {client: RuntimeClient
     }
     if (columns < 40 || rows < 24 || state.connection !== 'ready') return;
     const p = runtime.state.pending;
-    if (key.ctrl && input === 'o') {setUi(previous => ({...previous, expanded: !previous.expanded, scroll: 0})); return;}
+    if (key.ctrl && input === 'o') {
+      viewPositions.current.set(ui.expanded, {scroll: ui.scroll, total: currentFrame.total});
+      const expanded = !ui.expanded;
+      const readLimit = expanded ? runtime.state.blocks.length : undefined;
+      const nextFrame = runtimeFrame(runtime.state, {...ui, expanded, readLimit}, columns, runtimeViewportHeight(rows), now);
+      const saved = viewPositions.current.get(expanded);
+      // 两个视图分别记住回看位置；新输出追加时按行差补偿，不把切换当作新输出。
+      const scroll = saved && saved.scroll > 0 ? Math.max(0, Math.min(nextFrame.maxScroll, saved.scroll + nextFrame.total - saved.total)) : 0;
+      previousTotal.current = nextFrame.total;
+      setUi(previous => ({...previous, expanded, readLimit, scroll})); return;
+    }
     if (key.pageUp || key.pageDown) {
+      if (!p && !state.showPlan && !ui.expanded) return;
       const direction = key.pageUp ? -1 : 1; const page = Math.max(1, rows - 10);
       setUi(previous => p || state.showPlan
         ? {...previous, panelScroll: Math.max(0, Math.min(currentFrame.maxPanelScroll, previous.panelScroll + direction * page))}
         : {...previous, scroll: Math.max(0, Math.min(currentFrame.maxScroll, previous.scroll - direction * page))});
       return;
     }
-    if (key.end && ui.scroll && !p) {setUi(previous => ({...previous, scroll: 0})); return;}
-    function updateDraft(draft: Draft): void {
+    if (key.end && ui.expanded && !p && !state.showPlan) {
+      previousTotal.current = runtimeFrame(runtime.state, ui, columns, runtimeViewportHeight(rows), now).total;
+      setUi(previous => ({...previous, readLimit: runtime.state.blocks.length, scroll: 0})); return;
+    }
+    function updateDraft(draft: Draft, preserveRecall = false): void {
       setUi(previous => {
         if (p?.kind === 'plan' && previous.editing) return {...previous, feedback: draft};
         if (p?.kind === 'questions' && previous.editing) {
           const q = p.questions[previous.question];
           return q ? {...previous, free: {...previous.free, [q.id]: draft}} : previous;
         }
-        return {...previous, draft, focus: 0, recall: -1};
+        return {...previous, draft, focus: 0, recall: preserveRecall ? previous.recall : -1};
       });
     }
     function selectQuestion(index: number): void {
@@ -71,8 +102,12 @@ export function ExperienceRuntimeApp({client, workspace}: {client: RuntimeClient
         return;
       }
       const option = q.options[index]; if (!option) return;
+      runtime.patch({notice: ''});
       const answer: Answer = {questionId: q.id, optionIds: q.multiSelect ? a.optionIds.includes(option.optionId) ? a.optionIds.filter(id => id !== option.optionId) : [...a.optionIds, option.optionId] : [option.optionId], freeText: q.multiSelect ? a.freeText : ''};
-      setUi(previous => ({...previous, answers: {...previous.answers, [q.id]: answer}, focus: q.multiSelect ? index : 0, question: q.multiSelect ? previous.question : previous.question + 1, panelScroll: 0}));
+      setUi(previous => {
+        const updated = {...previous, answers: {...previous.answers, [q.id]: answer}, focus: index, panelScroll: 0};
+        return q.multiSelect ? updated : visitQuestion(updated, p, previous.question + 1);
+      });
     }
     if (p?.kind === 'approval') {
       if (key.upArrow || key.downArrow) setUi(previous => ({...previous, focus: (previous.focus + (key.upArrow ? 2 : 1)) % 3}));
@@ -96,25 +131,25 @@ export function ExperienceRuntimeApp({client, workspace}: {client: RuntimeClient
       if (!ui.editing) {
         if (key.tab || key.leftArrow || key.rightArrow) {
           const delta = key.leftArrow || (key.tab && key.shift) ? -1 : 1;
-          setUi(previous => ({...previous, question: Math.max(0, Math.min(p.questions.length, previous.question + delta)), focus: 0, panelScroll: 0})); return;
+          setUi(previous => visitQuestion(previous, p, previous.question + delta)); return;
         }
         if (!q) {
           if (key.return && !key.meta && !key.ctrl) {
             const answers = questionAnswers(p, ui);
             const missing = answers.findIndex(answer => !answer.optionIds.length && !answer.freeText.trim());
-            if (missing >= 0) setUi(previous => ({...previous, question: missing, focus: 0}));
+            if (missing >= 0) setUi(previous => visitQuestion(previous, p, missing));
             else runtime.answer(p, answers);
           }
           return;
         }
         const length = q.options.length + (q.allowFreeText ? 1 : 0);
-        if (key.upArrow || key.downArrow) {setUi(previous => ({...previous, focus: (previous.focus + (key.upArrow ? length - 1 : 1)) % length})); return;}
+        if (key.upArrow || key.downArrow) {setUi(previous => ({...previous, focus: (previous.focus + (key.upArrow ? length - 1 : 1)) % length, panelScroll: 0})); return;}
         if (/^[1-9]$/.test(input)) {selectQuestion(Number(input) - 1); return;}
         if (input === ' ' && q.multiSelect) {selectQuestion(ui.focus); return;}
         if (key.return && !key.meta && !key.ctrl) {
           if (q.multiSelect && ui.focus < q.options.length) {
             const a = ui.answers[q.id];
-            if (a && (a.optionIds.length || a.freeText.trim())) setUi(previous => ({...previous, question: previous.question + 1, focus: 0, panelScroll: 0}));
+            if (a && (a.optionIds.length || a.freeText.trim())) setUi(previous => visitQuestion(previous, p, previous.question + 1));
             else runtime.patch({notice: '请至少选择一项，或填写自己的回答。'});
           } else selectQuestion(ui.focus);
         }
@@ -124,23 +159,34 @@ export function ExperienceRuntimeApp({client, workspace}: {client: RuntimeClient
       if (key.return && !key.meta && !key.ctrl) {
         const answerText = ui.free[q.id]?.text.trim() ?? '';
         if (answerText.length > 2000) {runtime.patch({notice: '回答最多 2000 字符，请缩短后保存。'}); return;}
-        if (!answerText) {runtime.patch({notice: '请输入回答，或按 Esc 返回选项。'}); return;}
         const a = ui.answers[q.id];
+        if (!answerText && !(q.multiSelect && a?.optionIds.length)) {runtime.patch({notice: '请输入回答，或按 Esc 返回选项。'}); return;}
         const answer: Answer = {questionId: q.id, optionIds: q.multiSelect ? a?.optionIds ?? [] : [], freeText: answerText};
-        setUi(previous => ({...previous, editing: false, answers: {...previous.answers, [q.id]: answer}, question: q.multiSelect ? previous.question : previous.question + 1, focus: 0}));
+        setUi(previous => {
+          const updated = {...previous, editing: false, answers: {...previous.answers, [q.id]: answer}};
+          return q.multiSelect ? {...updated, focus: 0} : visitQuestion(updated, p, previous.question + 1);
+        });
         runtime.patch({notice: ''}); return;
       }
       if (key.tab) {setUi(previous => ({...previous, editing: false})); return;}
     } else {
       if (state.showPlan) return;
       const matches = ui.draft.text.startsWith('/') ? runtimeCommands.filter(command => command.startsWith(ui.draft.text)) : [];
+      if (matches.length && key.tab && !key.shift) {
+        // 补全只修改草稿；留下参数输入位置，绝不在Tab时进入计划或启动Run。
+        updateDraft(edit(emptyDraft(), 'insert', matches[ui.focus % matches.length]! + ' '));
+        return;
+      }
       if (matches.length && (key.tab || key.upArrow || key.downArrow)) {setUi(previous => ({...previous, focus: (previous.focus + (key.upArrow || key.shift ? matches.length - 1 : 1)) % matches.length})); return;}
       if (key.return && !key.meta && !key.ctrl) {
         const prompt = matches.length && !runtimeCommands.includes(ui.draft.text) ? matches[ui.focus % matches.length]! : ui.draft.text;
-        if (runtime.submit(prompt)) setUi(previous => ({...previous, draft: emptyDraft(), focus: 0, recall: -1, scroll: 0, history: [...previous.history, prompt].slice(-30)}));
+        if (runtime.submit(prompt)) setUi(previous => ({...previous, draft: emptyDraft(), focus: 0, recall: -1, scroll: 0, readLimit: undefined, history: [...previous.history, prompt].slice(-30)}));
         return;
       }
-      if (state.status === 'idle' && !ui.draft.text.includes('\n') && (key.upArrow || key.downArrow)) {
+      if (key.upArrow || key.downArrow) {
+        const moved = moveDraftVertical(ui.draft, key.upArrow ? 'up' : 'down', columns - 2);
+        if (moved !== ui.draft) {updateDraft(moved, true); return;}
+        if (state.status !== 'idle') return;
         setUi(previous => {
           const recall = Math.max(-1, Math.min(previous.history.length - 1, previous.recall + (key.upArrow ? 1 : -1)));
           const saved = previous.recall === -1 ? previous.draft : previous.saved;
@@ -151,11 +197,14 @@ export function ExperienceRuntimeApp({client, workspace}: {client: RuntimeClient
     }
     const draft = ui.editing ? p?.kind === 'plan' ? ui.feedback : p?.kind === 'questions' ? ui.free[p.questions[ui.question]!.id] ?? emptyDraft() : ui.draft : ui.draft;
     if (key.ctrl && input === 'u') updateDraft(emptyDraft());
+    else if (key.upArrow || key.downArrow) updateDraft(moveDraftVertical(draft, key.upArrow ? 'up' : 'down', columns - 2));
     else if ((key.ctrl && input === 'j') || (key.return && key.meta)) updateDraft(edit(draft, 'insert', '\n'));
-    else if (key.home || (key.ctrl && input === 'a')) updateDraft(edit(draft, 'home'));
-    else if (key.end || (key.ctrl && input === 'e')) updateDraft(edit(draft, 'end'));
-    else if (key.leftArrow) updateDraft(edit(draft, 'left'));
-    else if (key.rightArrow) updateDraft(edit(draft, 'right'));
+    else if (key.home || (key.ctrl && input === 'a')) updateDraft(edit(draft, 'home'), true);
+    else if (key.end || (key.ctrl && input === 'e')) updateDraft(edit(draft, 'end'), true);
+    else if (key.leftArrow || key.rightArrow) {
+      const direction = key.leftArrow ? 'left' : 'right';
+      updateDraft(key.ctrl || key.meta ? moveDraftWord(draft, direction, columns - 2) : edit(draft, direction), true);
+    }
     else if (key.backspace || key.delete) updateDraft(edit(draft, key.backspace ? 'backspace' : 'delete'));
     else if (!key.ctrl && !key.meta && !key.tab && input) {
       const updated = edit(draft, 'insert', input);
@@ -163,5 +212,5 @@ export function ExperienceRuntimeApp({client, workspace}: {client: RuntimeClient
       else updateDraft(updated);
     }
   });
-  return <RuntimeScreen state={state} ui={ui} columns={columns} rows={rows} now={now}/>;
+  return <NativeHistoryScreen state={state} ui={ui} columns={columns} rows={rows} now={now}/>;
 }

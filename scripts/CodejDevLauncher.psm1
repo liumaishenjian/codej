@@ -439,7 +439,7 @@ function Enter-CodejBuildLock {
                 continue
             }
             if (-not $announced) {
-                [Console]::Error.WriteLine('[codej] Another terminal is building cc-java; waiting for the development build lock.')
+                Write-Verbose '[codej] Another terminal is building cc-java; waiting for the development build lock.'
                 $announced = $true
             }
             Start-Sleep -Milliseconds 200
@@ -466,7 +466,7 @@ function Invoke-CodejJavaBuild {
     $paths = Get-CodejBuildPaths -RepositoryRoot $RepositoryRoot
     $state = Get-CodejBuildState -RepositoryRoot $RepositoryRoot -JavaDescription $java.Description
     if (-not $Force -and $state.Reusable) {
-        [Console]::Error.WriteLine('[codej] Reusing verified Java development build outputs.')
+        Write-Verbose '[codej] Reusing verified Java development build outputs.'
         return $state
     }
 
@@ -474,10 +474,10 @@ function Invoke-CodejJavaBuild {
     try {
         $state = Get-CodejBuildState -RepositoryRoot $RepositoryRoot -JavaDescription $java.Description
         if (-not $Force -and $state.Reusable) {
-            [Console]::Error.WriteLine('[codej] Reusing outputs built by another terminal.')
+            Write-Verbose '[codej] Reusing outputs built by another terminal.'
             return $state
         }
-        [Console]::Error.WriteLine('[codej] Building Java Headless; the first run may take 1-2 minutes.')
+        Write-Verbose '[codej] Building Java Headless; the first run may take 1-2 minutes.'
         $maven = Join-Path $RepositoryRoot 'mvnw.cmd'
         $arguments = @(
             '-q', '--file', (Join-Path $RepositoryRoot 'pom.xml'),
@@ -495,7 +495,7 @@ function Invoke-CodejJavaBuild {
         }
         $null = New-Item -ItemType Directory -Path $paths.StateDirectory -Force
         [IO.File]::WriteAllText($paths.FingerprintFile, "$($state.CurrentFingerprint)`n", [Text.UTF8Encoding]::new($false))
-        [Console]::Error.WriteLine('[codej] Java Headless build completed.')
+        Write-Verbose '[codej] Java Headless build completed.'
         return Get-CodejBuildState -RepositoryRoot $RepositoryRoot -JavaDescription $java.Description
     }
     finally {

@@ -26,6 +26,105 @@ import org.junit.jupiter.api.Test;
 class StdioApprovalCoordinatorTest {
 
     @Test
+    void contextualPreviewUsesCanonicalFileCoordinatesAndNeverWrites(@org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
+        var file = workspace.resolve("sample.txt");
+        java.nio.file.Files.writeString(file, "第一行\r\nold\r\n末行\r\n");
+        var change = previewPatch(workspace, "sample.txt", "old", "new", false);
+        assertThat(change.scope()).isEqualTo("file");
+        assertThat(change.before()).isEqualTo("第一行\nold\n末行\n");
+        assertThat(change.after()).isEqualTo("第一行\nnew\n末行\n");
+        assertThat(java.nio.file.Files.readString(file)).isEqualTo("第一行\r\nold\r\n末行\r\n");
+        java.nio.file.Files.writeString(file, "old\n间隔\nold\n");
+        assertThat(previewPatch(workspace, "sample.txt", "old", "new", false).scope()).isEqualTo("fragment");
+        assertThat(previewPatch(workspace, "sample.txt", "old", "new", true).after()).isEqualTo("new\n间隔\nnew\n");
+        assertThat(previewPatch(workspace, "sample.txt", "missing", "new", false).scope()).isEqualTo("fragment");
+    }
+
+    @Test
+    void contextualPreviewRejectsSecretsAndBoundsReplacementExpansion(@org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
+        var file = workspace.resolve("sample.txt");
+        java.nio.file.Files.writeString(file, "password=EXAMPLE\nold\n");
+        var secret = previewPatch(workspace, "sample.txt", "old", "new", false);
+        assertThat(secret.status()).isEqualTo("redacted");
+        assertThat(secret.before()).isEmpty(); assertThat(secret.after()).isEmpty();
+        java.nio.file.Files.writeString(file, "a".repeat(6000));
+        assertThat(previewPatch(workspace, "sample.txt", "a", "b".repeat(6000), true).scope()).isEqualTo("fragment");
+        java.nio.file.Files.writeString(file, "a".repeat(25000));
+        assertThat(previewPatch(workspace, "sample.txt", "a", "b", true).scope()).isEqualTo("fragment");
+        assertThat(previewPatch(workspace, "absent.txt", "a", "b", false).scope()).isEqualTo("fragment");
+        assertThat(previewPatch(workspace, "../escape.txt", "a", "b", false)).isNull();
+        java.nio.file.Files.writeString(workspace.resolve(".env"), "PREVIEW_MUST_NOT_READ\na\n");
+        var denied = previewPatch(workspace, ".env", "a", "b", false);
+        assertThat(denied.status()).isEqualTo("redacted");
+        assertThat(denied.before()).isEmpty();
+        assertThat(denied.after()).isEmpty();
+    }
+
+    private static StdioApprovalCoordinator.FileChange previewPatch(java.nio.file.Path workspace, String path,
+            String before, String after, boolean all) throws Exception {
+        AtomicReference<StdioApprovalCoordinator> holder = new AtomicReference<>();
+        AtomicReference<StdioApprovalCoordinator.Request> captured = new AtomicReference<>();
+        try (var coordinator = new StdioApprovalCoordinator(request -> {
+            captured.set(request); holder.get().resolve(request.approvalId(), ApprovalResponse.deny());
+        })) {
+            holder.set(coordinator); coordinator.enableFilePreviews(true);
+            coordinator.bindPreviewGuard(new io.github.liumaishenjian.ccjava.tools.local.workspace.WorkspaceGuard(workspace));
+            var call = new ToolCall("patch", "apply_patch", new JsonObject(java.util.Map.of(
+                    "path", path, "oldText", before, "newText", after, "replaceAll", all)));
+            coordinator.requestApproval(new ToolInvocation(new SessionId("session"), new RunId("run"), 1,
+                            call, new CancellationSource().token()),
+                    new ToolDefinition("apply_patch", "Patch", "{}", ToolEffect.WRITE_WORKSPACE, ToolSource.BUILT_IN,
+                            false, Duration.ofSeconds(1), "text/plain", 1024),
+                    ask(PermissionSelector.toolWide("apply_patch", ToolSource.BUILT_IN)));
+            return captured.get().preview().change();
+        }
+    }
+
+    @Test
+    void negotiatedFilePreviewIsBoundedAndNeverEchoesRejectedContent() {
+        assertThat(StdioApprovalCoordinator.FileChange.from("old", "new"))
+                .isEqualTo(new StdioApprovalCoordinator.FileChange("old", "new", "available"));
+        for (String rejected : java.util.List.of("password=EXAMPLE", "x\u001by", "x\u009cy")) {
+            assertThat(StdioApprovalCoordinator.FileChange.from("safe", rejected))
+                    .isEqualTo(new StdioApprovalCoordinator.FileChange("", "", "redacted"));
+        }
+        assertThat(StdioApprovalCoordinator.FileChange.from("a".repeat(6001), "new"))
+                .isEqualTo(new StdioApprovalCoordinator.FileChange("", "", "too_large"));
+        assertThat(StdioApprovalCoordinator.FileChange.from("", "中文\n\tvalue").after())
+                .isEqualTo("中文\n\tvalue");
+    }
+
+    @Test
+    void enabledPreviewIsProjectedFromSameBuiltinCallAndDenyStillWins() {
+        AtomicReference<StdioApprovalCoordinator> holder = new AtomicReference<>();
+        AtomicReference<StdioApprovalCoordinator.Request> captured = new AtomicReference<>();
+        StdioApprovalCoordinator coordinator = new StdioApprovalCoordinator(request -> {
+            captured.set(request);
+            holder.get().resolve(request.approvalId(), ApprovalResponse.deny());
+        });
+        holder.set(coordinator);
+        coordinator.enableFilePreviews(true);
+        var call = new ToolCall("file", "write_file", new JsonObject(java.util.Map.of(
+                "path", "report.md", "content", "中文正文\n")));
+        var invocation = new ToolInvocation(new SessionId("session"), new RunId("run"), 1,
+                call, new CancellationSource().token());
+        var definition = new ToolDefinition("write_file", "Write", "{}", ToolEffect.WRITE_WORKSPACE,
+                ToolSource.BUILT_IN, false, Duration.ofSeconds(1), "text/plain", 1024);
+        var result = coordinator.requestApproval(invocation, definition,
+                ask(PermissionSelector.toolWide("write_file", ToolSource.BUILT_IN)));
+        assertThat(result).isEqualTo(ApprovalResponse.deny());
+        assertThat(captured.get().preview().change().after()).isEqualTo("中文正文\n");
+        assertThat(captured.get().preview().target()).isEqualTo("report.md");
+        assertThat(captured.get().preview().addedLines()).isEqualTo(1);
+        var external = new ToolDefinition("write_file", "External", "{}", ToolEffect.WRITE_WORKSPACE,
+                ToolSource.PLUGIN, false, Duration.ofSeconds(1), "text/plain", 1024);
+        coordinator.requestApproval(invocation, external,
+                ask(PermissionSelector.toolWide("write_file", ToolSource.PLUGIN)));
+        assertThat(captured.get().preview().change()).isNull();
+        coordinator.close();
+    }
+
+    @Test
     void matchingAllowOnceReleasesOnlyTheDisplayedRequest() throws Exception {
         CountDownLatch requested = new CountDownLatch(1);
         AtomicReference<StdioApprovalCoordinator.Request> captured = new AtomicReference<>();

@@ -223,16 +223,16 @@
     }
   </style>
 </head>
-<body data-matrix-digest="1d8cdf0d824d" data-state-digest="3657c4f09ee6" data-code-digest="108af16e7a3b">
+<body data-matrix-digest="57f336ba039e" data-state-digest="6c4e5c9b4dea" data-code-digest="c6bf68b6c766">
   <main class="shell">
     <section class="hero">
       <p class="eyebrow">Reference-driven Java Agent Runtime</p>
       <h1>cc-java 项目进度看板</h1>
-      <p class="hero-copy">ADR-097 第三批形成收窄后的方向验证候选版：无参 /plan 保持进入/查看，显式 /plan &lt;修正请求&gt; 才以同 Plan/Task/requirement identity 纠正 NEEDS_VERIFICATION；Workspace applicability 阻止非 Git 环境声明不可满足的 Git verification。同一真实 Session revision24→37 五条 required 全 PASS、Plan COMPLETED、正文可见且文件 hash 不变。PowerShell 7 固定 launcher/Unicode/长正文、定向分片 capability、新旧 Host 安全边界及真实生产入口均通过。Capability Level 无变化，S15 Stage Exit 仍 OPEN。</p>
+      <p class="hero-copy">ADR-128 记录 S15 TUI Next 真实入口复验边界：任务1-6已有真实 Java/stdio/Fake 与 TUI 回归；确定性跨进程 Fixture 修正 ACL/账户后当前4/6通过，XLSX命令与超时场景在固定PowerShell CreateProcess error=5处受限，成功 Provider、物理参考视觉和跨平台证据仍未知。Capability Level 无变化，S15 Stage Exit 仍 OPEN。</p>
       <div class="hero-meta">
         <span class="chip"><span class="dot"></span>当前 S15 · Independent Innovation</span>
         <span class="chip">Stage Exit · OPEN</span>
-        <span class="chip">更新 · 2026-09-12</span>
+        <span class="chip">更新 · 2026-10-06</span>
         <a class="chip" href="feature-parity-matrix.md">打开权威功能矩阵 ↗</a>
       </div>
     </section>
@@ -263,7 +263,7 @@
 
     <section class="panel callout">
       <strong>Next allowed action</strong>
-      <p>交付维护者验证当前方向；后续仅处理 Windows PowerShell 5.1 实机、参考视觉、复杂 Provider/跨平台质量与 Markdown 反引号呈现等已记录差距，不扩展本批功能或交互。</p>
+      <p>在允许 Java 启动固定 Windows PowerShell 的环境重跑剩余2个确定性 Fixture，再在具备授权 Provider和物理终端的环境重跑任务7全场景；继续保留超大文件扫描、语法高亮、参考实机视觉和跨平台安装差距，不修改安全边界或伪造完成。</p>
     </section>
 
     <section class="panel" id="gates">
@@ -330,13 +330,13 @@
         </div>
       </div>
       <dl class="evidence-grid">
-        <div class="evidence-item"><dt>Last change</dt><dd>ADR098修复交互工具误作交付证据、同Run审核恢复显示和命令/网页工具协议头摘要。Java定向141项零失败1跳过；最终构建和TUI358/358通过。正式入口真实天气计划COMPLETED、required证据PASSED、正文及下一轮可见。无Capability等级变化；S15仍OPEN。</dd></div>
+        <div class="evidence-item"><dt>Last change</dt><dd>ADR128补充真实入口复验边界并修正跨进程Fixture启动器：TUI标准回归与Java→stdio→Ink确定性场景当前4/6通过；剩余2项真实run_command在固定PowerShell CreateProcess error=5处受当前沙箱阻塞；无能力等级变化。</dd></div>
         <div class="evidence-item"><dt>Evidence stage</dt><dd><code>S15</code></dd></div>
         <div class="evidence-item"><dt>Evidence class</dt><dd><code>WORKTREE_DIRECTION_VALIDATION_CANDIDATE</code></dd></div>
         <div class="evidence-item"><dt>Code commit</dt><dd><code>UNCOMMITTED</code></dd></div>
-        <div class="evidence-item"><dt>Standard command</dt><dd><code>ADR098定向Maven测试；npm build；显式Java classpath TUI回归（排除两项需单独启用的真实/安装套件）；StartCodejDev --tui-next真实Provider PTY；ProgressDashboard generate/check/self-test</code></dd></div>
-        <div class="evidence-item"><dt>Result</dt><dd>ADR098：Java定向141项零失败1跳过；修复后build与TUI358/358（含Java stdio）通过。真实StartCodejDev入口在独立临时目录生成并审批天气计划，三次网页查询后Plan revision7 COMPLETED，required web_search PASSED，正文及下一轮可见，退出0。查询内容准确性、物理终端视觉一致性和复杂Provider质量未由此证明；能力等级不变。</dd></div>
-        <div class="evidence-item"><dt>Source digests</dt><dd><code>matrix 1d8cdf0d824d</code><br><code>state 3657c4f09ee6</code><br><code>code/build 108af16e7a3b</code></dd></div>
+        <div class="evidence-item"><dt>Standard command</dt><dd><code>npm build与TUI完整回归；mvnw test（非clean）；模型适配器/Task计划定向回归；显式Java classpath TUI回归；ProgressDashboard generate/check/self-test；git diff --check</code></dd></div>
+        <div class="evidence-item"><dt>Result</dt><dd>ADR127后TUI build与标准回归449/449（7跳过）、Runtime定向90/90、Runtime应用91/91；普通工具参数校验失败/同Run后续成功/终态中性投影和流式长输出尾窗通过；Spring AI模型模块89 tests（2跳过）、异常摘要定向6/6；Task计划组合10/10，全仓Maven非clean汇总1347 tests（13跳过、0失败/错误）；ADR122历史真实计划跨进程6/6、Java→Ink7/7；2026-10-06修正Fixture ACL/账户后当前确定性Java→stdio→Ink 4/6通过，剩余XLSX run_command与命令超时在固定PowerShell CreateProcess error=5处受限；无成功Provider或物理视觉新证据，无等级变化。</dd></div>
+        <div class="evidence-item"><dt>Source digests</dt><dd><code>matrix 57f336ba039e</code><br><code>state 6c4e5c9b4dea</code><br><code>code/build c6bf68b6c766</code></dd></div>
       </dl>
     </section>
 

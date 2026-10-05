@@ -1,6 +1,6 @@
 # codej 功能对照矩阵与能力路线
 
-2026-09-11：feat/tui-redesign 已接通真实核心交互（ADR-091/092）：对话、工具与 Shell 审批、协商式完整问卷、单入口 `/plan` 审核执行；见 [验收证据](evidence/S15-tui-next-core.md)。ADR-093/094 保持计划审核与最终交付 Gate；ADR-095/096 完成验证失败恢复及 R1—R4 对照。ADR-097 第三批形成方向验证候选版：无参 `/plan` 只进入/查看，显式 `/plan <修正请求>` 才以同一 Plan/Task/requirement identity 纠正 `NEEDS_VERIFICATION`；Workspace applicability 阻止非 Git 环境声明不可满足的 Git required verification。同一真实 Session revision 24→37 后五条 required 全 PASS、Plan COMPLETED、正文可见且文件 hash 不变。PowerShell 7 使用固定短 launcher、Process-only 正文和 UTF-8 输出；stdio 定向长 Plan 通过 `directedChunkInputV1` 协商，旧 Host 长 Plan 失败关闭而普通长 Run 保持兼容。Java 155/155、修复后 build、全 TUI 349 pass/7 skip、显式跨进程 7/7 及真实生产入口混合中文/错误 exit 7/下一轮均通过。Windows PowerShell 5.1、参考视觉、复杂 Provider/跨平台和 Markdown 呈现仍是差距。CLI-01/03/04/05/09 保持 L2，TOOL-10/11、PLAN-01 保持 L1，S15/P7 仍 OPEN。
+2026-09-11：feat/tui-redesign 已接通真实核心交互（ADR-091/092）：对话、工具与 Shell 审批、协商式完整问卷、单入口 `/plan` 审核执行；见 [验收证据](evidence/S15-tui-next-core.md)。ADR-093/094 保持计划审核与最终交付 Gate；ADR-095/096 完成验证失败恢复及 R1—R4 对照。ADR-097 第三批形成方向验证候选版：无参 `/plan` 只进入/查看，显式 `/plan <修正请求>` 才以同一 Plan/Task/requirement identity 纠正 `NEEDS_VERIFICATION`；Workspace applicability 阻止非 Git 环境声明不可满足的 Git required verification。同一真实 Session revision 24→37 后五条 required 全 PASS、Plan COMPLETED、正文可见且文件 hash 不变。PowerShell 7 使用固定短 launcher、Process-only 正文和 UTF-8 输出；stdio 定向长 Plan 通过 `directedChunkInputV1` 协商，旧 Host 长 Plan 失败关闭而普通长 Run 保持兼容。ADR-125 补充安全模型失败摘要及 Spring AI 未分类 Provider 异常收敛，ADR-126 补齐普通工具参数失败的可恢复投影，ADR-127 补齐流式工具输出尾窗。Java 155/155、修复后 build、全 TUI 449 pass/7 skip、显式跨进程 7/7 及真实生产入口混合中文/错误 exit 7/下一轮均通过。Windows PowerShell 5.1、参考视觉、复杂 Provider/跨平台和 Markdown 呈现仍是差距。CLI-01/03/04/05/09 保持 L2，TOOL-10/11、PLAN-01 保持 L1，S15/P7 仍 OPEN。
 
 > 文档状态：Active Baseline
 >
@@ -903,3 +903,99 @@ CLI-05/CLI-09保持L2，PLAN-01保持L1；无Capability等级变化，S15仍OPEN
 ### 2026-09-12 验证工具职责与审核恢复纠正
 
 ADR-098将交付验证候选限定为可信内置的工作区读写、进程或网络工具；用户交互、内部Task状态及计划编排不能作为交付证明。模型可见候选、声明校验和审核Gate复用同一集合；不放松实际成功结果要求。新TUI以当前Run的真实审核事件标记此前审核阻塞已解除，并保留原失败事实。CLI-05/09 L2、PLAN-01 L1不变；最终实测见S15-tui-next-core证据。
+
+### 2026-09-12 工具输出与展开交互切片
+
+[ADR-099](adr/ADR-099-s15-tool-output-interaction.md)记录同回合搜索分组、返回统计、命令增量预览、完整输出及审批/展开位置对照。CLI-05/09保持L2，TOOL-10保持L1，无Capability等级提升；实际证据和剩余差距见S15-tui-next-core。
+
+### 2026-09-12 正文表格与缩进切片
+
+[ADR-100](adr/ADR-100-s15-markdown-layout.md)：新TUI专门呈现GFM表格、窄屏键值回退、代码侧边线与列表续行；继续已有流式协议和Marked。CLI-03保持L2，无Capability等级变化；参考实机视觉、复杂嵌套及增量解析性能仍是差距。
+
+### 2026-09-12 列表及引用上下文纠正
+
+[ADR-101](adr/ADR-101-s15-markdown-block-context.md)：新TUI区分列表项首行标记与后续块缩进，避免重复编号、父标记污染子项；引用前缀在折行和空行保留。CLI-03仍L2，无Capability等级变化；实际验证见S15-tui-next-core。
+
+### 2026-09-12 普通终端原生历史对齐
+
+[ADR-102](adr/ADR-102-s15-native-terminal-history.md)：稳定前缀使用公共Ink Static进入终端历史，移除主界面自定义回看提示；未稳定尾部和详情仍有界。CLI-01/03/04/09保持L2，无Capability等级变化；物理鼠标和参考实机视觉仍待验收，不能把字节及渲染检查描述为全屏滚动一致性。
+
+
+### 2026-09-12 多行输入对齐（ADR-103）
+
+[ADR-103](adr/ADR-103-s15-multiline-input-navigation.md)补齐新界面多行上下移动及历史边界；CLI-04保持L2，无Capability升级。参考PromptInput首末行历史条件，字形、布局和产品范围不变。
+
+
+### 2026-09-12 核心命令补全（ADR-104）
+
+[ADR-104](adr/ADR-104-s15-core-command-completion.md)：补齐核心命令Tab接受选中候选、继续填写参数的行为；CLI-04保持L2，无Capability变化；仅/plan和/help。
+
+
+### 2026-09-12 核心交互整批收口（ADR-105）
+
+[ADR-105](adr/ADR-105-s15-core-interaction-batch.md)统一收口输入历史衔接、问卷复核和长工具/审批详情；CLI-04/05/09保持L2，TOOL-10保持L1，无Capability变化。源码机制已对照，参考物理UI仍Unknown。
+
+
+### 2026-09-12 长会话呈现批次（ADR-106）
+
+[ADR-106](adr/ADR-106-s15-long-session-rendering.md)优化长会话输入、稳定消息排版和终态缓存一致性；CLI-03/04/09保持L2，不新增能力等级。超长未稳定单条Markdown仍需整体重解析，增量语法解析保持明确差距。
+
+
+### 2026-09-12 核心结果交付批次（ADR-107）
+
+[ADR-107](adr/ADR-107-s15-result-delivery.md)修复来源/产物目标丢失、样式丢失、任务框重复与深层正文消失。CLI-03/04/09保持L2、PLAN-01保持L1，无Capability等级变化。OSC8链接、参考实机视觉与超长单条增量解析仍是差距。
+
+
+### 2026-09-12 日常核心流程整批（ADR-108）
+
+[ADR-108](adr/ADR-108-s15-daily-core-workflow.md)集中处理流式呈现、绘制节点、短窗口问卷及日常核心交付；CLI-03/04/05/09保持L2，TOOL-10/PLAN-01保持L1。50ms视图发布不是增量AST；参考实机/跨平台和OSC8差距保留。
+
+
+### 2026-09-12 长内容阅读整批（ADR-109）
+
+[ADR-109](adr/ADR-109-s15-transcript-reading.md)对照REPL transcript长度冻结及Markdown token缓存，完成详情阅读范围、显式刷新和跨宽度语法复用；CLI-03/04/09保持L2。非增量AST、非逐行resize锚定；鼠标/OSC8/参考实机差距保留。
+
+
+### 2026-09-12 网页来源链接（ADR-110）
+
+[ADR-110](adr/ADR-110-s15-terminal-source-links.md)接通公共Ink的网页OSC8与文本退化，缩小ADR107–109的OSC8差距；CLI-03/04/09保持L2。已验证协议范围、地址保留及三宽度折行；物理点击、文件链接、详情鼠标与参考实机视觉仍未验收，不提升等级。
+
+
+### 2026-09-12 文件修改审批（ADR-111）
+
+[ADR-111](adr/ADR-111-s15-file-change-preview.md)接通新界面的内置文件变更片段：来源隔离、默认关闭、敏感/超长拒显、真实移除/新增及换行标识、固定审批决定和成功摘要。CLI-04/05保持L2、TOOL-10保持L1；整文件上下文diff、语法高亮和参考实机视觉仍有差距，不提升等级。
+
+
+### 2026-09-12 启动握手与任务参数（ADR-112）
+
+[ADR-112](adr/ADR-112-s15-run-handshake-task-validation.md)修复新界面把queued当rejected导致结果失联的确定性缺陷；任务metadata小写键规则从Domain同步到schema和安全纠正提示。CLI-04/09 L2、PLAN-01 L1不变；用户现场握手未保存，不将该修复描述为现场事件顺序已经证实。
+
+
+### 2026-09-12 可靠交付（ADR-113）
+
+[ADR-113](adr/ADR-113-s15-delivery-diagnostics.md)让失败说明与最终正文同时可见，空结果/缺审核明确提示；宿主取消与断连未知结果分开，内存白名单诊断可在异常Ctrl+O详情查看。CLI-03/04/09 L2、PLAN-01 L1不变。无持久抓包/自动重放，不提升跨平台或参考视觉等级。
+
+
+### 2026-09-12 提交恢复（ADR-114）
+
+[ADR-114](adr/ADR-114-s15-submission-recovery.md)补齐未接受启动的草稿恢复、计划确认拒绝后保留审核/反馈、新面板不被旧控制错误覆盖；accepted/queued/取消/断连不自动重发。CLI-04/05/09 L2、PLAN-01 L1不变。
+
+
+### 2026-09-13 问卷结果确认（ADR-115）
+
+[ADR-115](adr/ADR-115-s15-question-answer-result-confirmation.md)将问卷答案历史推迟到对应工具成功，拒绝重提不重复回显；兼容无callId宿主时省略本地摘要。CLI-04/05/09 L2、PLAN-01 L1不变。
+
+
+### 2026-09-13 工具到交付（ADR-116）
+
+[ADR-116](adr/ADR-116-s15-tool-delivery-boundaries.md)收口工具关联/不可逆终态、工具后最终交付判定及计划内部工具详情。CLI-03/04/05/09 L2、PLAN-01 L1、TOOL-10 L1不变；没有新增自动重试或前端Agent Loop。
+
+
+### 2026-09-13 命令Shell契约（ADR-117）
+
+[ADR-117](adr/ADR-117-s15-command-shell-contract.md)让run_command模型定义与审批使用同源Shell，WSL/Docker按后端使用sh说明。TOOL-10 L1、CLI-04/05 L2不变；不新增自动语法转换或Shell选择。
+
+
+### 2026-09-13 文件审阅（ADR-118）
+
+[ADR-118](adr/ADR-118-s15-file-review-context.md)补齐小文件上下文/行号、创建差异、审批记录与工具结果关联、冲突提示及安全退化。CLI-04/05/09 L2、TOOL-10/11 L1不变；不宣称任意规模完整diff、语法高亮或当前磁盘复读。

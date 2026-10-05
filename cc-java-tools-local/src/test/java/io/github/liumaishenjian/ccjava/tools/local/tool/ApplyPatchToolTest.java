@@ -81,6 +81,8 @@ class ApplyPatchToolTest {
                 .contains("user-dirty\r\nnew block\r\ntail");
         assertThat(outcome.content())
                 .contains("operation: modified", "- old block", "+ new block");
+        assertThat(outcome.metadata().continuation().values())
+                .containsEntry("verification", "verified");
     }
 
     @Test

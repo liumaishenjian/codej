@@ -109,16 +109,6 @@ public final class SpringAiModelGateway implements StreamingModelGateway {
         CompletableFuture<Void> terminal = new CompletableFuture<>();
 
         java.time.Duration remaining = remainingRequestTimeout(cancellation);
-        var rawResponses = chatModel.stream(promptMapper.map(request, model, remaining))
-                .doOnNext(response -> {
-                    receivedResponse.set(true);
-                    if (hasProviderOutput(response)) {
-                        receivedProviderOutput.set(true);
-                    }
-                });
-        var responses = new MessageAggregator().aggregate(
-                rawResponses,
-                aggregate::set);
         try (CancellationToken.Registration ignored = cancellation.onCancellation(() -> {
             cancelled.set(true);
             Disposable disposable = subscription.get();
@@ -127,6 +117,16 @@ public final class SpringAiModelGateway implements StreamingModelGateway {
             }
             terminal.completeExceptionally(new ModelCancelledException());
         })) {
+            var rawResponses = chatModel.stream(promptMapper.map(request, model, remaining))
+                    .doOnNext(response -> {
+                        receivedResponse.set(true);
+                        if (hasProviderOutput(response)) {
+                            receivedProviderOutput.set(true);
+                        }
+                    });
+            var responses = new MessageAggregator().aggregate(
+                    rawResponses,
+                    aggregate::set);
             Disposable disposable = responses.subscribe(
                     response -> publishDelta(response, observer, emittedUserText),
                     terminal::completeExceptionally,
@@ -172,6 +172,19 @@ public final class SpringAiModelGateway implements StreamingModelGateway {
                     safeMessage,
                     classification.summary(),
                     cause);
+        } catch (RuntimeException failure) {
+            if (cancelled.get() || cancellation.isCancellationRequested()) {
+                throw new ModelGatewayException(CANCELLED, "Model request cancelled");
+            }
+            throw unexpectedProviderFailure(
+                    request,
+                    receivedResponse.get()
+                            ? ModelFailureStage.STREAM_TRANSPORT
+                            : ModelFailureStage.REQUEST_TRANSPORT,
+                    receivedResponse.get(),
+                    emittedUserText.get(),
+                    startedNanos,
+                    failure);
         }
 
         ChatResponse response = aggregate.get();
@@ -188,13 +201,23 @@ public final class SpringAiModelGateway implements StreamingModelGateway {
                     "Provider returned an incomplete model stream",
                     receivedResponse.get());
         }
-        return mapTurn(
-                request,
-                response,
-                receivedResponse.get(),
-                receivedProviderOutput.get(),
-                emittedUserText.get(),
-                startedNanos);
+        try {
+            return mapTurn(
+                    request,
+                    response,
+                    receivedResponse.get(),
+                    receivedProviderOutput.get(),
+                    emittedUserText.get(),
+                    startedNanos);
+        } catch (RuntimeException failure) {
+            throw unexpectedProviderFailure(
+                    request,
+                    ModelFailureStage.RESPONSE_DECODE,
+                    receivedResponse.get(),
+                    emittedUserText.get(),
+                    startedNanos,
+                    failure);
+        }
     }
 
     /**
@@ -558,6 +581,39 @@ public final class SpringAiModelGateway implements StreamingModelGateway {
                 reason,
                 ModelDiagnosticStatusClass.NONE,
                 Optional.empty());
+    }
+
+    /**
+     * 把 SDK/适配器未分类的运行时异常收敛成安全 Provider 故障。
+     *
+     * <p>OpenAI-compatible SDK 在建立流、订阅或解码响应时仍可能抛出不属于其公开异常
+     * 体系的 {@link RuntimeException}。若任其穿过 Adapter，Core 只能生成没有摘要的裸
+     * {@code model_error}，TUI 也无法给出可操作提示。这里不读取异常文本，只记录固定
+     * {@code PROVIDER_ERROR} 与阶段，并保留原异常作为 JVM 内部 cause。</p>
+     */
+    private ModelGatewayException unexpectedProviderFailure(
+            ModelRequest request,
+            ModelFailureStage stage,
+            boolean receivedProviderFrame,
+            boolean emittedUserText,
+            long startedNanos,
+            RuntimeException failure) {
+        recordFailure(
+                request,
+                stage,
+                ModelFailureReason.UNKNOWN,
+                ModelDiagnosticStatusClass.NONE,
+                receivedProviderFrame,
+                emittedUserText,
+                startedNanos);
+        return new ModelGatewayException(
+                PERMANENT,
+                "Model request failed",
+                ModelFailureSummary.firstAttempt(
+                        ModelFailureCategory.PROVIDER_ERROR,
+                        Optional.empty(),
+                        receivedProviderFrame || emittedUserText),
+                failure);
     }
 
     /**

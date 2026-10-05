@@ -52,6 +52,7 @@ public final class RunCommandTool implements AgentTool {
             LocalToolLimits.MAX_TOOL_OUTPUT_CHARACTERS);
 
     private final LocalCommandExecutor executor;
+    private final ToolDefinition definition;
 
     /**
      * 创建固定命令执行器的 Tool Adapter。
@@ -60,11 +61,26 @@ public final class RunCommandTool implements AgentTool {
      */
     public RunCommandTool(LocalCommandExecutor executor) {
         this.executor = java.util.Objects.requireNonNull(executor, "executor 不能为空");
+        String shell = executor.display().shell();
+        String syntax = switch (shell) {
+            case "powershell" -> " Use PowerShell syntax and cmdlets, such as Get-Content and Test-Path. "
+                    + "POSIX test, export and heredoc syntax do not apply. "
+                    + "For native executables, check $LASTEXITCODE and propagate failures explicitly.";
+            case "sh", "linux-sh/wsl2-bwrap", "linux-sh/docker" ->
+                    " Use POSIX sh syntax; Bash-specific features are not guaranteed.";
+            default -> " Use the syntax supported by this configured execution backend.";
+        };
+        this.definition = new ToolDefinition(
+                DEFINITION.name(), DEFINITION.description() + " Configured shell: " + shell + "." + syntax,
+                DEFINITION.inputSchemaJson(), DEFINITION.effect(), DEFINITION.source(),
+                DEFINITION.supportsCancellation(), DEFINITION.defaultTimeout(), DEFINITION.outputMediaType(),
+                DEFINITION.maxOutputCharacters(), DEFINITION.planCapabilities());
     }
 
+    /** 模型定义与审批共用执行器的 Shell 事实；读取元数据不会启动进程。 */
     @Override
     public ToolDefinition definition() {
-        return DEFINITION;
+        return definition;
     }
 
     /**

@@ -15,7 +15,8 @@ import java.util.TreeMap;
 public record TaskMetadata(Map<String, TaskMetadataValue> values) {
     /** 空 metadata。 */
     public static final TaskMetadata EMPTY = new TaskMetadata(Map.of());
-    private static final String KEY_PATTERN = "[a-z][a-z0-9_.-]{0,63}";
+    /** 模型schema与确定性校验共享的小写metadata键规则。 */
+    public static final String KEY_PATTERN = "[a-z][a-z0-9_.-]{0,63}";
 
     /** 复制并验证 key、value 与 4096 UTF-8 bytes 总预算。 */
     public TaskMetadata {

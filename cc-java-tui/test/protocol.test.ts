@@ -648,6 +648,26 @@ describe('decodeEvent', () => {
       .toThrowError(/恢复关联/);
   });
 
+  it('参数校验元数据只接受 tool.failed 的有限布尔与分类字段', () => {
+    const failed = {
+      version: 0, type: 'tool.failed', requestId: 'req-1', sessionId: 'session-1', runId: 'run-1', sequence: 1,
+      payload: {
+        ordinal: 2, toolName: 'search_text', status: 'failure', errorCode: 'invalid_arguments',
+        failureCategory: 'validation', retryable: true, argumentChangeRequired: true,
+      },
+    };
+    const decoded = decodeEvent(JSON.stringify(failed), 1);
+    expect(decoded.payload.failureCategory).toBe('validation');
+    expect(decoded.payload.retryable).toBe(true);
+    expect(decoded.payload.argumentChangeRequired).toBe(true);
+    for (const [field, value] of [['retryable', 'true'], ['argumentChangeRequired', 1], ['failureCategory', 'raw exception']] as const) {
+      expect(() => decodeEvent(JSON.stringify({...failed, payload: {...failed.payload, [field]: value}}), 1))
+        .toThrowError(/参数校验标记|安全失败分类/);
+    }
+    expect(() => decodeEvent(JSON.stringify({...failed, type: 'tool.completed', sequence: 2}), 2))
+      .toThrowError(/参数校验标记|安全失败分类/);
+  });
+
   it('非Local命令审批接受执行器稳定Shell ID并拒绝未知值', () => {
     for (const shell of ['linux-sh/wsl2-bwrap', 'linux-sh/docker', 'windows-native', 'macos-sandbox']) {
       const event = decodeEvent(JSON.stringify({

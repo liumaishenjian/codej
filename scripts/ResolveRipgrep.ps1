@@ -50,5 +50,5 @@ function Initialize-CcJavaRipgrep {
         $env:Path = "$ripgrepDirectory$pathSeparator$env:Path"
     }
     $env:CC_JAVA_RIPGREP_PATH = $resolvedPath
-    [Console]::Error.WriteLine('[cc-java] ripgrep is ready.')
+    Write-Verbose '[cc-java] ripgrep is ready.'
 }

@@ -1527,6 +1527,13 @@ class RuntimeStdioCommandHandlerTest {
         }
 
         assertThat(Files.readString(file)).isEqualTo("new\n");
+        CapturedEvent completed = events.stream()
+                .filter(event -> event.type().equals("tool.completed"))
+                .filter(event -> event.payload().get("toolName").stringValue().equals("apply_patch"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(completed.payload().toString())
+                .contains("\"resultSummary\"", "\"verification\":\"verified\"");
     }
 
     @Test

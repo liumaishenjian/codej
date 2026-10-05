@@ -142,6 +142,40 @@ class SpringAiModelDiagnosticTest {
                         assertThat(exception.kind()).isEqualTo(ModelGatewayException.FailureKind.RETRYABLE));
     }
 
+    @Test
+    void wrapsUnexpectedChatModelRuntimeAsSanitizedProviderError() {
+        List<ModelDiagnosticEvent> events = new ArrayList<>();
+        SpringAiModelGateway gateway = new SpringAiModelGateway(
+                new ThrowingChatModel(),
+                "model",
+                new ModelDiagnosticRecorder(
+                        ModelDiagnosticMode.SAFE,
+                        events::add,
+                        Clock.fixed(Instant.EPOCH, ZoneOffset.UTC),
+                        () -> 1_000_000L));
+
+        assertThatThrownBy(() -> gateway.complete(
+                request(), ignored -> { }, CancellationToken.none()))
+                .isInstanceOfSatisfying(ModelGatewayException.class, failure -> {
+                    assertThat(failure.kind()).isEqualTo(ModelGatewayException.FailureKind.PERMANENT);
+                    assertThat(failure.summary()).hasValueSatisfying(summary -> {
+                        assertThat(summary.category())
+                                .isEqualTo(io.github.liumaishenjian.ccjava.domain.ModelFailureCategory.PROVIDER_ERROR);
+                        assertThat(summary.statusClass()).isEmpty();
+                        assertThat(summary.attempts()).isEqualTo(1);
+                        assertThat(summary.receivedOutput()).isFalse();
+                        assertThat(summary.toString()).doesNotContain("UNCLASSIFIED_PROVIDER_SENTINEL");
+                    });
+                    assertThat(failure.getMessage()).isEqualTo("Model request failed");
+                });
+        assertThat(events).singleElement().satisfies(event -> {
+            assertThat(event.stage()).isEqualTo(ModelFailureStage.REQUEST_TRANSPORT);
+            assertThat(event.reason()).isEqualTo(ModelFailureReason.UNKNOWN);
+            assertThat(event.receivedProviderFrame()).isFalse();
+            assertThat(event.emittedUserText()).isFalse();
+        });
+    }
+
     private static void assertFailure(
             Flux<ChatResponse> responses,
             ModelFailureStage stage,
@@ -232,6 +266,18 @@ class SpringAiModelDiagnosticTest {
         @Override
         public Flux<ChatResponse> stream(Prompt prompt) {
             return responses;
+        }
+    }
+
+    private static final class ThrowingChatModel implements ChatModel {
+        @Override
+        public ChatResponse call(Prompt prompt) {
+            throw new IllegalStateException("UNCLASSIFIED_PROVIDER_SENTINEL");
+        }
+
+        @Override
+        public Flux<ChatResponse> stream(Prompt prompt) {
+            throw new IllegalStateException("UNCLASSIFIED_PROVIDER_SENTINEL");
         }
     }
 }

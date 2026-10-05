@@ -1,6 +1,6 @@
 import {PassThrough} from 'node:stream';
 import {fileURLToPath} from 'node:url';
-import {describe, expect, it} from 'vitest';
+import {describe, expect, it, vi} from 'vitest';
 import type {ProtocolEvent} from '../src/protocol.js';
 import {parseJavaRunTimeoutMillis, runNonInteractive} from '../src/print-session.js';
 import {StdioClient} from '../src/stdio-client.js';
@@ -45,6 +45,7 @@ describe('runNonInteractive', () => {
     expect(code).toBe(0);
     expect(text).toBe('你好 agent\n');
     expect(client.isClosed()).toBe(true);
+    expect(client.hasProcessExited()).toBe(true);
     expect(text).not.toMatch(/\u001B\[/u);
   });
 
@@ -77,28 +78,31 @@ describe('runNonInteractive', () => {
   });
 
   it('正常 terminal 先到会取消独立 watchdog', async () => {
-    const output = new PassThrough();
-    const diagnosticOutput = new PassThrough();
-    let diagnostic = '';
-    diagnosticOutput.setEncoding('utf8');
-    diagnosticOutput.on('data', chunk => {
-      diagnostic += chunk;
-    });
-    const client = new StdioClient({
-      executable: process.execPath,
-      args: [fixture],
-      cwd: process.cwd(),
-    }, {shutdownTimeoutMs: 50});
-
-    const code = await runNonInteractive(
-      client, 'normal terminal', output, diagnosticOutput,
-      {runTimeoutMs: 200, startupGraceMs: 0},
-    );
-    await new Promise(resolve => setTimeout(resolve, 250));
-
-    expect(code).toBe(0);
-    expect(diagnostic).toBe('');
-    expect(client.hasProcessExited()).toBe(true);
+    // 验证时序而非要求操作系统必须在200ms内启动子进程；真实退出由上面的跨进程用例覆盖。
+    vi.useFakeTimers();
+    try {
+      const output = new PassThrough();
+      const diagnosticOutput = new PassThrough();
+      let diagnostic = '';
+      diagnosticOutput.setEncoding('utf8');
+      diagnosticOutput.on('data', chunk => {
+        diagnostic += chunk;
+      });
+      const client = new EmittingClient();
+      const result = runNonInteractive(
+        client, 'normal terminal', output, diagnosticOutput,
+        {runTimeoutMs: 200, startupGraceMs: 0},
+      );
+      client.emitEvent({version: 1, type: 'initialized', payload: {}, sequence: 1, requestId: 'init', sessionId: 's'});
+      client.emitEvent({version: 1, type: 'run.completed', payload: {}, sequence: 2, requestId: 'run', sessionId: 's', runId: 'r'});
+      await vi.advanceTimersByTimeAsync(250);
+      expect(client.closeCalls).toBe(1);
+      client.emitExit();
+      expect(await result).toBe(0);
+      await vi.advanceTimersByTimeAsync(250);
+      expect(diagnostic).toBe('');
+      expect(client.closeCalls).toBe(1);
+    } finally {vi.useRealTimers();}
   });
 
   it('failure 与 watchdog 竞态只保留首先收敛的一条诊断', async () => {
@@ -425,6 +429,10 @@ class EmittingClient {
 
   public emitFailure(message: string): void {
     for (const listener of this.#failures) listener(message);
+  }
+
+  public emitEvent(event: ProtocolEvent): void {
+    for (const listener of this.#events) listener(event);
   }
 
   public emitExit(): void {

@@ -61,6 +61,7 @@ final class PatchResultRenderer {
                 new JsonObject(Map.of(
                         "path", path,
                         "operation", operation,
+                        "verification", "verified",
                         "removedLines", removedLines,
                         "addedLines", addedLines)));
         return new Rendered(content, metadata);

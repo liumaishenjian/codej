@@ -21,8 +21,8 @@ public final class TaskCreateTool implements AgentTool {
     private static final ToolDefinition DEFINITION = new ToolDefinition(NAME,
             "Create a pending session task. Identity, status, owner, session and run are runtime-owned.",
             """
-            {"type":"object","additionalProperties":false,"required":["subject"],"properties":{"subject":{"type":"string","minLength":1,"maxLength":200},"description":{"type":"string","maxLength":4096},"active_form":{"type":"string","minLength":1,"maxLength":200},"blocked_by":{"type":"array","maxItems":32,"items":{"type":"string","pattern":"^task-[1-9][0-9]*$"}},"metadata":{"type":"object","maxProperties":16,"additionalProperties":{"anyOf":[{"type":"boolean"},{"type":"integer"},{"type":"string","maxLength":512}]}}}}
-            """, ToolEffect.WRITE_SESSION_STATE, ToolSource.BUILT_IN, false,
+            {"type":"object","additionalProperties":false,"required":["subject"],"properties":{"subject":{"type":"string","minLength":1,"maxLength":200},"description":{"type":"string","maxLength":4096},"active_form":{"type":"string","minLength":1,"maxLength":200},"blocked_by":{"type":"array","maxItems":32,"items":{"type":"string","pattern":"^task-[1-9][0-9]*$"}},"metadata":{"type":"object","propertyNames":{"pattern":"^%s$"},"maxProperties":16,"additionalProperties":{"anyOf":[{"type":"boolean"},{"type":"integer"},{"type":"string","maxLength":512}]}}}}
+            """.formatted(io.github.liumaishenjian.ccjava.domain.task.TaskMetadata.KEY_PATTERN), ToolEffect.WRITE_SESSION_STATE, ToolSource.BUILT_IN, false,
             Duration.ofSeconds(5), "application/json", 4_096);
 
     private final TaskListService service;
@@ -43,6 +43,13 @@ public final class TaskCreateTool implements AgentTool {
     @Override public ToolDefinition definition() { return DEFINITION; }
 
     @Override public ToolValidationResult validate(JsonObject arguments) {
+        if (arguments.values().get("metadata") instanceof java.util.Map<?, ?> metadata
+                && metadata.keySet().stream().anyMatch(key -> !(key instanceof String name)
+                || !name.matches(io.github.liumaishenjian.ccjava.domain.task.TaskMetadata.KEY_PATTERN))) {
+            return ToolValidationResult.invalid("metadata keys must match ^"
+                    + io.github.liumaishenjian.ccjava.domain.task.TaskMetadata.KEY_PATTERN
+                    + "$; use lowercase snake_case keys or omit optional metadata");
+        }
         try {
             TaskToolSupport.createMutation(arguments, "validation-call");
             return ToolValidationResult.validResult();

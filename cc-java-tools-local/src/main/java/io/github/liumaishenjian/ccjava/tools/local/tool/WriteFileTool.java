@@ -17,6 +17,7 @@ import io.github.liumaishenjian.ccjava.tools.local.workspace.LocalToolLimits;
 import io.github.liumaishenjian.ccjava.tools.local.workspace.ValidatedWorkspacePath;
 import io.github.liumaishenjian.ccjava.tools.local.workspace.WorkspaceAccessException;
 import io.github.liumaishenjian.ccjava.tools.local.workspace.WorkspaceGuard;
+import io.github.liumaishenjian.ccjava.tools.local.workspace.WorkspaceWriteVerification;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.Set;
@@ -131,6 +132,8 @@ public final class WriteFileTool implements AgentTool {
                                     "新文件真实父目录在写入前已改变"));
                         }
                     });
+            WorkspaceWriteVerification.requireMatches(
+                    guard, path, validated.realPath(), bytes);
             recordCreatedEvidence(invocation, validated, content);
             PatchResultRenderer.Rendered rendered = PatchResultRenderer.render(
                     validated.protocolPath(),

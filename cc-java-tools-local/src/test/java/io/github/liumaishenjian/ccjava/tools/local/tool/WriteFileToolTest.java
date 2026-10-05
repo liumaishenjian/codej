@@ -35,6 +35,8 @@ class WriteFileToolTest {
                 .isEqualTo("class New {}\n");
         assertThat(outcome.content())
                 .contains("operation: created", "path: src/main/New.java");
+        assertThat(outcome.metadata().continuation().values())
+                .containsEntry("verification", "verified");
     }
 
     @Test

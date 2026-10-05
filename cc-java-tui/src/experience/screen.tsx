@@ -1,13 +1,22 @@
 import {Box, Text} from 'ink';
 import stringWidth from 'string-width';
+import {paintLink} from './hyperlinks.js';
+import {CODEJ_BANNER, codejBannerColor} from '../brand.js';
 import {glyphs, type Draft} from './editor.js';
 import {answerText, candidates, isBusy, questions, type Experience} from './state.js';
 
 export const palette = {accent: '#D89470', muted: '#989BA3', blue: '#A7C6DA', red: '#E18C8C', green: '#99BB94', background: '#363636'};
-export interface Span {text: string; color?: string; bold?: boolean; inverse?: boolean}
+export interface Span {text: string; color?: string; bold?: boolean; inverse?: boolean; italic?: boolean; strikethrough?: boolean; href?: string}
 export interface Row {spans: Span[]; background?: string}
 export const span = (text: string, color?: string, bold = false): Span => ({text, ...(color ? {color} : {}), ...(bold ? {bold} : {})});
 export const rowText = (row: Row): string => row.spans.map(part => part.text).join('');
+
+/** 复用旧版品牌；窄屏使用短标识，避免大字形折断。 */
+export function brandRows(width: number): Row[] {
+  return width >= 52
+    ? CODEJ_BANNER.map((text, index) => ({spans: [span(text, codejBannerColor(index), true)]}))
+    : [{spans: [span('codej', 'cyanBright', true)]}];
+}
 
 /** 将布局转成终端单元格行，统一处理中文宽度和视口；不把 ANSI 控制字节当正文。 */
 export function lines(parts: Span[], width: number, background?: string): Row[] {
@@ -55,7 +64,7 @@ export function frame(s: Experience, columns: number, height: number): Row[] {
   const body = writer(width), panel = writer(width);
   const muted = (text: string) => [span(text, palette.muted)];
   const rule = () => panel.add(muted('─'.repeat(width)));
-  body.add([span(' ▐›▌ ', palette.accent, true), span('codej', undefined, true), span('  前端预览 1', palette.muted)]);
+  body.rows.push(...brandRows(width));
   body.add(muted('      离线演示 · 不调用模型或执行命令'));
   body.add(muted('      ~/example-project'));
   body.blank();
@@ -193,15 +202,29 @@ export function frame(s: Experience, columns: number, height: number): Row[] {
   const rawTop = Math.max(0, end - budget);
   const top = rawTop > 0 && rawTop < 4 ? 4 : rawTop;
   const visible = body.rows.slice(top, end);
-  if (top > 0 || s.scroll > 0) visible.unshift(...lines(muted(s.scroll ? '↑ 正在回看 · PgDn 向下 · End 返回最新' : '↑ 更早内容 · PgUp 回看'), width));
+  // 终端滚屏由宿主终端处理；演示帧不再插入一行自造的“历史分页”状态。
+  // 只有 Ctrl+O 详情视图保留必要的阅读操作提示，避免把普通滚轮阅读变成应用层分页器。
   return [...visible, ...panel.rows].slice(-height);
 }
 export function Screen({state, columns, rows}: {state: Experience; columns: number; rows: number}) {
   return <RowView rows={frame(state, columns, rows)} columns={columns}/>;
 }
+const paintedRows = new WeakMap<Row, Span[]>();
+/** 排版仍按字素工作；只在绘制边界合并同样式文字，避免每个字生成一个React节点。 */
+export function paintSpans(row: Row): Span[] {
+  const hit = paintedRows.get(row); if (hit) return hit;
+  const parts: Span[] = [];
+  for (const part of row.spans) {
+    const previous = parts.at(-1);
+    if (previous && previous.color === part.color && !!previous.bold === !!part.bold && !!previous.inverse === !!part.inverse
+      && !!previous.italic === !!part.italic && !!previous.strikethrough === !!part.strikethrough && previous.href === part.href) previous.text += part.text;
+    else parts.push({...part});
+  }
+  paintedRows.set(row, parts); return parts;
+}
 export function RowView({rows, columns}: {rows: Row[]; columns: number}) {
   return <Box width={columns} flexDirection="column">{rows.map((row, index) => {
     const pad = row.background ? ' '.repeat(Math.max(0, columns - stringWidth(rowText(row)))) : '';
-    return <Text key={index} {...(row.background ? {backgroundColor: row.background} : {})}>{row.spans.map((part, i) => <Text key={i} {...(part.color ? {color: part.color} : {})} {...(part.bold ? {bold: true} : {})} {...(part.inverse ? {inverse: true} : {})}>{part.text}</Text>)}{pad}{row.spans.length === 0 ? ' ' : ''}</Text>;
+    return <Text key={index} {...(row.background ? {backgroundColor: row.background} : {})}>{paintSpans(row).map((part, i) => <Text key={i} {...(part.color ? {color: part.color} : {})} {...(part.bold ? {bold: true} : {})} {...(part.inverse ? {inverse: true} : {})} {...(part.italic ? {italic: true} : {})} {...(part.strikethrough ? {strikethrough: true} : {})}>{paintLink(part.text, part.href)}</Text>)}{pad}{row.spans.length === 0 ? ' ' : ''}</Text>;
   })}</Box>;
 }

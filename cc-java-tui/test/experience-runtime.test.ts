@@ -255,3 +255,19 @@ it('计划执行中失败保留真实原因，正常验证完成后最终正文�
   f.emit('run.completed',{finalText:'七天结果正文'}, {requestId:'run-2',runId:'second'});
   expect(f.runtime.state.blocks.some(b=>b.kind==='assistant'&&b.text==='七天结果正文')).toBe(true);
 });
+
+it('模型失败终态显示安全摘要，不只暴露笼统的 model_error',()=>{
+  const f=fixture();f.start();
+  f.emit('run.failed',{stopReason:'model_error',modelFailure:{category:'provider_error',statusClass:'5xx',attempts:2,receivedOutput:false}});
+  expect(f.runtime.state.notice).toContain('模型服务调用失败');
+  expect(f.runtime.state.notice).toContain('5xx');
+  expect(f.runtime.state.notice).toContain('已尝试 2 次');
+  expect(f.runtime.state.notice).not.toContain('model_error');
+});
+
+it('非法模型失败摘要退回安全 stopReason，不显示未验证 Provider 文本',()=>{
+  const f=fixture();f.start();
+  f.emit('run.failed',{stopReason:'model_error',modelFailure:{category:'provider_error',attempts:0,message:'secret'}});
+  expect(f.runtime.state.notice).toContain('运行未完成：model_error');
+  expect(f.runtime.state.notice).not.toContain('secret');
+});

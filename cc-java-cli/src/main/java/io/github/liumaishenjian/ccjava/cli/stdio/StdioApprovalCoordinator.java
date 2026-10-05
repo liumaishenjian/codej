@@ -18,6 +18,9 @@ import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import io.github.liumaishenjian.ccjava.tools.local.command.CommandShell;
 import io.github.liumaishenjian.ccjava.tools.local.workspace.LocalToolLimits;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
 
 /**
  * 把同步 Tool Pipeline 的 ASK 决策桥接为 stdio 单次审批。
@@ -40,6 +43,18 @@ final class StdioApprovalCoordinator implements ApprovalHandler, AutoCloseable {
     private volatile CommandDisplay commandDisplay;
     private Pending pending;
     private boolean closed;
+    private volatile boolean filePreviews;
+    private volatile io.github.liumaishenjian.ccjava.tools.local.workspace.WorkspaceGuard previewGuard;
+
+    /** 绑定当前会话的安全路径边界；预览读取不生成模型 Read 证据。 */
+    void bindPreviewGuard(io.github.liumaishenjian.ccjava.tools.local.workspace.WorkspaceGuard guard) {
+        previewGuard = Objects.requireNonNull(guard);
+    }
+
+    /** 仅由stdio初始化协商启用交互正文；默认保持历史摘要契约。 */
+    void enableFilePreviews(boolean enabled) {
+        filePreviews = enabled;
+    }
 
     /**
      * 使用随机关联 ID 创建协调器。
@@ -241,7 +256,7 @@ final class StdioApprovalCoordinator implements ApprovalHandler, AutoCloseable {
             return Preview.unavailable();
         }
         String operation = "apply_patch".equals(name) ? "modify" : "create";
-        return new Preview(
+        Preview summary = new Preview(
                 target,
                 operation,
                 lineCount(arguments.oldText()),
@@ -251,6 +266,50 @@ final class StdioApprovalCoordinator implements ApprovalHandler, AutoCloseable {
                 "",
                 "",
                 "");
+        if (!filePreviews || definition.source() != io.github.liumaishenjian.ccjava.domain.ToolSource.BUILT_IN) return summary;
+        return summary.withChange(fileChange(invocation, arguments));
+    }
+
+    /** 小文件的完整候选仅用于审阅；读取或精确定位失败时保留无行号片段。 */
+    private FileChange fileChange(ToolInvocation invocation, JsonPreviewArguments arguments) {
+        FileChange fragment = FileChange.from(arguments.oldText(), arguments.newText());
+        if (!"available".equals(fragment.status())) return fragment;
+        String safe = safeRelativePath(arguments.path());
+        if (safe.isEmpty()) return new FileChange("", "", "redacted");
+        var guard = previewGuard;
+        if (guard == null || invocation.cancellationToken().isCancellationRequested()) return fragment;
+        if ("write_file".equals(invocation.call().name())) {
+            try {
+                guard.requireNewFile(arguments.path());
+                return fragment.withScope("file");
+            } catch (io.github.liumaishenjian.ccjava.tools.local.workspace.WorkspaceAccessException ignored) {
+                return fragment;
+            }
+        }
+        try {
+            var path = guard.requireRegularFile(arguments.path());
+            var snapshot = io.github.liumaishenjian.ccjava.tools.local.text.WorkspaceTextSnapshotReader.read(path.realPath(), 24576);
+            if (!guard.requireRegularFile(arguments.path()).realPath().equals(path.realPath())) return fragment;
+            String before = snapshot.canonicalText();
+            String oldText = arguments.oldText().replace("\r\n", "\n").replace('\r', '\n');
+            String newText = arguments.newText().replace("\r\n", "\n").replace('\r', '\n');
+            if (oldText.isEmpty()) return fragment;
+            boolean all = Boolean.TRUE.equals(invocation.call().arguments().values().get("replaceAll"));
+            int matches = snapshot.countOccurrences(oldText);
+            if (matches == 0 || (!all && matches > 1) || !snapshot.canReplace(oldText, newText)) return fragment;
+            if (before.length() > 6000) return fragment;
+            long occurrences = all ? matches : 1;
+            if (before.length() + occurrences * (newText.length() - oldText.length()) > 6000) return fragment;
+            String after = snapshot.replaceCanonicalText(oldText, newText, all);
+            FileChange full = FileChange.from(before, after);
+            return "too_large".equals(full.status()) ? fragment : full.withScope("file");
+        } catch (io.github.liumaishenjian.ccjava.tools.local.workspace.WorkspaceAccessException | IllegalArgumentException ignored) {
+            Path candidate = guard.workspace().resolve(safe).normalize();
+            if (Files.exists(candidate, LinkOption.NOFOLLOW_LINKS)) {
+                return new FileChange("", "", "redacted");
+            }
+            return fragment;
+        }
     }
 
     /**
@@ -327,7 +386,8 @@ final class StdioApprovalCoordinator implements ApprovalHandler, AutoCloseable {
         if (text == null || text.isEmpty()) {
             return 0;
         }
-        return text.split("\\R", -1).length;
+        String[] lines = text.split("\\R", -1);
+        return lines.length - (lines[lines.length - 1].isEmpty() ? 1 : 0);
     }
 
     /**
@@ -389,7 +449,7 @@ final class StdioApprovalCoordinator implements ApprovalHandler, AutoCloseable {
     }
 
     /**
-     * 允许进入 stdio 的专用审批摘要，不含文件正文、绝对路径、Endpoint、Header 或凭证。
+     * stdio专用审批摘要；只有显式启用的新界面附带经过拒显检测的有界文件片段。
      *
      * @param target Workspace-relative 目标；不可安全展示时为空
      * @param operation {@code modify}、{@code create}、{@code execute}、{@code search} 或 {@code unavailable}
@@ -400,6 +460,7 @@ final class StdioApprovalCoordinator implements ApprovalHandler, AutoCloseable {
      * @param workingDirectory Workspace-relative 工作目录
      * @param networkDestination 固定网络目的类型；非网络操作时为空
      * @param networkQuery 将发送给受控搜索 Provider 的有界查询；非网络操作时为空
+     * @param change 交互专用变更意图；旧客户端或非内置文件工具为null
      */
     record Preview(
             String target,
@@ -410,7 +471,20 @@ final class StdioApprovalCoordinator implements ApprovalHandler, AutoCloseable {
             String shell,
             String workingDirectory,
             String networkDestination,
-            String networkQuery) {
+            String networkQuery,
+            FileChange change) {
+
+        Preview(String target, String operation, int removedLines, int addedLines,
+                String command, String shell, String workingDirectory,
+                String networkDestination, String networkQuery) {
+            this(target, operation, removedLines, addedLines, command, shell, workingDirectory,
+                    networkDestination, networkQuery, null);
+        }
+
+        Preview withChange(FileChange value) {
+            return new Preview(target, operation, removedLines, addedLines, command, shell,
+                    workingDirectory, networkDestination, networkQuery, value);
+        }
 
         Preview {
             target = Objects.requireNonNull(target, "target 不能为空");
@@ -448,6 +522,30 @@ final class StdioApprovalCoordinator implements ApprovalHandler, AutoCloseable {
         static Preview webSearch(String query) {
             return new Preview("", "search", 0, 0, "", "", "",
                     "configured_web_search_provider", query);
+        }
+    }
+
+    /**
+     * 交互专用的有界修改意图，可包含审批时快照，但不是执行成功证据。
+     * @param before 待替换片段；拒显时为空
+     * @param after 待写入片段；拒显时为空
+     * @param status available、redacted或too_large；后两者不得含正文
+     * @param scope file表示完整文件坐标，fragment表示无法提供文件行号的意图片段
+     */
+    record FileChange(String before, String after, String status, String scope) {
+        FileChange(String before, String after, String status) { this(before, after, status, "fragment"); }
+        FileChange withScope(String value) { return new FileChange(before, after, status, value); }
+        static FileChange from(String before, String after) {
+            if (before.length() > 6000 || after.length() > 6000) {
+                return new FileChange("", "", "too_large");
+            }
+            var policy = new io.github.liumaishenjian.ccjava.tools.local.memory.SecretCandidatePolicy();
+            if (policy.isSecretCandidate(before) || policy.isSecretCandidate(after)
+                    || (before + after).codePoints().anyMatch(c -> Character.isISOControl(c)
+                    && c != '\n' && c != '\r' && c != '\t')) {
+                return new FileChange("", "", "redacted");
+            }
+            return new FileChange(before, after, "available");
         }
     }
 

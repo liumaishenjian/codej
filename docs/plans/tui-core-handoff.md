@@ -41,7 +41,7 @@
 - 真实天气场景已观察到：审核、命令执行、最终正文可见、Plan COMPLETED、恢复输入。
 - 第一批已让未注册验证 Tool 的安全原因与宿主权威恢复关联可见；真实 Provider 正常天气样本未触发该分支，Fake Model + 生产 stdio/TUI 的 Windows PTY 已覆盖失败与恢复显示。
 - 第二批已关闭无审批 `run_command` 缺完整 command/shell/cwd 的实际偏差，并完成草稿/焦点、搜索分组、流式去重、取消迟到隔离及六尺寸回归。
-- 第三批已复现并修复拒绝终态永久阻塞新 `/plan` identity、非 Git Workspace 声明不可满足 required Git verification、显式 correction 的 durable 恢复、Windows PowerShell 双引号/Unicode/argv 边界及旧 Host 定向分片协商。无参 `/plan` 固定只进入/查看；仅显式 `/plan <修正请求>` 纠正同一 planId/Task cohort/requirementId。Java 155/155、同一真实 Session revision 24→37、修复后 build、全 TUI 349 pass/7 skip、显式 Java E2E 7/7，以及真实入口混合中文/错误 exit 7/正确正文/下一轮均已通过。
+- 第三批已复现并修复拒绝终态永久阻塞新 `/plan` identity、非 Git Workspace 声明不可满足 required Git verification、显式 correction 的 durable 恢复、Windows PowerShell 双引号/Unicode/argv 边界及旧 Host 定向分片协商。无参 `/plan` 固定只进入/查看；仅显式 `/plan <修正请求>` 纠正同一 planId/Task cohort/requirementId。ADR-125 追加安全模型失败摘要与 Spring AI 未分类 Provider 异常收敛，ADR-126 补齐普通工具参数失败的活动回合修正提示、字段封闭校验和中性终态，ADR-127 补齐运行中长工具输出尾窗；Java 155/155、修复后 build、全 TUI 449 pass/7 skip、显式 Java E2E 7/7，以及真实入口混合中文/错误 exit 7/正确正文/下一轮均已通过。
 - Markdown 表格排版、首次生成命令的 Windows 适配质量仍有差距；本轮不宣称解决全部视觉与模型质量问题。
 - 全仓聚合 Javadoc 的既有警告限制仍需如实记录。
 
@@ -163,7 +163,7 @@
 |---|---|---|
 | 第一批：验证错误与恢复 | 已完成本批验收 | ADR-095、stdio 可选字段兼容、Fake/Java/stdio/TUI 失败与恢复对照已补；真实 Provider 正常天气闭环和 Fake Model + 生产链 Windows PTY 失败/恢复结果见 S15 核心证据。真实 Provider 样本未触发失败恢复分支，未伪装为已覆盖 |
 | 第二批：显示与焦点 | 已完成本批验收 | ADR-096；唯一复现偏差为无审批命令缺可信显示元组，已由实际执行器同源修复。自动六尺寸、12 秒 Java→stdio→Ink 5/5、Windows PTY 按键与持久化终态均通过；不声称参考视觉一致 |
-| 第三批：问卷与计划 | 方向验证候选版 | ADR-097；问卷成功/取消与下一轮、拒绝后全新 identity、Jsonl/manifest 恢复、非 Git verification applicability、显式 correction、定向长 Plan capability 与 PowerShell 7 Unicode/固定 launcher 已收口。同一真实 Session revision 24→37 后五条 required 全 PASS、Plan COMPLETED、正文可见且文件 hash 不变；Java 155/155、修复后 TypeScript build、全 TUI 349 pass/7 skip、显式 Java→stdio→Ink 7/7 均通过。真实 `StartCodejDev.ps1 --tui-next` 已验证混合中文/emoji stdout、纯文本中文 stderr、预期 exit 7、正确非成功说明及下一轮回 idle。Windows PowerShell 5.1、参考 UI 视觉一致性、复杂 Provider/跨平台和 Markdown 反引号呈现仍是差距；Capability 等级不变，S15 OPEN |
+| 第三批：问卷与计划 | 方向验证候选版 | ADR-097、ADR-125；问卷成功/取消与下一轮、拒绝后全新 identity、Jsonl/manifest 恢复、非 Git verification applicability、显式 correction、定向长 Plan capability 与 PowerShell 7 Unicode/固定 launcher 已收口。同一真实 Session revision 24→37 后五条 required 全 PASS、Plan COMPLETED、正文可见且文件 hash 不变；Java 155/155、修复后 TypeScript build、全 TUI 445 pass/7 skip、显式 Java→stdio→Ink 7/7 均通过。真实 `StartCodejDev.ps1 --tui-next` 已验证混合中文/emoji stdout、纯文本中文 stderr、预期 exit 7、正确非成功说明及下一轮回 idle。Windows PowerShell 5.1、参考 UI 视觉一致性、复杂 Provider/跨平台和 Markdown 反引号呈现仍是差距；Capability 等级不变，S15 OPEN |
 
 统一要求：
 
@@ -176,3 +176,103 @@
 - 接手者不得以隐藏错误、取消验收 Gate 或绕开工具结果链路完成本计划。
 
 **完成标准：核心流程交付可见、错误和恢复可解释、源码对照可追踪、实际入口验收可复现。**
+
+
+### 2026-09-12 多行输入对齐（ADR-103）
+
+维护者已认可当前交互与启动品牌。后续R1输入切片见ADR-103：复用已有编辑器完成多行上下移动、软折行、历史边界及反馈/自由回答焦点；不表示所有剩余差距已验收。
+
+
+### 2026-09-12 核心命令补全（ADR-104）
+
+R1核心输入补齐Tab接受候选（ADR-104），对照PromptInput→useTypeahead的只补全不提交职责。继续保持两项核心命令范围，未扩展附加计划命令。
+
+
+### 2026-09-12 核心交互整批收口（ADR-105）
+
+按维护者要求扩大为完整交互批次。ADR-105同时覆盖R1输入历史、R5问卷返回复核、R2/R4长工具与审批详情；保留用户已认可布局，后续按组合端到端路径验收，不再按单个按键宣称一批完成。
+
+
+### 2026-09-12 长会话呈现批次（ADR-106）
+
+ADR-106作为长会话完整批次覆盖普通输入测量、稳定消息复用、活动内容/宽度/审批/脱敏失效与原生历史扫描。以解析次数及组合回归验证收益，不以测试数量换算体验完成度。
+
+
+### 2026-09-12 核心结果交付批次（ADR-107）
+
+ADR-107集中验收来源/产物、Markdown语义、深层内容和最终回答闭环。交接时先读对应源码对照表及S15证据；保持四条核心流程端到端验收，不按单项按键分批交付。下一批优先处理超长单条流式回答的可变尾部与稳定输出边界；先研究参考增量机制并建立可证伪场景，再决定实现范围。
+
+
+### 2026-09-12 日常核心流程整批（ADR-108）
+
+后续以[日常核心流程整批验收](tui-daily-core-acceptance.md)为统一执行清单，不再按单个按键拆分交付。ADR-108记录源码入口、实现偏差及整批验证；保持用户已认可布局和核心范围。
+
+
+### 2026-09-12 长内容阅读整批（ADR-109）
+
+ADR-109作为长内容阅读与重排整批：Ctrl+O固定记录范围、End最新，审批/脱敏保持实时，提交新任务恢复新内容；独立token缓存减少resize解析。后续验收同时覆盖范围限制及最终结果可达性，不把详情固定范围误判为Agent未返回结果。
+
+
+### 2026-09-12 网页来源链接（ADR-110）
+
+ADR-110记录参考Markdown→hyperlink→supports-hyperlinks调用链、公共依赖、独立目标验证及退化契约。交接时区分公共Ink协议证据与Windows PTY呈现证据，后者不可证明物理点击。后续仍按日常核心验收整批推进；文件产物打开及参考实机鼠标体验待独立对照。
+
+
+### 2026-09-12 文件变更审批批次（ADR-111）
+
+按FileWriteToolDiff/FileEditToolDiff→StructuredDiff职责对照，补齐生产审批中的待替换/新增片段与行数、拒显和分页；实际文件写入仍由Java管线完成。单侧6000字符以上仅摘要；未提供整文件上下文、语法高亮或行号diff。验证详见S15核心证据，不把批准或意图预览当作交付成功。
+
+
+### 2026-09-12 用户报错修复（ADR-112）
+
+先读ADR112现场事实与推断边界。用户请求的后端计划已正常结束，首次任务metadata校验失败已被模型纠正；前端queued分支错误会独立导致提前失联，已增加终态、计划、取消/丢弃回归。不得自动重放用户原计划或把现场截图当作完整协议日志。
+
+
+### 2026-09-12 可靠交付整批（ADR-113）
+
+后续报错优先保存异常Ctrl+O的去正文诊断，再核对本机会话；不能把诊断当作完整底层协议抓包。整批覆盖队列关联、工具纠正、验收失败说明/最终正文、空结果、计划缺审核、取消迟到、断连未知与下一轮。原计划不自动恢复或重放。参考对照和剩余边界见ADR113。
+
+
+### 2026-09-12 提交恢复整批（ADR-114）
+
+启动拒绝、计划确认拒绝、修改意见保留、问卷复核保留与旧审批错误隔离作为同一批验收。原输入仅在宿主未接受且明确拒绝时恢复；若已有新草稿，使用既有输入历史，不自动合并或发送。源码启发和协议偏差见ADR114。
+
+
+### 2026-09-13 问卷结果确认（ADR-115）
+
+接续ADR114，对照AskUserQuestionPermissionRequest提交决定与AskUserQuestionTool结果渲染，答案经工具成功才进入原生历史；拒绝保留复核、重提只显示确认答案。旧宿主无callId保留工具/模型正文，不猜测摘要。参考、独立协议和验证边界见ADR115。
+
+
+### 2026-09-13 工具到交付（ADR-116）
+
+ADR116集中处理工具到最终交付。先看对照表：普通Task隐藏继续保持，Ctrl+O排障显示本项目JSON是明确偏差；不得把此处解释为参考完整视觉对齐。用查询、文件审批/失败纠正、计划执行最终正文三条链验收，终态后不能继续写工具增量。
+
+
+### 2026-09-13 命令Shell契约（ADR-117）
+
+ADR117针对实测Bash语法交给PowerShell失败的问题补齐模型定义中的实际Shell事实；后续研究继续区分定义信息完整性和模型遵从质量，不通过放宽权限或自动改写命令修补。
+
+
+### 2026-09-13 文件审阅（ADR-118）
+
+ADR118使用公开jsdiff及原有Java精确替换/WorkspaceGuard，关闭有界小文件上下文行号差距。详情展示的是审批时意图，用户后续修改或失败后不能把它当成当前磁盘状态。超大文件仍为片段，语法高亮和跨平台仍未完成。
+
+- **ADR-119 文件结果摘要**：在审批意图和真实工具终态之间增加受控事实投影。默认行显示实际相对路径、操作和替换数；详情保留完整输出。敏感、冲突和未知事实不猜测。
+
+- **ADR-120 落盘核验**：原子写入后做同源、有限、字节级重读；成功结果才显示“已核验”，目标删除、漂移、外部修改和超限均失败关闭。
+
+- **ADR-122 `/plan` 真实交付**：确认必须先经过原子 `plan.execution.accepted`，再启动执行；`plan.verification.completed` 早于 `run.completed`，最终正文和真实产物都要可访问。跨进程真实测试 6/6 通过，普通沙箱 `%TEMP%` realpath 拒绝只作为环境限制记录。
+
+  计划纠正的必要失败摘要在终态保留，但不显示内部工具名、ordinal 或参数；真实 Java→stdio→Ink 7/7 通过。
+
+- **ADR-123 历史提示清理**：离线演示删除自造的“更早内容／PgUp 回看”行，普通滚屏交给终端；详情页阅读提示仍保留。
+
+- **ADR-124 长输出缓存**：命令折叠/详情行按不可变 ToolRecord 与宽度缓存，流式更新使用新快照；输出上限、脱敏、取消和终态契约不变。
+
+- **ADR-125 模型失败摘要**：真实终态的白名单失败类别映射为用户可行动的安全提示；非法摘要退回 stopReason，不显示 Provider 原文或凭证。
+
+- **ADR-126 可恢复工具参数失败**：活动回合显示参数校验错误已返回模型修正；没有宿主关联证据时，终态回到中性工具失败，不猜测后续调用是否修正旧调用。
+
+- **ADR-127 流式输出尾窗**：运行中的长工具和当前回合长回答只排版最近 16,384 个字符，完成或取消后保留 Java 有界正文；运行状态进入 body 缓存键，折叠视图跟随尾部，终态不会复用尾窗。
+
+- **ADR-126 可恢复工具参数失败**：活动回合显示参数校验错误已返回模型修正；没有宿主关联证据时，终态回到中性工具失败，不猜测后续调用是否修正旧调用。

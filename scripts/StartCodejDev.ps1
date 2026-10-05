@@ -135,7 +135,7 @@ else {
     Remove-Item Env:CC_JAVA_SPIKE_PROMPT_BASE64 -ErrorAction SilentlyContinue
 }
 
-[Console]::Error.WriteLine("[codej] Starting cc-java for workspace: $($options.Workspace)")
+Write-Verbose "[codej] Starting cc-java for workspace: $($options.Workspace)"
 Push-Location $tuiDirectory
 try {
     # 新界面的模式与目录只交给 Node，不能成为 Java CLI 的未知参数。

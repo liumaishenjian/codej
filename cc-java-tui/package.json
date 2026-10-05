@@ -17,10 +17,12 @@
     "check": "npm run build && npm test"
   },
   "dependencies": {
+    "diff": "9.0.0",
     "ink": "7.1.1",
     "marked": "18.0.7",
     "react": "19.2.8",
-    "string-width": "8.2.2"
+    "string-width": "8.2.2",
+    "terminal-link": "5.0.0"
   },
   "devDependencies": {
     "@types/node": "22.20.1",

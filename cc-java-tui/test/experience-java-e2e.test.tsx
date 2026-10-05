@@ -48,6 +48,8 @@ it.skipIf(!cp)('R1-R4 Fixture保留草稿、投影无审批命令元数据并取
     await until(()=>h.events.some(e=>e.type==='run.completed'),h.diagnostic);await wait();
     expect(h.events.filter(e=>e.type==='approval.requested')).toHaveLength(1);
     expect(h.app.lastFrame()).toContain('后续中文草稿😀');
+    // 阅读范围在工具开始前捕获；审批保持实时，End显式查看后续工具和最终结果。
+    await h.key('\x1b[F');
     expect(h.app.lastFrame()).toContain('fixture-command-full-tail');
     await h.key('\r');
     await until(()=>h.events.filter(e=>e.type==='tool.started'&&e.payload.toolName==='run_command').length===3,h.diagnostic);
@@ -77,6 +79,11 @@ it.skipIf(!cp)('新界面→真实Java问卷管线→原调用唯一工具结果
     await h.key('\x1b[Z');await h.key('\t');await h.key('\r');
     await until(()=>h.events.some(e=>e.type==='run.completed'),h.diagnostic);await wait();
     expect(h.events.filter(e=>e.type==='tool.completed'&&e.payload.toolName==='ask_user_questions')).toHaveLength(1);
+    const questionCall=h.events.find(e=>e.type==='question.requested')!;
+    const answerResult=h.events.find(e=>e.type==='tool.completed'&&e.payload.toolName==='ask_user_questions')!;
+    expect(questionCall.payload.callId).toBeTruthy();
+    expect(answerResult.payload.callId).toBe(questionCall.payload.callId);
+    expect(answerResult.runId).toBe(questionCall.runId);
     expect(h.app.lastFrame()).toContain('真实中文回答');
     expect(h.events.find(e=>e.type==='run.completed')!.payload.finalText).toContain('问卷答案已通过真实工具结果返回模型');
     await h.key('问卷完成后下一轮');await h.key('\r');
@@ -141,6 +148,9 @@ it.skipIf(!cp)('新界面单入口Plan→反馈→确认KEEP人工审批→真�
     for(let i=1;i<=2;i++) {
       await until(()=>h.events.filter(e=>e.type==='approval.requested').length===i,h.diagnostic);await wait();
       expect(h.app.lastFrame()).toContain('允许本次操作');
+      const preview=h.events.filter(e=>e.type==='approval.requested').at(-1)!.payload.fileChange as {status:string;after:string};
+      expect(preview.status).toBe('available');expect(preview.after.length).toBeGreaterThan(0);
+      expect(h.app.lastFrame()).toContain('修改意图预览');
       await h.key('\r');
     }
     await until(()=>h.events.filter(e=>e.type==='run.completed').length===3,h.diagnostic);await wait();

@@ -77,7 +77,15 @@ public final class ModelRetryPolicy {
         this.jitterRatio = jitterRatio;
     }
 
-    /** 创建 capped exponential 策略。 */
+    /**
+     * 创建逐次翻倍且有上限的基准退避策略；实际等待仍由取消预算约束。
+     * @param maxAttempts 包含首次请求的尝试总上限，范围为 1 到 100
+     * @param baseDelay 第一次失败后的非负基准等待
+     * @param maxBackoff 翻倍序列的非负上限，不包含 jitter
+     * @param jitterRatio 基准等待之上的最大正 jitter 比例，范围为 0 到 1
+     * @param maxRetryDelay 合并 jitter 和 Provider 建议后的非负单次等待上限
+     * @return 包含不可变基准等待序列的策略
+     */
     public static ModelRetryPolicy exponential(
             int maxAttempts,
             Duration baseDelay,
@@ -105,7 +113,10 @@ public final class ModelRetryPolicy {
         return new ModelRetryPolicy(maxAttempts, delays, jitterRatio, maxRetryDelay);
     }
 
-    /** @return 包含首次请求在内的最大 attempt 数 */
+    /**
+     * 返回单个模型回合允许发起请求的总上限。
+     * @return 包含首次请求在内的最大 attempt 数
+     */
     public int maxAttempts() {
         return maxAttempts;
     }
@@ -145,17 +156,27 @@ public final class ModelRetryPolicy {
         return cap(jittered);
     }
 
-    /** 兼容旧调用：不加入 jitter。 */
+    /**
+     * 兼容旧调用：不加入 jitter，但仍应用单次等待上限。
+     * @param failedAttempt 从 1 开始且必须存在下一次重试的失败序号
+     * @return 经上限裁剪的基准等待
+     */
     public Duration delayAfter(int failedAttempt) {
         return delayAfter(failedAttempt, 0d);
     }
 
-    /** @return 单次等待上限 */
+    /**
+     * 返回策略允许的单次重试等待上限；不替代 Run 剩余时间限制。
+     * @return 单次等待上限
+     */
     public Duration maxRetryDelay() {
         return maxRetryDelay;
     }
 
-    /** @return jitter 最大比例 */
+    /**
+     * 返回加在基准等待之上的正向随机扰动比例上限。
+     * @return jitter 最大比例
+     */
     public double jitterRatio() {
         return jitterRatio;
     }

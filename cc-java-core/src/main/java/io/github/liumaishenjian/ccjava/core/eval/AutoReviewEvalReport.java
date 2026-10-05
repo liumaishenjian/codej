@@ -49,7 +49,10 @@ public record AutoReviewEvalReport(
         if (medianLatency.isNegative()) throw new IllegalArgumentException("medianLatency 不能为负数");
     }
 
-    /** 输出不含自由文本和敏感输入的稳定 JSON。 */
+    /**
+     * 输出不含自由文本和敏感输入的稳定 JSON。
+     * @return 仅含聚合计数、延迟、成本与分类统计的 JSON，map 键按字典序输出
+     */
     public String toJson() {
         return "{\"scenarios\":" + scenarios + ",\"runs\":" + runs + ",\"passed\":" + passed
                 + ",\"violations\":" + violations + ",\"gatewayCalls\":" + gatewayCalls

@@ -139,6 +139,42 @@ class StdioProtocolProcessTest {
     }
 
     @Test
+    void realJavaAuthLifecycleNegotiatesAndBindsOneShotLogout() throws Exception {
+        Process process = startFixtureProcess("provider-control");
+        try (BufferedWriter input = new BufferedWriter(new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8));
+             BufferedReader output = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+            JsonMapper mapper = JsonMapper.builder().build();
+            send(input, "{\"version\":0,\"type\":\"initialize\",\"requestId\":\"auth-1\",\"sequence\":1,\"payload\":{\"authLifecycleV1\":true}}");
+            JsonNode initialized = readEvent(process, output, mapper);
+            String session = initialized.get("sessionId").stringValue();
+            assertThat(initialized.at("/payload/authLifecycleV1").booleanValue()).isTrue();
+            send(input, providerControl("auth-2", session, 2, "activate", "auth.activate", "{\"providerId\":\"anthropic\",\"profileId\":\"fixture\"}"));
+            assertThat(readEvent(process, output, mapper).at("/payload/status").stringValue()).isEqualTo("succeeded");
+            send(input, providerControl("auth-3", session, 3, "prepare", "auth.logout.prepare", "{\"providerId\":\"anthropic\",\"profileId\":\"fixture\"}"));
+            JsonNode prepared = readEvent(process, output, mapper);
+            String ticket = prepared.at("/payload/result/confirmationId").stringValue();
+            assertThat(ticket).isNotBlank();
+            assertThat(prepared.toString()).doesNotContain("fixture-provider-sentinel", "CC_JAVA_FIXTURE_KEY", "secretRef");
+            String args = "{\"confirmationId\":\"" + ticket + "\",\"confirmed\":true}";
+            send(input, providerControl("auth-4", session, 4, "commit", "auth.logout.commit", args));
+            JsonNode deleted = readEvent(process, output, mapper);
+            assertThat(deleted.at("/payload/status").stringValue()).isEqualTo("succeeded");
+            assertThat(deleted.at("/payload/result/remoteRevoked").booleanValue()).isFalse();
+            send(input, providerControl("auth-5", session, 5, "replay", "auth.logout.commit", args));
+            assertThat(readEvent(process, output, mapper).at("/payload/status").stringValue()).isEqualTo("rejected");
+            send(input, providerControl("auth-6", session, 6, "list", "auth.list", "{}"));
+            assertThat(readEvent(process, output, mapper).at("/payload/result/profiles").size()).isZero();
+            send(input, ("{\"version\":0,\"type\":\"shutdown\",\"requestId\":\"auth-7\",\"sessionId\":\"%s\",\"sequence\":7,\"payload\":{}}").formatted(session));
+        } finally {
+            if (!process.waitFor(PROCESS_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)) {
+                process.destroyForcibly(); process.waitFor();
+            }
+        }
+        assertThat(process.exitValue()).isZero();
+        assertThat(new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8)).isBlank();
+    }
+
+    @Test
     void realJavaProcessCompletesTwoRunsInOneSession() throws Exception {
         Process process = startFixtureProcess();
         List<ProcessHandle> descendants = new ArrayList<>();

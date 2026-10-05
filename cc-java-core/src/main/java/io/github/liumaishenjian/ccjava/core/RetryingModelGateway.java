@@ -30,7 +30,11 @@ public final class RetryingModelGateway implements StreamingModelGateway {
     private final ModelRetryPolicy policy;
     private final ModelRetryRuntime runtime;
 
-    /** 使用生产随机与等待实现创建重试装饰器。 */
+    /**
+     * 使用生产随机与可取消等待实现创建重试装饰器。
+     * @param delegate 非空的实际 Provider Gateway
+     * @param policy 包含首次请求的有界尝试与退避策略
+     */
     public RetryingModelGateway(ModelGateway delegate, ModelRetryPolicy policy) {
         this(delegate, policy, ModelRetryRuntime.system());
     }

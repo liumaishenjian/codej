@@ -48,7 +48,11 @@ public record PlanProposalEvent(String planId, PlanStatus status, String objecti
         }
     }
 
-    /** 从权威 Plan 工件构造 Surface 事件。 */
+    /**
+     * 从权威 Plan 工件构造 Surface 事件。
+     * @param document 非空的当前计划文档
+     * @return 仅投影标题、说明、状态与摘要的事件，不暴露步骤执行参数
+     */
     public static PlanProposalEvent from(PlanDocument document) {
         Objects.requireNonNull(document, "document 不能为空");
         return new PlanProposalEvent(document.id(), document.status(), document.objective(),

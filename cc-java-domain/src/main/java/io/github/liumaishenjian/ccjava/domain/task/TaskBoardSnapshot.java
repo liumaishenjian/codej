@@ -36,6 +36,10 @@ public record TaskBoardSnapshot(TaskBoardId boardId, SessionId ownerSessionId, l
         }
     }
 
-    /** 按安全 identity 返回 Task view。 */
+    /**
+     * 按安全 identity 返回快照中的 Task view，不访问持久化存储。
+     * @param id Board 内的任务身份
+     * @return 快照中的任务投影；缺失或已删除时为空
+     */
     public Optional<TaskItemView> task(TaskId id) { return Optional.ofNullable(tasks.get(id)); }
 }

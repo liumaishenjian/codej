@@ -232,22 +232,22 @@ final class DefaultCliModeRunner implements CliModeRunner {
             io.github.liumaishenjian.ccjava.core.ApprovalHandler approvals) {
         java.util.Optional<io.github.liumaishenjian.ccjava.domain.model.ProviderSelectionSnapshot> selection;
         try {
-            selection = auth.service().effectiveSelection();
+            selection = auth.service().routingSelection();
         } catch (io.github.liumaishenjian.ccjava.cli.auth.ProviderAuthException invalidSelection) {
             selection = java.util.Optional.empty();
         }
-        if (selection.isPresent() || prepared.settings() == null) {
-            String model = selection.map(
-                    io.github.liumaishenjian.ccjava.domain.model.ProviderSelectionSnapshot::modelId)
-                    .orElse("provider-not-configured");
-            HeadlessRuntimeOptions options = new HeadlessRuntimeOptions(
-                    prepared.workspace(), model, overrides.timeout(), overrides.permissionMode(),
-                    java.util.List.of(), overrides.sessionOpenRequest(), SessionStorage.defaultRoot(),
-                    overrides.contextPreparation(), overrides.diagnosticMode(), overrides.diagnosticDirectory(),
-                    overrides.executionBackend(), overrides.executionShell());
-            return HeadlessRuntimeSession.production(auth.modelGateway(), events, options, approvals);
-        }
-        return new HeadlessRuntimeSession(prepared.settings(), events, runtimeOptions(prepared, overrides), approvals);
+        // 这里只为 Session metadata 提供标签；真实身份始终在每个 Run 中严格重选。
+        // 即使初始选择失效，也允许启动控制面来修复登录；不得据此永久切到 legacy Session。
+        String model = selection.map(
+                io.github.liumaishenjian.ccjava.domain.model.ProviderSelectionSnapshot::modelId)
+                .orElse(prepared.settings() == null ? "provider-not-configured" : prepared.settings().model());
+        HeadlessRuntimeOptions options = new HeadlessRuntimeOptions(
+                prepared.workspace(), model, overrides.timeout(), overrides.permissionMode(),
+                java.util.List.of(), overrides.sessionOpenRequest(), SessionStorage.defaultRoot(),
+                overrides.contextPreparation(), overrides.diagnosticMode(), overrides.diagnosticDirectory(),
+                overrides.executionBackend(), overrides.executionShell());
+        return HeadlessRuntimeSession.production(
+                auth.modelGateway(prepared.settings(), options), events, options, approvals);
     }
     private HeadlessRuntimeOptions runtimeOptions(PreparedRun prepared, CliOverrides overrides) {
         return new HeadlessRuntimeOptions(

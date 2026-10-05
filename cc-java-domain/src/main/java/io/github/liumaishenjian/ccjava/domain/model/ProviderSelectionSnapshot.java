@@ -11,14 +11,32 @@ import java.util.Objects;
  * @param providerId Provider identity
  * @param profileId credential profile identity
  * @param modelId Provider catalog 中的精确模型 identity
+ * @param backend 明确选择的pi或spring-ai后端，不推断失败fallback
+ * @param authMethod API_KEY或OAUTH认证身份，不表示凭据来源
  * @since 0.1.0
  */
-public record ProviderSelectionSnapshot(String providerId, String profileId, String modelId) {
-    /** 校验三个 identity，防止控制字符进入事件或错误面。 */
+public record ProviderSelectionSnapshot(String providerId, String profileId, String modelId,
+                                        String backend, String authMethod) {
+    /**
+     * 旧调用显式归属Spring AI/API Key身份，保持既有三参数契约。
+     * @param providerId Provider身份
+     * @param profileId 本地配置身份
+     * @param modelId 精确模型身份
+     */
+    public ProviderSelectionSnapshot(String providerId, String profileId, String modelId) {
+        this(providerId, profileId, modelId, "spring-ai", "API_KEY");
+    }
+
+    /** 校验身份与后端标签，具体Provider能力仍由边缘目录验证。 */
     public ProviderSelectionSnapshot {
         providerId = id(providerId, "providerId");
         profileId = id(profileId, "profileId");
         modelId = model(modelId);
+        if (!("pi".equals(backend) || "spring-ai".equals(backend))
+                || !("API_KEY".equals(authMethod) || "OAUTH".equals(authMethod))
+                || ("spring-ai".equals(backend) && !"API_KEY".equals(authMethod))) {
+            throw new IllegalArgumentException("Provider backend/authMethod 无效");
+        }
     }
 
     private static String id(String value, String field) {

@@ -16,7 +16,8 @@ import java.util.*;
  * 扫描固定 User/Project roots 并冻结严格 Agent definition snapshot。
  *
  * <p>每个 definition 使用独立 {@code *.agent} UTF-8 properties 文件；未知字段、同层重复 ID、链接、
- * 越界、未知 Tool/Model 或非法 UTF-8 全部隔离。Project 与 User 同 ID 也视为冲突而不是静默覆盖。
+ * 越界、未知 Tool 或非法 UTF-8 全部隔离。旧load还拒绝静态目录外Model；
+ * 捕获路由入口只冻结模型声明，执行资格必须在可信捕获边界验证。Project与User同ID均隔离而不覆盖。
  * 文件在 {@link #load} 后不再读取，磁盘变化只影响新 Session。</p>
  * @since 0.12.0
  */
@@ -62,11 +63,33 @@ public final class FileAgentDefinitionCatalog implements AgentDefinitionCatalog 
      */
     public static FileAgentDefinitionCatalog load(Path userRoot,Path projectRoot,Set<String> registeredTools,
             Set<String> configuredModels,CancellationToken cancellation, boolean projectTrusted) {
+        return loadDefinitions(userRoot, projectRoot, registeredTools, configuredModels, cancellation,
+                projectTrusted, false);
+    }
+
+    /**
+     * 为显式捕获路由加载声明；允许省略model，但不授予目录外模型执行资格。
+     * <p>调用者必须在入队前用已捕获父来源验证覆盖模型；此入口不用于没有该Gate的旧组合。</p>
+     * @param userRoot 用户定义目录
+     * @param projectRoot 项目定义目录
+     * @param registeredTools 已注册工具上界
+     * @param cancellation 扫描取消
+     * @param projectTrusted 项目精确信任状态
+     * @return 冻结声明，省略model表示继承，空白model仍拒绝
+     */
+    public static FileAgentDefinitionCatalog loadForCapturedRoutes(Path userRoot, Path projectRoot,
+            Set<String> registeredTools, CancellationToken cancellation, boolean projectTrusted) {
+        return loadDefinitions(userRoot, projectRoot, registeredTools, Set.of(), cancellation, projectTrusted, true);
+    }
+
+    private static FileAgentDefinitionCatalog loadDefinitions(Path userRoot, Path projectRoot,
+            Set<String> registeredTools, Set<String> configuredModels, CancellationToken cancellation,
+            boolean projectTrusted, boolean deferredModel) {
         Objects.requireNonNull(registeredTools); Objects.requireNonNull(configuredModels); Objects.requireNonNull(cancellation);
         List<Candidate> candidates=new ArrayList<>(); List<String> diagnostics=new ArrayList<>();
-        if (projectTrusted) scan(projectRoot,"project",registeredTools,configuredModels,cancellation,candidates,diagnostics);
+        if (projectTrusted) scan(projectRoot,"project",registeredTools,configuredModels,cancellation,candidates,diagnostics,deferredModel);
         else if (projectRoot != null && Files.exists(projectRoot, LinkOption.NOFOLLOW_LINKS)) diagnostics.add("project:trust_required");
-        scan(userRoot,"user",registeredTools,configuredModels,cancellation,candidates,diagnostics);
+        scan(userRoot,"user",registeredTools,configuredModels,cancellation,candidates,diagnostics,deferredModel);
         Map<AgentDefinitionId,List<Candidate>> grouped=new TreeMap<>(Comparator.comparing(AgentDefinitionId::value));
         candidates.forEach(c->grouped.computeIfAbsent(c.snapshot.id(),ignored->new ArrayList<>()).add(c));
         Map<AgentDefinitionId,AgentDefinitionSnapshot> accepted=new LinkedHashMap<>();
@@ -84,7 +107,7 @@ public final class FileAgentDefinitionCatalog implements AgentDefinitionCatalog 
     public List<String> diagnostics(){return diagnostics;}
 
     private static void scan(Path root,String source,Set<String> tools,Set<String> models,CancellationToken cancellation,
-            List<Candidate> out,List<String> diagnostics) {
+            List<Candidate> out,List<String> diagnostics,boolean deferredModel) {
         if(root==null||!Files.exists(root,LinkOption.NOFOLLOW_LINKS))return;
         try {
             if(Files.isSymbolicLink(root)||!Files.isDirectory(root,LinkOption.NOFOLLOW_LINKS)){diagnostics.add(source+":unsafe_root");return;}
@@ -94,13 +117,14 @@ public final class FileAgentDefinitionCatalog implements AgentDefinitionCatalog 
                 for(Path file:files){
                     if(cancellation.isCancellationRequested())return;
                     if(++count>MAX_FILES_PER_ROOT){diagnostics.add(source+":limit");break;}
-                    try{out.add(new Candidate(parse(file,source,tools,models)));}catch(RuntimeException|IOException invalid){diagnostics.add(source+":invalid");}
+                    try{out.add(new Candidate(parse(file,source,tools,models,deferredModel)));}catch(RuntimeException|IOException invalid){diagnostics.add(source+":invalid");}
                 }
             }
         }catch(IOException failure){diagnostics.add(source+":unreadable");}
     }
 
-    private static AgentDefinitionSnapshot parse(Path file,String source,Set<String> tools,Set<String> models) throws IOException{
+    private static AgentDefinitionSnapshot parse(Path file,String source,Set<String> tools,Set<String> models,
+            boolean deferredModel) throws IOException{
         if(Files.isSymbolicLink(file)||!Files.isRegularFile(file,LinkOption.NOFOLLOW_LINKS)||Files.size(file)>MAX_FILE_BYTES)throw new IllegalArgumentException();
         Object identityBefore=Files.readAttributes(file,java.nio.file.attribute.BasicFileAttributes.class,LinkOption.NOFOLLOW_LINKS).fileKey();
         long sizeBefore=Files.size(file);java.nio.file.attribute.FileTime modifiedBefore=Files.getLastModifiedTime(file,LinkOption.NOFOLLOW_LINKS);
@@ -113,11 +137,13 @@ public final class FileAgentDefinitionCatalog implements AgentDefinitionCatalog 
         for(String raw:text.split("\\R",-1)){if(raw.isBlank()||raw.stripLeading().startsWith("#"))continue;int split=raw.indexOf('=');
             if(split<1)throw new IllegalArgumentException();String key=raw.substring(0,split).trim();String value=raw.substring(split+1).trim();
             if(!FIELDS.contains(key)||values.putIfAbsent(key,value)!=null)throw new IllegalArgumentException();}
-        if(!values.keySet().equals(FIELDS))throw new IllegalArgumentException();
+        Set<String> required = new HashSet<>(FIELDS);
+        if (deferredModel) required.remove("model");
+        if(!values.keySet().containsAll(required)||!FIELDS.containsAll(values.keySet()))throw new IllegalArgumentException();
         Set<String> visible=values.get("tools").isBlank()?Set.of():Set.copyOf(Arrays.stream(values.get("tools").split(",")).map(String::trim).toList());
-        if(!tools.containsAll(visible)||!models.contains(values.get("model")))throw new IllegalArgumentException();
+        if(!tools.containsAll(visible)||(!deferredModel&&!models.contains(values.get("model"))))throw new IllegalArgumentException();
         return new AgentDefinitionSnapshot(new AgentDefinitionId(values.get("id")),values.get("description"),values.get("instructions"),visible,
-                PermissionMode.valueOf(values.get("permission")),values.get("model"),new ChildBudget(integer(values,"max-model-turns"),integer(values,"max-tool-calls"),
+                PermissionMode.valueOf(values.get("permission")),Optional.ofNullable(values.get("model")),new ChildBudget(integer(values,"max-model-turns"),integer(values,"max-tool-calls"),
                 longValue(values,"max-input-tokens"),integer(values,"max-output-characters"),Duration.ofSeconds(longValue(values,"timeout-seconds"))),
                 strictBoolean(values.get("background")),sha256(bytes),source);
     }

@@ -8,6 +8,7 @@ import {
 import {EventEmitter} from 'node:events';
 import {createHash} from 'node:crypto';
 import {TextDecoder} from 'node:util';
+import {hasProviderBackend, validateProviderControlRequest} from './pi-provider-control.js';
 import {
   MAX_LINE_BYTES,
   PROTOCOL_VERSION,
@@ -43,7 +44,9 @@ export interface ProviderLoginRequest {
   readonly profileId: string;
   readonly secretSource: 'store' | 'stdin' | 'env';
   readonly environmentName?: string;
-  /** 仅首次配置的短生命周期缓冲；不得记录、序列化或转交 Agent stdio。 */
+  /** 仅受支持的OpenRouter浏览器Key获取；不是通用OAuth入口。 */
+  readonly authMethod?: 'openrouter-browser';
+  /** 遮蔽API Key输入的短生命周期缓冲；不得记录、序列化或转交Agent stdio。 */
   readonly secretBytes?: Uint8Array;
   /** 仅显式 true 时把 profile 持久设为该 Provider 默认；省略保持旧接口的非默认语义。 */
   readonly setDefault?: boolean;
@@ -57,7 +60,7 @@ export interface RunHandshakeNotice {
 export interface ProviderLoginResult {
   readonly status: 'succeeded' | 'failed' | 'cancelled' | 'timed_out';
   readonly exitCode: number | null;
-  /** 原始 secret 不进入 Node；该值仅是 Java 生成的有界脱敏投影。 */
+  /** 该值仅为Java生成的有界脱敏投影；不包含独立stdin模式曾短暂持有的秘密缓冲。 */
   readonly credentialPreview?: string;
 }
 
@@ -76,6 +79,8 @@ type LoginSpawn = (
 ) => ChildProcess;
 
 export interface ProviderLoginBridgeOptions {
+  /** 平台仅供确定性测试注入；生产默认当前平台。 */
+  readonly platform?: NodeJS.Platform;
   readonly timeoutMs?: number;
   readonly spawnProcess?: LoginSpawn;
   readonly terminal?: LoginTerminal;
@@ -88,11 +93,15 @@ const ENVIRONMENT_NAME = /^[A-Z][A-Z0-9_]{0,127}$/u;
 /**
  * 从启动时已验证的 Java ChildProcessSpec 派生一次性认证进程。
  *
- * 该桥只固定替换主类后的参数，使用 shell=false 且直接继承终端输入输出。STORE 模式下 API key
- * 由 Java Console.readPassword 遮蔽读取，Node/Ink 不接收、不编码也不保存原始 secret；认证成功后
- * 仅从独立 stderr 管道接受一个严格校验的有界脱敏投影。
+ * 该桥只固定替换主类后的参数，使用 shell=false。仅 legacy STORE Console 模式交接终端输入，
+ * 在允许共享Console的平台由Java Console.readPassword读取；Windows该路径已失败关闭。
+ * stdin/ENV/browser 保留 Ink 的输入与 raw 模式所有权；ENV/browser 不继承终端 stdin。
+ * 新TUI的stdin模式借用
+ * 调用方的一次性字节缓冲并清零，因此不能声称所有模式都不经过Node。浏览器桥另有私有通道，
+ * 凭证不进入Agent stdio。认证完成仅从独立stderr接受严格校验的有界脱敏投影。
  */
 export class ProviderLoginBridge {
+  readonly #platform: NodeJS.Platform;
   readonly #spec: ChildProcessSpec;
   readonly #timeoutMs: number;
   readonly #spawn: LoginSpawn;
@@ -100,10 +109,12 @@ export class ProviderLoginBridge {
   #active: ChildProcess | undefined;
   #cancelled = false;
   #loginClaimed = false;
+  #requestTermination: (() => void) | undefined;
 
   public constructor(spec: ChildProcessSpec, options: ProviderLoginBridgeOptions | number = {}) {
     this.#spec = validateJavaChildSpec(spec);
     const normalized = typeof options === 'number' ? {timeoutMs: options} : options;
+    this.#platform = normalized.platform ?? process.platform;
     const timeoutMs = normalized.timeoutMs ?? 300_000;
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 900_000) {
       throw new Error('Provider login timeout 必须在 1000..900000ms');
@@ -120,34 +131,57 @@ export class ProviderLoginBridge {
   public cancel(): void {
     if (!this.#loginClaimed) return;
     this.#cancelled = true;
-    this.#active?.kill();
+    this.#stopChild();
+    this.#requestTermination?.();
+  }
+
+  #stopChild(): void {
+    const child = this.#active;
+    if (!child) return;
+    if (process.platform === 'win32' && child.pid !== undefined && killWindowsProcessTree(child.pid)) return;
+    child.kill();
   }
 
   public async login(request: ProviderLoginRequest): Promise<ProviderLoginResult> {
-    if (this.#loginClaimed) throw new Error('已有 Provider login 正在执行');
-    const args = providerLoginArguments(this.#spec.args, request);
+    if (this.#loginClaimed) {
+      request.secretBytes?.fill(0);
+      throw new Error('已有 Provider login 正在执行');
+    }
+    if (this.#platform === 'win32' && request.secretSource === 'store' && request.authMethod !== 'openrouter-browser') {
+      request.secretBytes?.fill(0);
+      throw new Error('Windows共享终端Console交接不安全；请使用遮蔽stdin、ENV或独立CLI登录');
+    }
+    let args: string[];
+    try { args = providerLoginArguments(this.#spec.args, request); }
+    catch (failure) { request.secretBytes?.fill(0); throw failure; }
     const terminal = this.#terminal;
     if (request.secretSource === 'store' && terminal.isTTY !== true) {
+      request.secretBytes?.fill(0);
       throw new Error('STORE 登录需要可交互 TTY；可改用 /connect <provider> <profile> env <ENV_NAME>');
     }
     this.#loginClaimed = true;
     this.#cancelled = false;
+    const legacyConsole = this.#platform !== 'win32' && request.secretSource === 'store'
+      && request.authMethod !== 'openrouter-browser';
     const wasRaw = terminal.isRaw === true;
     let paused = false;
     let rawChanged = false;
+    let terminationUncertain = false;
     try {
-      terminal.pause();
-      paused = true;
-      if (terminal.isTTY === true && typeof terminal.setRawMode === 'function') {
-        terminal.setRawMode(false);
-        rawChanged = true;
+      if (legacyConsole) {
+        terminal.pause();
+        paused = true;
+        if (terminal.isTTY === true && typeof terminal.setRawMode === 'function') {
+          terminal.setRawMode(false);
+          rawChanged = true;
+        }
       }
       const child = this.#spawn(this.#spec.executable, args, {
         cwd: this.#spec.cwd,
         env: this.#spec.env ?? process.env,
         shell: false,
         stdio: request.secretSource === 'stdin'
-          ? ['pipe', 'inherit', 'pipe'] : ['inherit', 'inherit', 'pipe'],
+          ? ['pipe', 'inherit', 'pipe'] : [legacyConsole ? 'inherit' : 'ignore', 'inherit', 'pipe'],
         windowsHide: false,
       });
       this.#active = child;
@@ -166,6 +200,18 @@ export class ProviderLoginBridge {
         let settled = false;
         let timedOut = false;
         let diagnostic = '';
+        let terminationTimer: NodeJS.Timeout | undefined;
+        const startTerminationDeadline = () => {
+          if (settled || terminationTimer !== undefined) return;
+          terminationTimer = setTimeout(() => {
+            // 终止未确认时恢复终端，但继续占用登录槽；不能把未知提交结果当作已回滚。
+            terminationUncertain = true;
+            try { child.kill('SIGKILL'); } catch { /* 保留未知终止状态，等待实际exit。 */ }
+            finish({status: terminalStatus(), exitCode: null});
+          }, 1_000);
+          terminationTimer.unref();
+        };
+        this.#requestTermination = startTerminationDeadline;
         child.stderr?.setEncoding('utf8');
         child.stderr?.on('data', (chunk: string) => {
           if (diagnostic.length < 4_096) diagnostic += chunk.slice(0, 4_096 - diagnostic.length);
@@ -174,22 +220,31 @@ export class ProviderLoginBridge {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
+          if (terminationTimer !== undefined) clearTimeout(terminationTimer);
+          this.#requestTermination = undefined;
           child.removeListener('error', onError);
-          child.removeListener('exit', onExit);
+          if (!terminationUncertain) child.removeListener('exit', onExit);
           resolve(result);
         };
         const terminalStatus = () => timedOut ? 'timed_out' as const
           : this.#cancelled ? 'cancelled' as const : 'failed' as const;
         const onError = () => finish({status: terminalStatus(), exitCode: null});
-        const onExit = (code: number | null) => finish({
+        const onExit = (code: number | null) => {
+          if (terminationUncertain) {
+            this.#active = undefined;
+            this.#loginClaimed = false;
+          }
+          finish({
           status: timedOut ? 'timed_out' : this.#cancelled ? 'cancelled'
             : code === 0 ? 'succeeded' : 'failed',
           exitCode: timedOut ? null : code,
           ...(code === 0 ? credentialPreviewFromDiagnostic(diagnostic) : {}),
         });
+        };
         const timer = setTimeout(() => {
           timedOut = true;
-          child.kill();
+          this.#stopChild();
+          startTerminationDeadline();
         }, this.#timeoutMs);
         timer.unref();
         child.once('error', onError);
@@ -198,8 +253,11 @@ export class ProviderLoginBridge {
     } catch {
       return {status: this.#cancelled ? 'cancelled' : 'failed', exitCode: null};
     } finally {
-      this.#active = undefined;
-      this.#loginClaimed = false;
+      request.secretBytes?.fill(0);
+      if (!terminationUncertain) {
+        this.#active = undefined;
+        this.#loginClaimed = false;
+      }
       if (rawChanged && typeof terminal.setRawMode === 'function') terminal.setRawMode(wasRaw);
       if (paused) terminal.resume();
     }
@@ -232,6 +290,11 @@ export class StdioClient {
   #questionnaireRequested = false;
   #questionnaireEnabled = false;
   #experienceRequested = false;
+  #authLifecycleRequested = false;
+  #authLifecycleEnabled = false;
+  #piProviderRequested = false;
+  #piProviderEnabled = false;
+  #openRouterBrowserEnabled = false;
   #directedChunkInputRequested = false;
   #directedChunkInputEnabled = false;
   #sessionId: string | undefined;
@@ -245,7 +308,7 @@ export class StdioClient {
   #stderrBytes = 0;
   #issuedSessionCommandIds = new Set<string>();
   #pendingSessionCommands = new Map<string, string>();
-  #pendingProviderControls = new Map<string, string>();
+  #pendingProviderControls = new Map<string, {requestId: string; intent: string; pi: boolean}>();
   #pendingRunCommands = new Map<string, {
     readonly commandType: 'run.start' | 'plan.start' | 'plan.review.resolve' | 'skill.invoke';
     disposition: 'submitting' | 'accepted' | 'queued';
@@ -342,15 +405,22 @@ export class StdioClient {
     questionnaireV1?: boolean;
     experienceV1?: boolean;
     directedChunkInputV1?: boolean;
+    authLifecycleV1?: boolean;
+    piProviderV1?: boolean;
   } = {}): string {
     this.#questionnaireRequested = capabilities.questionnaireV1 === true;
     this.#experienceRequested = capabilities.experienceV1 === true;
+    this.#authLifecycleRequested = capabilities.authLifecycleV1 === true;
+    this.#piProviderRequested = capabilities.piProviderV1 === true;
     this.#directedChunkInputRequested = capabilities.directedChunkInputV1 === true;
     return this.#send('initialize', capabilities);
   }
 
   /** 仅在宿主明确确认后允许发送整批答案。 */
   public get questionnaireEnabled(): boolean { return this.#questionnaireEnabled; }
+
+  /** 仅协商成功后开放显式 Pi 元数据控制，不代表账号或组件就绪。 */
+  public get piProviderEnabled(): boolean { return this.#piProviderEnabled; }
 
   /** 整批提交当前运行的问卷；请求归属和答案语义由后端作最终检查。 */
   public resolveQuestionnaire(callId: string, answers: readonly import('./protocol.js').QuestionnaireAnswer[]): string {
@@ -522,13 +592,18 @@ export class StdioClient {
   /** 发送不含 secret 的 Provider/Auth 本地控制命令。 */
   public providerControl(
     controlId: string,
-    intent: 'providers.configure' | 'providers.add' | 'auth.list' | 'auth.probe' | 'auth.logout' | 'models.list' | 'models.use' | 'models.add' | 'models.remove',
+    intent: 'providers.catalog' | 'providers.configure' | 'providers.add' | 'auth.list' | 'auth.probe' | 'auth.logout' | 'auth.activate' | 'auth.logout.prepare' | 'auth.logout.commit' | 'models.list' | 'models.use' | 'models.add' | 'models.remove',
     arguments_: Readonly<Record<string, unknown>>,
   ): string {
     if (this.#sessionId === undefined) throw new Error('Session 尚未初始化');
+    if ((intent === 'auth.activate' || intent.startsWith('auth.logout.')) && !this.#authLifecycleEnabled)
+      throw new Error('当前宿主不支持认证生命周期');
+    validateProviderControlRequest(intent, arguments_);
+    if (arguments_.backend === 'pi' && !this.#piProviderEnabled) throw new Error('当前宿主未协商 Pi Provider');
+    if (this.#pendingProviderControls.size >= 32) throw new Error('Provider 控制请求过多');
     if (this.#pendingProviderControls.has(controlId)) throw new Error('provider.control controlId 重复');
     const requestId = `tui-${this.#nextRequestNumber++}`;
-    this.#pendingProviderControls.set(controlId, requestId);
+    this.#pendingProviderControls.set(controlId, {requestId, intent, pi: arguments_.backend === 'pi'});
     try {
       return this.#send('provider.control', {controlId, intent, arguments: arguments_},
         this.#sessionId, undefined, requestId);
@@ -539,7 +614,13 @@ export class StdioClient {
   }
   /** 通过继承终端的一次性 Java 进程执行登录；Agent stdio 连接不承载 secret。 */
   public providerLogin(request: ProviderLoginRequest): Promise<ProviderLoginResult> {
+    if (this.#sessionId === undefined || this.#transportClosed || this.#shutdownRequested || this.#activeRunId !== undefined
+      || (request.authMethod === 'openrouter-browser' && !this.#openRouterBrowserEnabled)) {
+      request.secretBytes?.fill(0);
+      return Promise.resolve({status: 'failed', exitCode: null});
+    }
     const bridge = this.#loginBridge ??= new ProviderLoginBridge(this.#loginSpec, {
+      platform: this.#platform,
       timeoutMs: this.#providerLoginTimeoutMs,
     });
     return bridge.login(request);
@@ -905,8 +986,8 @@ export class StdioClient {
       for (const [commandId, requestId] of this.#pendingSessionCommands) {
         if (requestId === event.requestId) this.#pendingSessionCommands.delete(commandId);
       }
-      for (const [controlId, requestId] of this.#pendingProviderControls) {
-        if (requestId === event.requestId) this.#pendingProviderControls.delete(controlId);
+      for (const [controlId, pending] of this.#pendingProviderControls) {
+        if (pending.requestId === event.requestId) this.#pendingProviderControls.delete(controlId);
       }
     } else if (event.type === 'run.command.result') {
       if (event.sessionId !== this.#sessionId) {
@@ -978,9 +1059,18 @@ export class StdioClient {
       this.#rememberRunCommandTerminal(event.requestId, 'rejected');
     } else if (event.type === 'provider.control.result') {
       const controlId = event.payload.controlId;
-      if (typeof controlId !== 'string' || this.#pendingProviderControls.get(controlId) !== event.requestId
-        || event.sessionId !== this.#sessionId) {
+      const pending = typeof controlId === 'string' ? this.#pendingProviderControls.get(controlId) : undefined;
+      if (typeof controlId !== 'string' || pending?.requestId !== event.requestId
+        || pending.intent !== event.payload.intent || event.sessionId !== this.#sessionId) {
         throw new ProtocolViolation('provider.control.result 与待处理请求不匹配');
+      }
+      if (event.payload.status === 'succeeded') {
+        const result = event.payload.result as Record<string, unknown>;
+        const tagged = hasProviderBackend(result);
+        const emptyList = (pending.intent === 'auth.list' && Array.isArray(result.profiles) && result.profiles.length === 0)
+          || (pending.intent === 'models.list' && Array.isArray(result.models) && result.models.length === 0);
+        if ((!pending.pi && tagged) || (pending.pi && !tagged && !emptyList))
+          throw new ProtocolViolation('provider.control.result 后端与绑定请求不匹配');
       }
       this.#pendingProviderControls.delete(controlId);
     } else if (event.type === 'session.command.result') {
@@ -1010,13 +1100,25 @@ export class StdioClient {
       }
     }
     if (event.type === 'question.requested' && Array.isArray(event.payload.questions) && !this.#questionnaireEnabled)
-      throw new ProtocolViolation('宿主发送未协商问卷');    if (event.type === 'initialized') {      for (const capability of ['questionnaireV1', 'experienceV1', 'directedChunkInputV1']) {
+      throw new ProtocolViolation('宿主发送未协商问卷');    if (event.type === 'initialized') {      for (const capability of ['questionnaireV1', 'experienceV1', 'directedChunkInputV1', 'authLifecycleV1', 'piProviderV1']) {
         const flag = event.payload[capability];
         const requested = capability === 'questionnaireV1' ? this.#questionnaireRequested
-          : capability === 'experienceV1' ? this.#experienceRequested : this.#directedChunkInputRequested;
+          : capability === 'experienceV1' ? this.#experienceRequested
+          : capability === 'authLifecycleV1' ? this.#authLifecycleRequested
+          : capability === 'piProviderV1' ? this.#piProviderRequested : this.#directedChunkInputRequested;
         if ((flag !== undefined && typeof flag !== 'boolean') || (flag === true && !requested))
           throw new ProtocolViolation('宿主返回未协商能力');
       }
+      this.#authLifecycleEnabled = event.payload.authLifecycleV1 === true;
+      this.#piProviderEnabled = event.payload.piProviderV1 === true;
+      if ((this.#piProviderEnabled && (!this.#authLifecycleEnabled || typeof event.payload.piWorkerAvailable !== 'boolean'))
+        || (event.payload.piWorkerAvailable !== undefined
+          && (!this.#piProviderEnabled || typeof event.payload.piWorkerAvailable !== 'boolean')))
+        throw new ProtocolViolation('宿主返回无依赖或无效的 Pi 能力');
+      if (event.payload.openRouterBrowserAuthV1 !== undefined
+        && (typeof event.payload.openRouterBrowserAuthV1 !== 'boolean' || !this.#authLifecycleEnabled))
+        throw new ProtocolViolation('宿主发送未协商的浏览器认证能力');
+      this.#openRouterBrowserEnabled = this.#authLifecycleEnabled && event.payload.openRouterBrowserAuthV1 === true;
       this.#questionnaireEnabled = event.payload.questionnaireV1 === true;
       this.#directedChunkInputEnabled = event.payload.directedChunkInputV1 === true;
       if (this.#sessionId !== undefined && this.#sessionId !== event.sessionId) {
@@ -1184,6 +1286,11 @@ function providerLoginArguments(base: readonly string[], request: ProviderLoginR
   const mainIndex = base.indexOf(JAVA_MAIN_CLASS);
   const fixed = base.slice(0, mainIndex + 1);
   const control = ['auth', 'login', '--provider', request.providerId, '--profile', request.profileId];
+  if (request.authMethod !== undefined) {
+    if (request.authMethod !== 'openrouter-browser' || request.providerId !== 'openrouter' || request.secretSource !== 'store')
+      throw new Error('浏览器认证方式不支持');
+    control.push('--browser');
+  }
   if (request.secretSource === 'store') {
     if (request.environmentName !== undefined || request.secretBytes !== undefined) {
       throw new Error('STORE 不接受 ENV name/secret bytes');

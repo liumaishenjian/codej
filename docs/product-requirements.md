@@ -335,10 +335,28 @@ FR-CLI-008补全与FR-CLI-011完整历史live viewer也未在新入口开放，�
   credential refresh 与 durable Plan recovery 必须由各自状态机处理。retry lifecycle 只允许枚举、attempt 和
   等待时长进入 stdio/TUI，不得投影 endpoint、Header、body、Prompt、Secret 或异常正文。
 - FR-MODEL-006（S15 已实现 L1，`MODEL-13`）：产品采用本地直连 BYOK，不提供官方模型中转 Gateway；非秘密 `ProviderDefinition` 已与用户级 `CredentialProfile`/SecretRef 分离，并已实现 OpenAI-compatible custom URL/model、Anthropic 与 OpenRouter 三类 Provider Factory。CLI、TUI 与 stdio 的 `auth/providers/models`（含 TUI `/connect`、`/auth list`、`/auth logout`、`/models`）共用 Java Application Service，真实请求仍仅走现有 `ModelGateway`/`ProviderRouter`。
-- FR-MODEL-007（S15 已实现 L1，`MODEL-13`）：API key 只支持权限受限用户文件 STORE 或显式 ENV SecretRef；restricted store 已实现，secret 不得进入 Domain、Canonical/Session、log、telemetry、Agent event、普通 error、argv、evidence 或 Provider Definition。Console `/connect` 已使用 masked input，普通文件不得称 OS vault；OAuth 仅保留 Provider 官方固定 issuer/client/redirect 的合法扩展，当前不实现。
+- FR-MODEL-007（S15 已实现 L1，`MODEL-13`）：API key 只支持权限受限用户文件 STORE 或显式 ENV SecretRef；restricted store 已实现，secret 不得进入 Domain、Canonical/Session、log、telemetry、Agent event、普通 error、argv、evidence 或 Provider Definition。Console `/connect` 已使用 masked input，普通文件不得称 OS vault；ADR-099 新增可选 OpenRouter PKCE 浏览器获取 API Key，仍按 API_KEY 保存；不提供订阅登录、通用 OAuth Token 存储或刷新。
 - FR-MODEL-008（S15 已实现 L1，`MODEL-13`）：profile 解析固定为显式 profile→Provider default→env ephemeral→legacy properties ephemeral；显式或 default profile 失效必须 fail closed，不 silent rotation/failover。list/status 不联网，显式单 profile 的有界 probe 已实现；logout 已实现先 fence 新 lease、取消并 drain 同进程 active runs、清应用 secret/Gateway cache，再原子删除本地 secret，同时明确本地删除不等于 Provider revoke。
+- FR-MODEL-011（S15，`MODEL-13` L1、`CLI-08/09` L2 保持）：`--tui-next` 的 `/login [provider [profile]]` 提供已有服务商、自定义 HTTPS、遮蔽独立 stdin/ENV 及已协商的可选 OpenRouter 浏览器入口（独立 CLI Console 保留，Windows 共享终端 Console 失败关闭）；`/logout` 必须先选择具体账号，再取得绑定 Session/展示时 generation 的一次性确认，默认选择取消。登录输入等待前捕获 generation，提交在锁内 CAS；取消或断连的提交结果未知时不得承诺回滚。退出后的新登录必须显式 `auth.activate`，只以已持久的新代次恢复使用；list/status 不隐式解除 fence。模态/Run 中不排队切换账号，认证文本不进入对话历史。默认旧 TUI 不切换，兼容 `/connect`、`/auth`、`/models` 和 CLI；源码启动器只在固定可选组件存在时开放浏览器入口，当前安装包不自动附带该组件。验收和未验证项见 [ADR-099](adr/ADR-099-s15-login-logout-integration.md)。
 - FR-MODEL-009（S15 已实现 L1，`MODEL-13`）：`config/provider.local.properties` 保持可读且最低优先级；迁移只能由用户显式触发，发布并重读新 store 后仍不得修改、重命名或删除旧文件。restricted store 已覆盖严格 schema/ceiling、原子 move、单 writer lock、crash recovery、ACL/mode、Symlink/Junction/reparse 与竞态 fail closed。完整契约和验收矩阵见 ADR-069/070；当前 `MODEL-13` 达到 L1。
 - FR-MODEL-010（S15 已实现 L1，`MODEL-13`）：built-in 模型目录已支持通过 strict 本地 `modelOverrides` 和 `models add/remove` 显式维护；Anthropic baseline 为 `claude-sonnet-4-6`，OpenRouter baseline 为 `anthropic/claude-sonnet-4.6`；本地 `list` 零网络，CLI `models use` 默认持久化，而 TUI 默认只影响 next run。无参数 `/connect` 必须打开消费级 Ink 向导，普通连接路径隐藏 profile 并固定 `default`，登录成功刷新 credential 后直接进入模型选择；带参数 `/connect`、`/auth`、`/models` 继续兼容高级/脚本接口。remote model sync 尚未实现；TUI 已通过严格 stdio `providers.add` 复用 Java 应用服务完成自定义 OpenAI-compatible 服务的分步创建、认证和模型选择；普通向导登录与 `models.use` 必须显式持久设为默认并经 store 重开验证。已保存 custom Provider 从安全 models/profiles 投影中有界稳定排序进入 picker，选择后直接进入 management/auth；保存 in-flight 时 Enter/Esc 均为有提示的 no-op，避免重复副作用。`provider.control` 的 `models.add/remove/use` 成功结果采用严格 exact schema，其中 add/use 的 `setDefault` 必须为 boolean；真实 StdioClient/fake stdio child 必须证明三个 intent 均可通过协议验证。尚无至少两个 distinct Provider 的真实 BYOK 在线 E2E，因此 `MODEL-13` 不得提升到 L2。
+
+### 11.3A Pi三家整体接入（FR-MODEL-012，ADR-100，已批准/实现中）
+
+维护者批准首批OpenAI API、ChatGPT/Codex、DeepSeek、通义国内Token Plan四条Pi路由，界面按三个品牌分组。
+Pi负责认证/刷新、模型目录和单回合模型请求；Java继续掌握凭证持久化、身份、Session/Context、唯一Agent Loop/Tool Pipeline、取消、预算与重试。
+本需求限定替代FR-MODEL-007/011中“Pi仅OpenRouter API Key桥”的新增路由范围，不撤销旧身份和安全约束；
+当前已有定向装配/Fake/loopback、真实Java/CLI/两视图及受控安装ConPTY证据；最后standard clean仍被Git启动OS错误5阻断，
+尚未形成完整新交付验收，MODEL-13保持L1。
+
+- 目录独立于已有凭证，缺组件显示原因而非隐藏服务商；OpenAI API与Codex订阅、通义国内套餐不混用。
+- OAuth使用Java权威的版本化受限存储和跨进程序列化/代次CAS；秘密不进入Domain、普通Agent协议、Session或日志。
+- 单回合流式、工具调用、推理续接、摘要与Session恢复须走同一路由；错误不自动切换Provider、身份或Spring AI。
+- 新旧TUI和CLI共用服务，保留旧BYOK、命令和显式兼容路径；Worker纳入开发/发行构建，正常启动不偷偷安装依赖。
+- 所选模型窗口不能容纳当前Context保留预算时，模型请求前明确拒绝，指导用户显式重选或调整参数；不得自动削减预算、换模型或重放任务。
+- 第一交付为完整离线候选，真实账号/模型及费用另行授权验收；未验证路由不能称整体在线可用。
+
+准确契约、既有研究复用、逐场景对照与完成门槛见[ADR-100](adr/ADR-100-s15-pi-provider-runtime.md)及[新证据](evidence/S15-pi-provider-runtime.md)。
 
 ### 11.4 Tool Runtime
 

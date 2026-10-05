@@ -47,7 +47,13 @@ public final class PlanArtifactUpdateTool implements AgentTool {
     private final PlanArtifact replaceableTerminal;
     private volatile PlanArtifact latest;
 
-    /** 绑定单个 Session 与稳定 Plan 身份。 */
+    /**
+     * 绑定单个 Session 与稳定 Plan 身份，不允许跨身份替换已有工件。
+     * @param store 当前 Session 的持久化工件端口
+     * @param sessionId 所属 Session 身份
+     * @param planId 本工具允许更新的唯一计划身份
+     * @param clock 修订提交时间源
+     */
     public PlanArtifactUpdateTool(PlanArtifactStore store,
                                   io.github.liumaishenjian.ccjava.domain.SessionId sessionId,
                                   String planId, Clock clock) {
@@ -133,7 +139,10 @@ public final class PlanArtifactUpdateTool implements AgentTool {
         return ToolExecutionOutcome.success("Plan artifact revision %d committed".formatted(latest.revision()));
     }
 
-    /** 返回当前 Run 已提交或从 durable store 读取的最新工件。 */
+    /**
+     * 返回当前 Run 已提交或从 durable store 读取的最新工件，不在此重新加载。
+     * @return 当前工具已知的工件；尚无本身份工件时为空
+     */
     public synchronized java.util.Optional<PlanArtifact> latest() {
         return java.util.Optional.ofNullable(latest);
     }

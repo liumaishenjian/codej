@@ -92,6 +92,15 @@ public record ToolDefinition(
      * 兼容既有 Tool 定义；仅内置 Workspace Read 自动获得本地只读规划能力。
      *
      * <p>外部、MCP、Plugin 与其他 Effect 默认不声明规划能力，必须使用完整构造器显式选择。</p>
+     * @param name 注册表唯一工具名
+     * @param description 面向模型的工具说明，不作为访问控制
+     * @param inputSchemaJson 参数 JSON Schema
+     * @param effect 由可信适配器声明的操作效果
+     * @param source 绑定权限规则的可信来源
+     * @param supportsCancellation 是否支持协作式取消
+     * @param defaultTimeout 工具执行的默认超时预算
+     * @param outputMediaType 结果媒体类型
+     * @param maxOutputCharacters 结果字符上限
      */
     public ToolDefinition(
             String name,

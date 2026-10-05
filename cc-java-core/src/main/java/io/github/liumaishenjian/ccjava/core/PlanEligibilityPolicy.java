@@ -17,7 +17,15 @@ import java.util.Objects;
  */
 public final class PlanEligibilityPolicy {
 
-    /** 判断 Tool 是否可出现在规划模型请求中。 */
+    /** 创建无状态的规划资格策略；每次判定仍以可信工具定义为准。 */
+    public PlanEligibilityPolicy() {
+    }
+
+    /**
+     * 判断 Tool 是否可出现在规划模型请求中，不在此授予实际执行权限。
+     * @param definition 由可信注册表提供的非空工具定义
+     * @return 可信 effect、来源及能力标记满足规划可见性规则时为 true
+     */
     public boolean eligible(ToolDefinition definition) {
         ToolDefinition checked = Objects.requireNonNull(definition, "definition 不能为空");
         if (checked.effect() == ToolEffect.WRITE_WORKSPACE

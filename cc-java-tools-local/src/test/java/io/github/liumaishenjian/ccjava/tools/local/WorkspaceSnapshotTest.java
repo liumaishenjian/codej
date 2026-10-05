@@ -3,6 +3,7 @@ package io.github.liumaishenjian.ccjava.tools.local;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.github.liumaishenjian.ccjava.tools.local.git.GitReadClient;
+import io.github.liumaishenjian.ccjava.tools.local.git.GitReadTestSupport;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -14,11 +15,14 @@ class WorkspaceSnapshotTest {
 
     @Test
     void distinguishesConfirmedNonRepositoryFromUnknownProbeFailure() {
-        WorkspaceSnapshot nonRepository = WorkspaceSnapshot.capture(new GitReadClient(workspace));
+        var observation = GitReadTestSupport.capture(workspace);
+        WorkspaceSnapshot nonRepository = observation.snapshot();
         WorkspaceSnapshot unknown = WorkspaceSnapshot.capture(
                 new GitReadClient(workspace.resolve("missing-workspace")));
 
         assertThat(nonRepository.repositoryState())
+                .withFailMessage(() -> "Initial snapshot=" + nonRepository.repositoryState()
+                        + "; initial diagnostic=" + observation.diagnostic())
                 .isEqualTo(WorkspaceSnapshot.RepositoryState.NON_REPOSITORY);
         assertThat(nonRepository.repository()).isFalse();
         assertThat(nonRepository.branch()).isEqualTo("none");
@@ -26,4 +30,5 @@ class WorkspaceSnapshotTest {
         assertThat(unknown.repository()).isFalse();
         assertThat(unknown.branch()).isEqualTo("unknown");
     }
+
 }

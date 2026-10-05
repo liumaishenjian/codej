@@ -1,10 +1,11 @@
 import {Box, Text} from 'ink';
 import stringWidth from 'string-width';
+import {piAuthorizationText} from '../pi-authorization-link.js';
 import {glyphs, type Draft} from './editor.js';
 import {answerText, candidates, isBusy, questions, type Experience} from './state.js';
 
 export const palette = {accent: '#D89470', muted: '#989BA3', blue: '#A7C6DA', red: '#E18C8C', green: '#99BB94', background: '#363636'};
-export interface Span {text: string; color?: string; bold?: boolean; inverse?: boolean}
+export interface Span {text: string; color?: string; bold?: boolean; inverse?: boolean; /** 仅私有认证视图使用，渲染时再校验并编码。 */ authorizationUrl?: string}
 export interface Row {spans: Span[]; background?: string}
 export const span = (text: string, color?: string, bold = false): Span => ({text, ...(color ? {color} : {}), ...(bold ? {bold} : {})});
 export const rowText = (row: Row): string => row.spans.map(part => part.text).join('');
@@ -202,6 +203,6 @@ export function Screen({state, columns, rows}: {state: Experience; columns: numb
 export function RowView({rows, columns}: {rows: Row[]; columns: number}) {
   return <Box width={columns} flexDirection="column">{rows.map((row, index) => {
     const pad = row.background ? ' '.repeat(Math.max(0, columns - stringWidth(rowText(row)))) : '';
-    return <Text key={index} {...(row.background ? {backgroundColor: row.background} : {})}>{row.spans.map((part, i) => <Text key={i} {...(part.color ? {color: part.color} : {})} {...(part.bold ? {bold: true} : {})} {...(part.inverse ? {inverse: true} : {})}>{part.text}</Text>)}{pad}{row.spans.length === 0 ? ' ' : ''}</Text>;
+    return <Text key={index} {...(row.background ? {backgroundColor: row.background} : {})}>{row.spans.map((part, i) => <Text key={i} {...(part.color ? {color: part.color} : {})} {...(part.bold ? {bold: true} : {})} {...(part.inverse ? {inverse: true} : {})}>{part.authorizationUrl ? piAuthorizationText(part.authorizationUrl) : part.text}</Text>)}{pad}{row.spans.length === 0 ? ' ' : ''}</Text>;
   })}</Box>;
 }

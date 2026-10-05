@@ -18,5 +18,7 @@ data/
 cc-java-tui/node_modules/
 cc-java-tui/dist/
 cc-java-tui/coverage/
+cc-java-provider-pi/node_modules/
+cc-java-provider-pi/coverage/
 /node_modules/
 

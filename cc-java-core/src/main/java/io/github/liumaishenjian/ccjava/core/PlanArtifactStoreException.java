@@ -36,6 +36,7 @@ public final class PlanArtifactStoreException extends RuntimeException {
         IO_FAILURE
     }
 
+    /** 可持久化或投影的封闭分类，不携带底层异常自由文本。 */
     private final Code code;
 
     /**

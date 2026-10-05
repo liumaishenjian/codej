@@ -142,6 +142,7 @@ public record PlanArtifact(
      * 以批准工件快照绑定 ExecutionBrief 并生成下一 revision。
      *
      * @param brief 已验证执行交接
+     * @param executionBriefDigest 交接快照的 SHA-256 摘要，用于绑定证据账本
      * @param timestamp 批准提交时间
      * @return 状态为 APPROVED 且携带同一快照的工件
      */

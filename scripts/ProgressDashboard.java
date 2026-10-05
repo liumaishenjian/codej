@@ -1360,6 +1360,12 @@ public final class ProgressDashboard {
     private static boolean isCodeOrBuildInput(Path relativePath) {
         String relative = relativePath.toString().replace('\\', '/');
         String fileName = relativePath.getFileName().toString();
+        // 可选认证桥和TUI的第三方安装树不能通过通用/src/规则进入源码摘要。
+        if (relative.contains("/node_modules/")) return false;
+        if (relative.startsWith("cc-java-provider-pi/")) {
+            return !relative.contains("/dist/") && !relative.contains("/coverage/")
+                    && (relative.endsWith(".mjs") || relative.endsWith(".js") || relative.endsWith(".json"));
+        }
         return "pom.xml".equals(fileName)
                 || "mvnw".equals(relative)
                 || "mvnw.cmd".equals(relative)
@@ -1521,6 +1527,10 @@ public final class ProgressDashboard {
                 !html.contains("S01 已退出") && !html.contains("S02 已可用"),
                 "rendered HTML still contains a hard-coded Stage transition");
         selfTestTuiDigest();
+        assertCondition(isCodeOrBuildInput(Path.of("cc-java-provider-pi/bridge.mjs")), "authentication bridge absent from digest");
+        assertCondition(isCodeOrBuildInput(Path.of("cc-java-provider-pi/package-lock.json")), "authentication dependency lock absent from digest");
+        assertCondition(!isCodeOrBuildInput(Path.of("cc-java-provider-pi/node_modules/vendor/src/main.js")), "third-party bridge dependencies entered digest");
+        assertCondition(!isCodeOrBuildInput(Path.of("cc-java-provider-pi/coverage/report.json")), "bridge coverage entered digest");
     }
 
     private static void selfTestTuiDigest() {
@@ -1529,7 +1539,7 @@ public final class ProgressDashboard {
             root = Files.createTempDirectory("cc-java-progress-tui-");
             Path source = root.resolve("cc-java-tui/src/view.tsx");
             Path packageJson = root.resolve("cc-java-tui/package.json");
-            Path ignored = root.resolve("cc-java-tui/node_modules/example/index.js");
+            Path ignored = root.resolve("cc-java-tui/node_modules/example/src/index.js");
             Path rootLauncher = root.resolve("cc-java.ps1");
             Path rootCommand = root.resolve("codej.cmd");
             Path repositoryScript = root.resolve("scripts/StartCodejDev.ps1");

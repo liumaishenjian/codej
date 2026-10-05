@@ -156,8 +156,17 @@ public final class AgentSession {
         return activeRunId != null;
     }
 
+    /**
+     * 获取 Session 拥有的计划协调器，不复制其状态。
+     * @return 未安装计划时为空
+     */
     public synchronized Optional<PlanModeCoordinator> plan() { return Optional.ofNullable(plan); }
 
+    /**
+     * 在无活动 Run 时安装计划；活动 Run 内应使用带 Run 身份的入口。
+     * @param value 已验证且非空的计划协调器
+     * @return 安装后的计划；存在活动 Run 时为空
+     */
     public synchronized Optional<PlanModeCoordinator> createPlan(PlanModeCoordinator value) {
         ensureOpen();
         if (activeRunId != null) return Optional.empty();
@@ -183,23 +192,46 @@ public final class AgentSession {
         return Optional.of(plan);
     }
 
+    /**
+     * 按当前工作区摘要批准计划，具体审批 Gate 由协调器验证。
+     * @param digest 当前工作区摘要
+     * @return 当前计划；未安装时为空
+     */
     public synchronized Optional<PlanModeCoordinator> approvePlan(String digest) {
         if (plan == null) return Optional.empty();
         plan.approve(digest); return Optional.of(plan);
     }
+    /**
+     * 将当前计划交给协调器执行拒绝状态迁移。
+     * @return 拒绝后的计划；未安装时为空
+     */
     public synchronized Optional<PlanModeCoordinator> rejectPlan() {
         if (plan == null) return Optional.empty();
         plan.reject(); return Optional.of(plan);
     }
+    /**
+     * 通过摘要和审批 Gate 领取下一可执行步骤。
+     * @param digest 执行前工作区摘要
+     * @return 可开始的步骤；无计划或 Gate 不允许时为空
+     */
     public synchronized Optional<PlanStep> beginPlanStep(String digest) {
         return plan == null ? Optional.empty() : plan.beginNext(digest);
     }
+    /**
+     * 用执行后的摘要完成当前步骤，后续步骤以该工作区状态为基线。
+     * @param digest 步骤完成后的工作区摘要
+     * @return 当前计划；未安装时为空
+     */
     public synchronized Optional<PlanModeCoordinator> completePlanStep(String digest) {
         if (plan == null) return Optional.empty();
         plan.completeStep(digest); return Optional.of(plan);
     }
 
-    /** 为 Plan Pipeline 调用追加唯一 Assistant Tool Call，确保 Tool Result 能绑定规范历史。 */
+    /**
+     * 为 Plan Pipeline 调用追加唯一 Assistant Tool Call，确保 Tool Result 能绑定规范历史。
+     * @param runId 必须精确匹配当前活动 Run 的身份
+     * @param call 要记录的非空工具意图
+     */
     public synchronized void appendPlanToolCall(RunId runId, ToolCall call) {
         ensureActiveRun();
         if (!Objects.requireNonNull(runId, "runId 不能为空").equals(activeRunId)) {
@@ -208,7 +240,11 @@ public final class AgentSession {
         appendAssistant(AssistantMessage.tools(List.of(Objects.requireNonNull(call, "call 不能为空"))));
     }
 
-    /** 为 Plan Pipeline 调用追加 Tool Result，保持规范历史 ID 配对。 */
+    /**
+     * 为 Plan Pipeline 调用追加 Tool Result，保持规范历史 ID 配对。
+     * @param runId 必须精确匹配当前活动 Run 的身份
+     * @param result 与已记录 Call 配对的非空结果
+     */
     public synchronized void appendPlanToolResult(RunId runId, io.github.liumaishenjian.ccjava.domain.ToolResult result) {
         ensureActiveRun();
         if (!Objects.requireNonNull(runId, "runId 不能为空").equals(activeRunId)) {
@@ -217,7 +253,13 @@ public final class AgentSession {
         appendToolResult(new ToolResultMessage(Objects.requireNonNull(result, "result 不能为空")));
     }
 
-    /** 执行当前已批准 Plan 的剩余步骤；Session fence 或恢复问题时不得调用此入口。 */
+    /**
+     * 执行当前已批准 Plan 的剩余步骤；Session fence 或恢复问题时不得调用此入口。
+     * @param executor 将计划步骤交给统一执行边界的执行器
+     * @param cancellationToken 步骤间及执行中的取消信号
+     * @param maxSteps 本次允许执行的步骤上限
+     * @return 当前计划；已 fence 或无计划时为空，审批未通过时保持原状态
+     */
     public synchronized Optional<PlanModeCoordinator> executePlan(
             PlanStepExecutor executor, CancellationToken cancellationToken, int maxSteps) {
         ensureOpen();
@@ -238,6 +280,7 @@ public final class AgentSession {
     /**
      * 旧版无参数兼容入口显式失败，避免静默 no-op。
      *
+     * @return 此兼容入口始终抛出异常，不返回计划
      * @throws IllegalArgumentException 缺少完成后的工作区摘要
      */
     @Deprecated

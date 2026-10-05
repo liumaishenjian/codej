@@ -30,7 +30,10 @@ public record TaskListQuery(Optional<TaskStatus> status, Optional<String> filter
         });
     }
 
-    /** 默认返回前 25 项。 */
+    /**
+     * 创建从第一页读取、无过滤条件的默认查询。
+     * @return 上限为 25 项且状态、subject 过滤和游标均为空的查询
+     */
     public static TaskListQuery defaults() {
         return new TaskListQuery(Optional.empty(), Optional.empty(), Optional.empty(), 25);
     }

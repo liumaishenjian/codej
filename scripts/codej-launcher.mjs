@@ -24,13 +24,14 @@ function main() {
   if (args.length === 1 && args[0] === '--version') return printVersion(identity);
   if (args.length === 1 && args[0] === 'doctor') return doctor();
 
+  if (!supportedNode(process.versions.node)) return fail('requires Node.js 22.19.0 or newer');
   const java = resolveJava();
   if (isJavaControlCommand(args) || isHeadlessCommand(args)) {
     return exitWith(run(java, javaCommand(args), {...process.env, CC_JAVA_REPOSITORY_ROOT: installationRoot}));
   }
 
   const parsed = parseAgentArguments(args);
-  const childArgs = ['-Dfile.encoding=UTF-8', '-cp', join(installationRoot, 'app', '*'), mainClass,
+  const childArgs = ['-Dfile.encoding=UTF-8', ...piProperties(), '-cp', join(installationRoot, 'app', '*'), mainClass,
     '--workspace', parsed.workspace, '--timeout', parsed.timeout, ...contextDefaults, ...parsed.forwarded,
     '--stdio'];
   const childCommand = Buffer.from(JSON.stringify([java, ...childArgs]), 'utf8').toString('base64');
@@ -103,7 +104,21 @@ function isHeadlessCommand(args) {
 }
 
 function javaCommand(args) {
-  return ['-Dfile.encoding=UTF-8', '-cp', join(installationRoot, 'app', '*'), mainClass, ...args];
+  return ['-Dfile.encoding=UTF-8', ...piProperties(), '-cp', join(installationRoot, 'app', '*'), mainClass, ...args];
+}
+
+// 安装路径只由当前 launcher 定位；复用真正执行本入口的 Node，不读取工作区脚本或另选 PATH。
+function piProperties() {
+  return [`-Dcodej.nodeExecutable=${process.execPath}`,
+    `-Dcodej.piWorker=${join(installationRoot, 'pi', 'worker.mjs')}`,
+    `-Dcodej.piAuthCli=${join(installationRoot, 'tui', 'dist', 'src', 'pi-auth-cli.js')}`,
+    `-Dcodej.piBridge=${join(installationRoot, 'pi', 'login.mjs')}`];
+}
+
+function supportedNode(version) {
+  if (!/^\d+\.\d+\.\d+$/.test(version)) return false;
+  const [major, minor] = version.split('.').map(Number);
+  return major > 22 || (major === 22 && minor >= 19);
 }
 
 function resolveJava() {
@@ -124,13 +139,15 @@ function run(executable, args, environment = process.env) {
 
 function doctor() {
   const required = [join(installationRoot, 'app', 'cc-java-cli.jar'),
-    join(installationRoot, 'tui', 'dist', 'src', 'index.js')];
+    join(installationRoot, 'tui', 'dist', 'src', 'index.js'),
+    ...['worker.mjs', 'login.mjs', 'node_modules/@earendil-works/pi-ai/package.json']
+      .map(path => join(installationRoot, 'pi', path))];
   const missing = required.filter(path => !existsSync(path));
   process.stdout.write(`codej installation: ${installationRoot}\n`);
-  process.stdout.write(`node: ${process.version} (${Number(process.versions.node.split('.')[0]) >= 22 ? 'ok' : 'requires 22+'})\n`);
+  process.stdout.write(`node: ${process.version} (${supportedNode(process.versions.node) ? 'ok' : 'requires 22.19.0+'})\n`);
   process.stdout.write(`java: ${resolveJava()}\n`);
   process.stdout.write(`files: ${missing.length === 0 ? 'ok' : `missing ${missing.join(', ')}`}\n`);
-  return exitWith(missing.length === 0 ? 0 : 1);
+  return exitWith(missing.length === 0 && supportedNode(process.versions.node) ? 0 : 1);
 }
 
 function manageInstallation(uninstall) {
@@ -149,7 +166,12 @@ function verifyReleaseIdentity() {
     const build = manifest.build ?? {};
     const cli = fileDigest(join(installationRoot, 'app', 'cc-java-cli.jar'));
     const tui = treeDigest(join(installationRoot, 'tui', 'dist', 'src'));
-    if (manifest.schema !== 'cc-java-release-manifest-v1' || build.cliDigest !== cli || build.tuiDigest !== tui
+    const pi = treeDigest(join(installationRoot, 'pi'));
+    for (const path of ['worker.mjs', 'login.mjs', 'package.json', 'package-lock.json',
+      'node_modules/@earendil-works/pi-ai/package.json']) {
+      if (!existsSync(join(installationRoot, 'pi', path))) throw new Error('missing Pi runtime');
+    }
+    if (manifest.schema !== 'cc-java-release-manifest-v1' || build.cliDigest !== cli || build.tuiDigest !== tui || build.piDigest !== pi
       || !/^[0-9a-f]{40}$/.test(build.currentCommit ?? '')
       || !/^[0-9a-f]{64}$/.test(build.sourceDigest ?? '')) {
       throw new Error('identity drift');
@@ -177,7 +199,7 @@ function treeDigest(directory) {
       const path = join(current, entry.name);
       if (entry.isDirectory()) visit(path);
       else if (entry.isFile()) files.push(path);
-      else throw new Error('unsupported TUI entry');
+      else throw new Error('unsupported runtime entry');
     }
   };
   visit(directory);

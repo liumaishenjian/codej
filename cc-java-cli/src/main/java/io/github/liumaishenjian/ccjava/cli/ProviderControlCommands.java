@@ -2,6 +2,8 @@ package io.github.liumaishenjian.ccjava.cli;
 
 import io.github.liumaishenjian.ccjava.cli.auth.ProviderAuthException;
 import io.github.liumaishenjian.ccjava.cli.auth.SecretMaterial;
+import io.github.liumaishenjian.ccjava.cli.auth.PiCredentialIdentity;
+import io.github.liumaishenjian.ccjava.cli.provider.PiProviderCatalog;
 import io.github.liumaishenjian.ccjava.cli.provider.ProviderDefinition;
 import io.github.liumaishenjian.ccjava.cli.runtime.ProviderAuthApplicationService;
 import io.github.liumaishenjian.ccjava.core.CancellationToken;
@@ -47,6 +49,32 @@ final class ProviderControlCommands {
         return new Models(service, out, err);
     }
 
+    /** 显式后端路由；不从 Provider 名推断，不把 Pi 失败交给旧实现。 */
+    static class BackendOptions {
+        @Option(names="--backend", defaultValue="spring-ai") String backend;
+        boolean pi() {
+            if (!"pi".equals(backend) && !"spring-ai".equals(backend))
+                throw new IllegalArgumentException("backend");
+            return "pi".equals(backend);
+        }
+        void legacyOnly() { if (pi()) throw new IllegalArgumentException("unsupported Pi operation"); }
+    }
+
+    /** 身份操作使用精确 method；legacy 不接受新增 Pi 身份标志。 */
+    static class IdentityOptions extends BackendOptions {
+        @Option(names="--auth-method") String authMethod;
+        @Override boolean pi() {
+            boolean pi = super.pi();
+            if (!pi && authMethod != null) throw new IllegalArgumentException("auth method backend");
+            if (authMethod != null) PiCredentialIdentity.AuthMethod.valueOf(authMethod);
+            return pi;
+        }
+        PiCredentialIdentity identity(String provider, String profile) {
+            if (authMethod == null) throw new IllegalArgumentException("auth method required");
+            return new PiCredentialIdentity(provider, PiCredentialIdentity.AuthMethod.valueOf(authMethod), profile);
+        }
+    }
+
     @Command(mixinStandardHelpOptions = true,name = "providers", description = "管理本机非秘密 Provider definition",
             subcommands = {ProvidersList.class, ProvidersAdd.class, ProvidersRemove.class})
     static final class Providers implements Callable<Integer> {
@@ -58,10 +86,22 @@ final class ProviderControlCommands {
     }
 
     @Command(mixinStandardHelpOptions = true,name = "list", description = "列出本机 Provider catalog")
-    static final class ProvidersList implements Callable<Integer> {
+    static final class ProvidersList extends BackendOptions implements Callable<Integer> {
         @picocli.CommandLine.ParentCommand Providers parent;
         @Option(names="--json") boolean json;
+        /** 按显式后端展示安全目录，不探测账号。@return 退出码 */
         @Override public Integer call() { return execute(parent.err, () -> {
+            if (pi()) {
+                boolean available = parent.service.piComponentAvailable();
+                var values = new PiProviderCatalog().list().stream().map(value -> Map.<String,Object>of(
+                        "backend", "pi", "providerId", value.id(), "brandId", value.brandId(),
+                        "label", value.label(), "componentAvailable", available,
+                        "authMethods", value.authMethods().stream().map(method -> method.id().toUpperCase(java.util.Locale.ROOT)).toList(),
+                        "modelCount", value.models().size())).toList();
+                if (json) writeJson(parent.out, Map.of("version", 1, "providers", values));
+                else values.forEach(value -> parent.out.println(value.get("providerId")+"\tcomponentAvailable="+available));
+                return 0;
+            }
             var values=parent.service.listProviders(CancellationToken.none());
             if(json) writeJson(parent.out, Map.of("version",1,"providers",values.stream().map(value -> {
                 Map<String,Object> item=new LinkedHashMap<>(); item.put("providerId",value.providerId());
@@ -75,7 +115,7 @@ final class ProviderControlCommands {
     }
 
     @Command(mixinStandardHelpOptions = true,name = "add", description = "新增 OpenAI-compatible Provider")
-    static final class ProvidersAdd implements Callable<Integer> {
+    static final class ProvidersAdd extends BackendOptions implements Callable<Integer> {
         @picocli.CommandLine.ParentCommand Providers parent;
         @Option(names="--id",required=true) String id;
         @Option(names="--kind",required=true) String kind;
@@ -85,7 +125,9 @@ final class ProviderControlCommands {
         @Option(names="--default-model") String defaultModel;
         @Option(names="--connect-timeout-seconds",defaultValue="10") long connect;
         @Option(names="--request-timeout-seconds",defaultValue="300") long request;
+        /** 自定义 Provider 只在兼容后端允许。@return 退出码 */
         @Override public Integer call() { return execute(parent.err, () -> {
+            legacyOnly();
             if(!"openai-compatible".equals(kind)) throw new IllegalArgumentException("kind");
             ProviderDefinition definition=new ProviderDefinition(id,ProviderDefinition.Kind.OPENAI_COMPATIBLE,
                     displayName==null?id:displayName,URI.create(baseUrl),
@@ -98,12 +140,14 @@ final class ProviderControlCommands {
     }
 
     @Command(mixinStandardHelpOptions = true,name = "remove", description = "删除 custom Provider")
-    static final class ProvidersRemove implements Callable<Integer> {
+    static final class ProvidersRemove extends BackendOptions implements Callable<Integer> {
         @picocli.CommandLine.ParentCommand Providers parent;
         @Option(names="--id",required=true) String id;
         @Option(names="--yes",required=true) boolean yes;
+        /** 确认后删除兼容后端定义；拒绝 Pi fallback。@return 退出码 */
         @Override public Integer call() { return execute(parent.err, () -> {
             if(!yes) throw new IllegalArgumentException("confirmation");
+            legacyOnly();
             parent.service.removeProvider(id,CancellationToken.none());
             parent.out.println("provider removed: "+id); return 0;
         }); }
@@ -120,7 +164,7 @@ final class ProviderControlCommands {
     }
 
     @Command(mixinStandardHelpOptions = true,name="login",description="创建或替换 credential profile")
-    static final class AuthLogin implements Callable<Integer> {
+    static final class AuthLogin extends IdentityOptions implements Callable<Integer> {
         @picocli.CommandLine.ParentCommand Auth parent;
         @Option(names="--provider",required=true) String provider;
         @Option(names="--profile",required=true) String profile;
@@ -128,8 +172,24 @@ final class ProviderControlCommands {
         @Option(names="--from-env") String environmentName;
         @Option(names="--set-default") boolean setDefault;
         @Option(names="--tui-preview", hidden=true) boolean tuiPreview;
+        @Option(names="--browser", description="显式浏览器授权：legacy OpenRouter 或 Pi OAuth") boolean browser;
+        /** Pi 输入归属 Node helper，ENV 只保存名称，不隐式选模。@return 退出码 */
         @Override public Integer call(){return execute(parent.err,()->{
+            if (pi()) {
+                var identity = identity(provider, profile);
+                if (setDefault || tuiPreview || (stdin && environmentName != null)
+                        || (browser && (stdin || environmentName != null))
+                        || (identity.authMethod() == PiCredentialIdentity.AuthMethod.OAUTH
+                            ? !browser || stdin || environmentName != null : browser))
+                    throw new IllegalArgumentException("Pi login flags");
+                if (environmentName != null) parent.service.loginPiEnvironment(identity, environmentName, CancellationToken.none());
+                else new PiCliLogin().login(identity, stdin, CancellationToken.none());
+                parent.out.println("profile saved (configured, unverified): pi/"+provider+"/"+profile);
+                return 0;
+            }
             if(stdin&&environmentName!=null) throw new IllegalArgumentException("secret source");
+            if(browser && (stdin || environmentName != null || !"openrouter".equals(provider)))
+                throw new IllegalArgumentException("browser auth source");
             ProviderAuthApplicationService.LoginRequest request;
             ProviderAuthApplicationService.SecretInput input=null;
             AtomicReference<String> preview=new AtomicReference<>();
@@ -139,7 +199,17 @@ final class ProviderControlCommands {
             }else{
                 request=new ProviderAuthApplicationService.LoginRequest(provider,profile,
                         ProviderAuthApplicationService.RefKind.STORE,null,setDefault);
-                input=stdin?()->readStdinSecret(parent.input):consoleInput(tuiPreview ? preview::set : ignored -> { });
+                if (browser) {
+                    var configuration = io.github.liumaishenjian.ccjava.cli.auth.BrowserAuthConfiguration.resolve();
+                    input = () -> new io.github.liumaishenjian.ccjava.cli.auth.OpenRouterBrowserLogin(
+                            configuration.nodeExecutable(), configuration.bridgeEntrypoint()).login(
+                                    CancellationToken.none(), url -> {
+                                        parent.out.println("请在浏览器打开授权地址（不要将回调内容粘贴到对话）：");
+                                        parent.out.println(url); parent.out.flush();
+                                    });
+                } else {
+                    input=stdin?()->readStdinSecret(parent.input):consoleInput(tuiPreview ? preview::set : ignored -> { });
+                }
             }
             var saved=parent.service.login(request,input,CancellationToken.none());
             parent.out.println("profile saved: "+saved.providerId()+"/"+saved.profileId());
@@ -149,11 +219,21 @@ final class ProviderControlCommands {
     }
 
     @Command(mixinStandardHelpOptions = true,name="list",description="列出本机 credential metadata")
-    static final class AuthList implements Callable<Integer> {
+    static final class AuthList extends IdentityOptions implements Callable<Integer> {
         @picocli.CommandLine.ParentCommand Auth parent;
         @Option(names="--provider") String provider;
         @Option(names="--json") boolean json;
+        /** 仅投影封闭元数据，不泄露代次或 ENV 名。@return 退出码 */
         @Override public Integer call(){return execute(parent.err,()->{
+            if (pi()) {
+                var values = parent.service.listPiProfiles(Optional.ofNullable(provider), CancellationToken.none()).stream()
+                        .filter(value -> authMethod == null || value.authMethod().equals(authMethod)).toList();
+                if (json) writeJson(parent.out, Map.of("version", 1, "profiles", values.stream()
+                        .map(ProviderControlCommands::piProfileJson).toList()));
+                else values.forEach(value -> parent.out.println(value.providerId()+"/"+value.profileId()
+                        +"\t"+value.authMethod()+"\t"+value.status()));
+                return 0;
+            }
             var values=parent.service.listProfiles(Optional.ofNullable(provider),CancellationToken.none());
             if(json) writeJson(parent.out,Map.of("version",1,"profiles",values.stream().map(
                     ProviderControlCommands::profileJson).toList()));
@@ -165,12 +245,24 @@ final class ProviderControlCommands {
     }
 
     @Command(mixinStandardHelpOptions = true,name="status",description="读取单个 credential 本机状态")
-    static final class AuthStatus implements Callable<Integer> {
+    static final class AuthStatus extends IdentityOptions implements Callable<Integer> {
         @picocli.CommandLine.ParentCommand Auth parent;
         @Option(names="--provider",required=true) String provider;
         @Option(names="--profile",required=true) String profile;
         @Option(names="--json") boolean json;
+        /** 按精确 method/provider/profile 查询本地状态。@return 退出码 */
         @Override public Integer call(){return execute(parent.err,()->{
+            if (pi()) {
+                var identity = identity(provider, profile);
+                var value = parent.service.listPiProfiles(Optional.of(identity.providerId()), CancellationToken.none()).stream()
+                        .filter(item -> item.profileId().equals(identity.profileId())
+                                && item.authMethod().equals(identity.authMethod().name())).findFirst()
+                        .orElseThrow(() -> new ProviderAuthException(ProviderAuthException.Code.AUTH_PROFILE_UNKNOWN,
+                                ProviderAuthException.Action.LOGIN, false));
+                if (json) writeJson(parent.out, Map.of("version", 1, "profile", piProfileJson(value)));
+                else parent.out.println(value.providerId()+"/"+value.profileId()+"\t"+value.status());
+                return 0;
+            }
             var value=parent.service.status(provider,profile,CancellationToken.none());
             if(json)writeJson(parent.out,Map.of("version",1,"profile",profileJson(value)));
             else parent.out.println(value.providerId()+"/"+value.profileId()+"\t"+value.status());return 0;
@@ -178,14 +270,16 @@ final class ProviderControlCommands {
     }
 
     @Command(mixinStandardHelpOptions = true,name="probe",description="显式验证 Provider credential（Batch C）")
-    static final class AuthProbe implements Callable<Integer> {
+    static final class AuthProbe extends IdentityOptions implements Callable<Integer> {
         @picocli.CommandLine.ParentCommand Auth parent;
         @Option(names="--provider",required=true) String provider;
         @Option(names="--profile",required=true) String profile;
         @Option(names="--model") String model;
         @Option(names="--timeout-seconds",defaultValue="5") long timeoutSeconds;
         @Option(names="--json") boolean json;
+        /** Pi 不支持探测，不得调用旧网络入口。@return 退出码 */
         @Override public Integer call(){return execute(parent.err,()->{
+            legacyOnly();
             String selectedModel=model;
             if(selectedModel==null){
                 var models=parent.service.listModels(Optional.of(provider),CancellationToken.none());
@@ -203,14 +297,16 @@ final class ProviderControlCommands {
     }
 
     @Command(mixinStandardHelpOptions = true,name="logout",description="删除本机 credential；不会远端 revoke")
-    static final class AuthLogout implements Callable<Integer> {
+    static final class AuthLogout extends IdentityOptions implements Callable<Integer> {
         @picocli.CommandLine.ParentCommand Auth parent;
         @Option(names="--provider",required=true) String provider;
         @Option(names="--profile",required=true) String profile;
         @Option(names="--yes",required=true) boolean yes;
+        /** 确认后按精确身份本地退出，不宣称远端撤销。@return 退出码 */
         @Override public Integer call(){return execute(parent.err,()->{
             if(!yes)throw new IllegalArgumentException("confirmation");
-            parent.service.logout(provider,profile,CancellationToken.none());
+            if (pi()) parent.service.logoutPi(identity(provider, profile), CancellationToken.none());
+            else parent.service.logout(provider,profile,CancellationToken.none());
             parent.out.println("local credential deleted: "+provider+"/"+profile);
             parent.out.println("Provider-side credential was not revoked; rotate or delete it in the Provider console.");
             return 0;
@@ -218,12 +314,14 @@ final class ProviderControlCommands {
     }
 
     @Command(mixinStandardHelpOptions = true,name="migrate-legacy",description="显式复制固定 legacy properties")
-    static final class AuthMigrate implements Callable<Integer> {
+    static final class AuthMigrate extends IdentityOptions implements Callable<Integer> {
         @picocli.CommandLine.ParentCommand Auth parent;
         @Option(names="--provider",required=true) String provider;
         @Option(names="--profile",required=true) String profile;
         @Option(names="--set-default") boolean setDefault;
+        /** 旧配置迁移不适用于 Pi。@return 退出码 */
         @Override public Integer call(){return execute(parent.err,()->{
+            legacyOnly();
             var result=parent.service.migrateLegacy(provider,profile,setDefault,CancellationToken.none());
             parent.out.println(result.code()+": "+provider+"/"+profile);return 0;
         });}
@@ -238,11 +336,21 @@ final class ProviderControlCommands {
     }
 
     @Command(mixinStandardHelpOptions = true,name="list",description="列出本地 catalog 模型")
-    static final class ModelsList implements Callable<Integer> {
+    static final class ModelsList extends BackendOptions implements Callable<Integer> {
         @picocli.CommandLine.ParentCommand Models parent;
         @Option(names="--provider")String provider;
         @Option(names="--json")boolean json;
+        /** Pi 只展示静态目录，不启动组件或读取账号。@return 退出码 */
         @Override public Integer call(){return execute(parent.err,()->{
+            if (pi()) {
+                var catalog = new PiProviderCatalog();
+                var providers = provider == null ? catalog.list() : List.of(catalog.require(provider));
+                var values = providers.stream().flatMap(p -> p.models().stream().map(m -> Map.<String,Object>of(
+                        "backend", "pi", "providerId", p.id(), "modelId", m.id()))).toList();
+                if (json) writeJson(parent.out, Map.of("version", 1, "models", values));
+                else values.forEach(value -> parent.out.println(value.get("providerId")+"\t"+value.get("modelId")));
+                return 0;
+            }
             var values=parent.service.listModels(Optional.ofNullable(provider),CancellationToken.none());
             if(json)writeJson(parent.out,Map.of("version",1,"models",values));
             else values.forEach(value->parent.out.println(value.providerId()+"\t"+value.modelId()
@@ -251,40 +359,58 @@ final class ProviderControlCommands {
     }
 
     @Command(mixinStandardHelpOptions = true,name="add",description="给 built-in Provider 增加模型 overlay")
-    static final class ModelsAdd implements Callable<Integer> {
+    static final class ModelsAdd extends BackendOptions implements Callable<Integer> {
         @picocli.CommandLine.ParentCommand Models parent;
         @Option(names="--provider",required=true)String provider;
         @Option(names="--model",required=true)String model;
         @Option(names="--set-default")boolean setDefault;
+        /** 模型 overlay 只在兼容后端允许。@return 退出码 */
         @Override public Integer call(){return execute(parent.err,()->{
+            legacyOnly();
             parent.service.addModel(provider,model,setDefault,CancellationToken.none());
             parent.out.println("model added: "+provider+"/"+model);return 0;
         });}
     }
 
     @Command(mixinStandardHelpOptions = true,name="remove",description="从 built-in Provider 隐藏模型 overlay")
-    static final class ModelsRemove implements Callable<Integer> {
+    static final class ModelsRemove extends BackendOptions implements Callable<Integer> {
         @picocli.CommandLine.ParentCommand Models parent;
         @Option(names="--provider",required=true)String provider;
         @Option(names="--model",required=true)String model;
+        /** 不允许借 Pi 删除旧模型。@return 退出码 */
         @Override public Integer call(){return execute(parent.err,()->{
+            legacyOnly();
             parent.service.removeModel(provider,model,CancellationToken.none());
             parent.out.println("model removed: "+provider+"/"+model);return 0;
         });}
     }
 
     @Command(mixinStandardHelpOptions = true,name="use",description="持久化默认 provider/model；可同时指定下一 Run profile")
-    static final class ModelsUse implements Callable<Integer> {
+    static final class ModelsUse extends IdentityOptions implements Callable<Integer> {
         @picocli.CommandLine.ParentCommand Models parent;
         @Option(names="--provider",required=true)String provider;
         @Option(names="--model",required=true)String model;
         @Option(names="--profile")String profile;
         @Option(names="--session-only",description="只影响当前进程下一 Run，不写入用户默认")boolean sessionOnly;
+        @Option(names="--set-default", description="Pi 显式保存下一 Run 的默认模型")boolean setDefault;
+        /** Pi 身份必须完整，只有显式标志才持久化默认。@return 退出码 */
         @Override public Integer call(){return execute(parent.err,()->{
+            if (pi()) {
+                if (setDefault && sessionOnly) throw new IllegalArgumentException("model scope");
+                var value = parent.service.selectPiModel(identity(provider, profile), model, setDefault, CancellationToken.none());
+                parent.out.println("next run model: pi/"+value.providerId()+"/"+value.modelId());
+                return 0;
+            }
+            if (setDefault) throw new IllegalArgumentException("Pi-only option");
             var value=parent.service.selectModel(new ProviderAuthApplicationService.ModelSelectionRequest(
                     provider,model,Optional.ofNullable(profile),!sessionOnly),CancellationToken.none());
             parent.out.println("next run model: "+value.providerId()+"/"+value.modelId());return 0;
         });}
+    }
+
+    private static Map<String,Object> piProfileJson(ProviderAuthApplicationService.PiProfileSummary value) {
+        return Map.of("backend", "pi", "providerId", value.providerId(), "profileId", value.profileId(),
+                "authMethod", value.authMethod(), "refKind", value.refKind(), "localStatus", value.status());
     }
 
     private static Map<String,Object> profileJson(ProviderAuthApplicationService.ProfileSummary value){
@@ -376,6 +502,8 @@ final class ProviderControlCommands {
             case AUTH_PROBE_TIMED_OUT,AUTH_CANCELLED->6;
             case AUTH_LOGOUT_DRAIN_FAILED->7;
             default->2;};}
+        catch(PiCliLogin.Failure failure){err.println("cc-java: "+failure.code());
+            return failure.code()==PiCliLogin.Code.PI_AUTH_CANCELLED?6:4;}
         catch(IllegalArgumentException failure){err.println("cc-java: invalid provider/auth input");return 2;}
         catch(RuntimeException failure){err.println("cc-java: provider/auth operation failed");return 4;}
     }

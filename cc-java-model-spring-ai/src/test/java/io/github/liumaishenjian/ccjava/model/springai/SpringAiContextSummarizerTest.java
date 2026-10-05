@@ -55,6 +55,15 @@ class SpringAiContextSummarizerTest {
     }
 
     @Test
+    void acceptsAnthropicNormalEndTurnButRejectsIncompleteOrToolTerminals() {
+        assertThat(summarize(response("summary", "end_turn"))).hasValueSatisfying(
+                candidate -> assertThat(candidate.summary()).isEqualTo("summary"));
+        for (String reason : List.of("max_tokens", "length", "tool_use", "tool_calls", "refusal", "unknown")) {
+            assertThat(summarize(response("partial", reason))).isEmpty();
+        }
+    }
+
+    @Test
     void aggregatesStreamingTextBeforeBuildingCandidate() {
         RecordingChatModel model = new RecordingChatModel(Flux.just(
                 response("sum", null), response("mary", "stop")));

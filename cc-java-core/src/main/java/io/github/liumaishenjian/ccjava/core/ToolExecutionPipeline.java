@@ -324,15 +324,6 @@ public final class ToolExecutionPipeline {
     }
 
     /**
-     * 创建当前 Run 独占的自动审查 scope。
-     *
-     * <p>Pipeline 是 final ASK 收敛策略的唯一配置所有者，因此由它依据当前 reviewer
-     * 创建 scope，Runtime 只负责在 Run 结束时关闭。返回的对象不得跨 Run 传递或缓存。</p>
-     *
-     * @param runId 当前 Run 标识
-     * @return AUTO_REVIEW 时启用、否则保持 USER 既有语义的 scope
-     */
-    /**
      * 在首次执行前启用持续规划 hard boundary。
      *
      * <p>返回当前 Pipeline 便于 Composition Root 在创建 Scope 时原子装配；Pipeline 不得跨普通
@@ -347,11 +338,23 @@ public final class ToolExecutionPipeline {
         return this;
     }
 
-    /** 清除当前 Run 的短生命周期失败 fingerprint。 */
+    /**
+     * 清除当前 Run 的短生命周期失败 fingerprint。
+     * @param runId 已结束或正在释放治理状态的非空 Run 身份
+     */
     public void closeRunGovernance(RunId runId) {
         failureGovernance.remove(Objects.requireNonNull(runId, "runId 不能为空"));
     }
 
+    /**
+     * 创建当前 Run 独占的自动审查 scope。
+     *
+     * <p>Pipeline 是 final ASK 收敛策略的唯一配置所有者，因此由它依据当前 reviewer
+     * 创建 scope，Runtime 只负责在 Run 结束时关闭。返回的对象不得跨 Run 传递或缓存。</p>
+     *
+     * @param runId 当前 Run 标识
+     * @return AUTO_REVIEW 时启用、否则保持 USER 既有语义的 scope
+     */
     public AutoReviewRunScope createRunScope(RunId runId) {
         Objects.requireNonNull(runId, "runId 不能为空");
         return reviewer == ApprovalReviewer.AUTO_REVIEW

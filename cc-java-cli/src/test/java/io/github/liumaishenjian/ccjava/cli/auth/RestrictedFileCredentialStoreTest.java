@@ -25,6 +25,76 @@ class RestrictedFileCredentialStoreTest {
     @TempDir Path temporary;
 
     @Test
+    void lateLoginAcrossStoreInstancesCannotOverwriteOrResurrectAfterReopen() throws Exception {
+        Path home = Files.createDirectory(temporary.resolve("cas-home"));
+        RestrictedFileCredentialStore first = store(home, ignored -> { });
+        RestrictedFileCredentialStore other = store(home, ignored -> { });
+        long initial = first.snapshot(CancellationToken.none()).generation();
+        other.saveEnv("anthropic", "personal", "CC_TEST_KEY", true, initial, CancellationToken.none());
+        SecretMaterial stale = new SecretMaterial("late-synthetic-key".toCharArray());
+        assertThatThrownBy(() -> first.saveStore("anthropic", "personal", stale, true,
+                initial, CancellationToken.none())).isInstanceOfSatisfying(ProviderAuthException.class,
+                error -> assertThat(error.code()).isEqualTo(ProviderAuthException.Code.AUTH_TRANSACTION_CONFLICT));
+        assertThatThrownBy(stale::copyChars).isInstanceOf(IllegalStateException.class);
+        long beforeDelete = first.snapshot(CancellationToken.none()).generation();
+        other.delete("anthropic", "personal", beforeDelete, CancellationToken.none());
+        SecretMaterial resurrect = new SecretMaterial("resurrection-synthetic-key".toCharArray());
+        assertThatThrownBy(() -> first.saveStore("anthropic", "personal", resurrect, true,
+                beforeDelete, CancellationToken.none())).isInstanceOf(ProviderAuthException.class);
+        assertThatThrownBy(resurrect::copyChars).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> first.saveEnv("anthropic", "personal", "CC_TEST_KEY", true,
+                beforeDelete, CancellationToken.none())).isInstanceOf(ProviderAuthException.class);
+        var reopened = store(home, ignored -> { }).snapshot(CancellationToken.none());
+        assertThat(reopened.generation()).isEqualTo(beforeDelete + 1);
+        assertThat(reopened.profiles()).isEmpty();
+        try (var files = Files.list(home.resolve(".cc-java/auth/secrets"))) { assertThat(files).isEmpty(); }
+    }
+
+    @Test
+    void cancellationAfterLockAndIndexReadStillPreventsSecretWrite() throws Exception {
+        Path home = Files.createDirectory(temporary.resolve("cancel-before-secret"));
+        var cancellation = new io.github.liumaishenjian.ccjava.core.CancellationSource();
+        SecureRandom cancelOnId = new SecureRandom() {
+            @Override public void nextBytes(byte[] bytes) {
+                Arrays.fill(bytes, (byte) 1);
+                cancellation.cancel();
+            }
+        };
+        RestrictedFileCredentialStore store = new RestrictedFileCredentialStore(home, CLOCK, cancelOnId);
+        long expected = store.snapshot(CancellationToken.none()).generation();
+        SecretMaterial secret = new SecretMaterial("synthetic-mid-save-key".toCharArray());
+        assertThatThrownBy(() -> store.saveStore("anthropic", "personal", secret, true, expected, cancellation.token()))
+                .isInstanceOfSatisfying(ProviderAuthException.class,
+                        error -> assertThat(error.code()).isEqualTo(ProviderAuthException.Code.AUTH_CANCELLED));
+        assertThatThrownBy(secret::copyChars).isInstanceOf(IllegalStateException.class);
+        assertThat(store.snapshot(CancellationToken.none()).generation()).isEqualTo(expected);
+        try (var files = Files.list(home.resolve(".cc-java/auth/secrets"))) { assertThat(files).isEmpty(); }
+    }
+
+    @Test
+    void cancelledAndInvalidCasSavesAlwaysConsumeSecret() throws Exception {
+        Path home = Files.createDirectory(temporary.resolve("cancel-cas-home"));
+        RestrictedFileCredentialStore store = store(home, ignored -> { });
+        long generation = store.snapshot(CancellationToken.none()).generation();
+        var cancelled = new io.github.liumaishenjian.ccjava.core.CancellationSource();
+        cancelled.cancel();
+        for (boolean cas : new boolean[] {false, true}) {
+            SecretMaterial secret = new SecretMaterial("cancelled-synthetic-key".toCharArray());
+            assertThatThrownBy(() -> {
+                if (cas) store.saveStore("anthropic", "personal", secret, true, generation, cancelled.token());
+                else store.saveStore("anthropic", "personal", secret, true, cancelled.token());
+            }).isInstanceOfSatisfying(ProviderAuthException.class,
+                    error -> assertThat(error.code()).isEqualTo(ProviderAuthException.Code.AUTH_CANCELLED));
+            assertThatThrownBy(secret::copyChars).isInstanceOf(IllegalStateException.class);
+        }
+        SecretMaterial invalid = new SecretMaterial("invalid-generation-key".toCharArray());
+        assertThatThrownBy(() -> store.saveStore("anthropic", "personal", invalid, true,
+                -1, CancellationToken.none())).isInstanceOf(ProviderAuthException.class);
+        assertThatThrownBy(invalid::copyChars).isInstanceOf(IllegalStateException.class);
+        assertThat(store.snapshot(CancellationToken.none()).generation()).isEqualTo(generation);
+    }
+
+    @Test
     void savesReplacesReadsAndDeletesStoreProfileWithoutLeakingSecret() throws Exception {
         Path home = Files.createDirectory(temporary.resolve("home"));
         RestrictedFileCredentialStore store = store(home, ignored -> { });

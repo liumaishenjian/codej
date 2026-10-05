@@ -38,12 +38,25 @@ public record ToolError(ToolErrorCode code, ToolFailureCategory category, boolea
         if (message.isBlank()) throw new IllegalArgumentException("message 不能为空白");
     }
 
-    /** 创建不包含额外细节的保守错误。 */
+    /**
+     * 创建不包含额外细节的保守错误。
+     * @param code 稳定错误码，用于选择默认分类与可重试标记
+     * @param message 不含敏感实现细节的非空白说明
+     * @return details 为空对象的结构化错误
+     */
     public static ToolError of(ToolErrorCode code, String message) {
         return new ToolError(code, message, JsonObject.empty());
     }
 
-    /** 创建带明确治理分类和 retryable 元数据的错误。 */
+    /**
+     * 创建带明确治理分类和 retryable 元数据的错误。
+     * @param code 稳定细粒度错误码
+     * @param category 由类型化事实确定的治理分类
+     * @param retryable 不改变调用策略时是否可安全重试，不能从错误正文猜测
+     * @param message 不含敏感实现细节的非空白说明
+     * @param details 有界且安全的纠正细节
+     * @return 保留显式分类和重试标记的错误
+     */
     public static ToolError classified(ToolErrorCode code, ToolFailureCategory category,
             boolean retryable, String message, JsonObject details) {
         return new ToolError(code, category, retryable, message, details);

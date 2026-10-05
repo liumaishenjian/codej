@@ -5,7 +5,7 @@ import java.util.Objects;
 /**
  * 通知 Surface 从 durable PlanArtifact 打开审批视图。
  *
- * <p>事件只携带身份、revision 与摘要。Markdown 正文来自同一已提交工件的只读投影，
+ * <p>事件携带身份、revision、摘要与审批所需投影。Markdown 正文来自同一已提交工件的只读投影，
  * 不能从模型 Tool payload 或最终 JSON 重建。</p>
  *
  * @param planId 稳定 Plan 身份
@@ -35,13 +35,24 @@ public record PlanReviewEvent(String planId, long revision, String contentDigest
         }
     }
 
-    /** 旧测试兼容入口；生产必须使用携带真实 workspace/permission/context 的重载。 */
+    /**
+     * 旧测试兼容入口；生产必须使用携带真实 workspace/permission/context 的重载。
+     * @param artifact 待审批的已提交工件
+     * @return 使用正文摘要占位工作区摘要、DEFAULT 与 KEEP 的兼容事件，不是实时执行绑定
+     */
     @Deprecated
     public static PlanReviewEvent from(PlanArtifact artifact) {
         return from(artifact, artifact.contentDigest(), PermissionMode.DEFAULT, PlanContextPolicy.KEEP);
     }
 
-    /** 从已提交工件生成事件，避免调用方拼接正文或版本。 */
+    /**
+     * 从已提交工件生成事件，避免调用方拼接正文或版本。
+     * @param artifact 非空且处于 AWAITING_APPROVAL 的工件
+     * @param workspaceDigest 发布审批时的真实工作区摘要
+     * @param originalPermissionMode 执行时待恢复的非 PLAN 模式
+     * @param suggestedContextPolicy 用户可覆盖的上下文保留或清理建议
+     * @return 绑定同一持久化修订正文与审批上下文的事件
+     */
     public static PlanReviewEvent from(PlanArtifact artifact, String workspaceDigest,
                                        PermissionMode originalPermissionMode,
                                        PlanContextPolicy suggestedContextPolicy) {

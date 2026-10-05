@@ -286,18 +286,42 @@ public final class StdioProtocolCodec {
         if (invalidIdentifier(requiredPayloadText(payload, "controlId", requestId))) {
             throw new StdioProtocolException("INVALID_PAYLOAD", requestId, "controlId 非法");
         }
+        validateProviderControlArguments(payload, requestId);
+    }
+
+    /** 直接 handler 调用也必须复用参数 Gate，不能绕过确认或后端白名单。 */
+    void validateProviderControlArguments(ObjectNode payload, String requestId) throws StdioProtocolException {
         String intent = requiredPayloadText(payload, "intent", requestId);
         JsonNode rawArguments = payload.get("arguments");
         if (rawArguments == null || !rawArguments.isObject()) {
             throw new StdioProtocolException("INVALID_PAYLOAD", requestId, "arguments 必须是 JSON Object");
         }
         ObjectNode arguments = (ObjectNode) rawArguments;
+        JsonNode backend = arguments.get("backend");
+        if (backend != null) {
+            if (!backend.isString() || !(backend.stringValue().equals("pi") || backend.stringValue().equals("spring-ai")))
+                throw new StdioProtocolException("INVALID_ARGUMENT", requestId, "backend 非法");
+            if (backend.stringValue().equals("pi")) {
+                try { PiProviderControl.validate(intent, arguments); }
+                catch (RuntimeException failure) {
+                    throw new StdioProtocolException("INVALID_ARGUMENT", requestId, "Pi 控制参数非法");
+                }
+                return;
+            }
+            if (intent.equals("auth.logout.commit"))
+                throw new StdioProtocolException("UNKNOWN_FIELD", requestId, "确认票据不接受 backend");
+            // 校验副本保留原始显式 backend，既有 legacy 参数规则保持不变。
+            arguments = arguments.deepCopy();
+            arguments.remove("backend");
+        }
         Set<String> allowed = switch (intent) {
             case "providers.configure" -> Set.of("baseUrl", "modelId");
             case "providers.add" -> Set.of("providerId", "displayName", "baseUrl", "modelId");
             case "auth.list" -> Set.of();
             case "auth.probe" -> Set.of("providerId", "profileId", "modelId");
             case "auth.logout" -> Set.of("providerId", "profileId", "confirmed");
+            case "auth.activate", "auth.logout.prepare" -> Set.of("providerId", "profileId");
+            case "auth.logout.commit" -> Set.of("confirmationId", "confirmed");
             case "models.list" -> Set.of("providerId");
             case "models.add" -> Set.of("providerId", "modelId", "setDefault");
             case "models.remove" -> Set.of("providerId", "modelId");
@@ -314,8 +338,9 @@ public final class StdioProtocolCodec {
         boolean providerAdd = intent.equals("providers.add");
         boolean providerConfigure = intent.equals("providers.configure");
         boolean modelMutation = intent.equals("models.add") || intent.equals("models.remove");
+        boolean authTarget = intent.equals("auth.activate") || intent.equals("auth.logout.prepare");
         validateOptionalControlText(arguments, "providerId", requestId,
-                providerAdd || intent.equals("auth.probe") || intent.equals("auth.logout")
+                providerAdd || authTarget || intent.equals("auth.probe") || intent.equals("auth.logout")
                         || intent.equals("models.use") || modelMutation);
         if (providerAdd || providerConfigure) {
             if (providerAdd) validateProviderAddText(arguments, "displayName", requestId, 80, 256);
@@ -323,7 +348,7 @@ public final class StdioProtocolCodec {
             validateProviderAddText(arguments, "modelId", requestId, 256, 1_024);
         }
         validateOptionalControlText(arguments, "profileId", requestId,
-                intent.equals("auth.probe") || intent.equals("auth.logout"));
+                authTarget || intent.equals("auth.probe") || intent.equals("auth.logout"));
         validateOptionalControlText(arguments, "modelId", requestId,
                 intent.equals("models.use") || modelMutation);
         if (intent.equals("auth.probe") && arguments.get("modelId") != null) {
@@ -332,7 +357,10 @@ public final class StdioProtocolCodec {
         if (intent.equals("models.add") || intent.equals("models.use")) {
             validateOptionalControlBoolean(arguments, "setDefault", requestId);
         }
-        if (intent.equals("auth.logout")) {
+        if (intent.equals("auth.logout.commit")) {
+            validateOptionalControlText(arguments, "confirmationId", requestId, true);
+        }
+        if (intent.equals("auth.logout") || intent.equals("auth.logout.commit")) {
             JsonNode confirmed = arguments.get("confirmed");
             if (confirmed == null || !confirmed.isBoolean() || !confirmed.booleanValue()) {
                 throw new StdioProtocolException("INVALID_ARGUMENT", requestId, "logout 需要显式确认");

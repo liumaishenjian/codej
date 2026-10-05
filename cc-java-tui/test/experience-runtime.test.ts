@@ -50,12 +50,27 @@ function fixture() {
 }
 
 describe('new frontend runtime event boundaries', () => {
+  it.each([
+    ['MODEL_CONTEXT_BUDGET_INCOMPATIBLE', '模型窗口不足以容纳当前保留预算；请选择更大窗口模型，或显式调整 Context 参数。'],
+    ['RUNTIME_LAUNCH_FAILED', '运行启动失败，请检查配置和当前计划状态。'],
+  ])('projects %s without retry and remains ready for explicit recovery', (code, notice) => {
+    const f = fixture(); f.initialize(); f.runtime.submit('inspect');
+    f.emit('run.command.result', {commandType: 'run.start', disposition: 'accepted', code: 'ACCEPTED'}, {runId: undefined});
+    f.emit('run.launch.failed', {code, stopReason: 'internal_error'}, {runId: undefined});
+    expect(f.runtime.state.notice).toBe(notice);
+    expect(f.runtime.state.status).toBe('idle');
+    expect(f.client.startRun).toHaveBeenCalledTimes(1);
+    expect(f.runtime.state.pending).toBeUndefined();
+    expect(f.runtime.submit('explicit next run')).toBe(true);
+    expect(f.client.startRun).toHaveBeenCalledTimes(2);
+  });
   it('initializes once and projects streaming/tool/final content without duplicate rows', () => {
     const f = fixture(); f.start(); f.runtime.connect();
     expect(f.client.initialize).toHaveBeenCalledExactlyOnceWith({
       questionnaireV1: true,
       experienceV1: true,
       directedChunkInputV1: true,
+      authLifecycleV1: true,
     });
     expect(f.runtime.state.workspace).toBe('C:/workspace');
     expect(f.runtime.state.model).toBe('configured-model');

@@ -88,7 +88,13 @@ public record ToolExecutionOutcome(
         return failure("", error, ToolResultMetadata.complete(""));
     }
 
-    /** 创建保留有界失败证据的业务结果。 */
+    /**
+     * 创建保留有界失败证据的业务结果，仍由 Pipeline 统一转换与截断。
+     * @param content 非空的失败证据正文，调用方应避免敏感数据
+     * @param error 非空的结构化失败原因
+     * @param metadata 与正文一致的媒体类型、长度和截断事实
+     * @return 明确失败且保留证据与元数据的 Outcome
+     */
     public static ToolExecutionOutcome failure(String content, ToolError error, ToolResultMetadata metadata) {
         return new ToolExecutionOutcome(false, Objects.requireNonNull(content, "content 不能为空"),
                 Optional.of(Objects.requireNonNull(error, "error 不能为空")),

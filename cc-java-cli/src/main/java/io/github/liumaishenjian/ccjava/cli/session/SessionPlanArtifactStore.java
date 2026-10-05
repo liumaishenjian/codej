@@ -20,7 +20,11 @@ public final class SessionPlanArtifactStore implements PlanArtifactStore {
     private final FileSessionStore sessions;
     private final SessionId sessionId;
 
-    /** 绑定单个 Session 的 canonical PlanArtifact 写入口。 */
+    /**
+     * 绑定单个 Session 的 canonical PlanArtifact 写入口。
+     * @param sessions 持有 writer/fence 与 journal 事务边界的非空存储
+     * @param sessionId 本适配器允许读写的唯一 Session 身份
+     */
     public SessionPlanArtifactStore(FileSessionStore sessions, SessionId sessionId) {
         this.sessions = Objects.requireNonNull(sessions, "sessions 不能为空");
         this.sessionId = Objects.requireNonNull(sessionId, "sessionId 不能为空");

@@ -1661,7 +1661,7 @@ ADR-069/070 定义的 `MODEL-13` 已在当前工作树完成生产接入并达�
 
 profile优先级固定显式→default→env→legacy，已配置层失效不回退。带参数 `/connect`、
 `/auth`、`/models` 与 headless `auth/providers/models` 继续由 CLI/TUI/stdio 共用 Application Service，
-作为高级/脚本兼容接口。普通 TUI 首次连接不再暴露该内部模型：production stdio 的
+作为高级/脚本兼容接口。默认旧 AgentTui 首次连接不再暴露该内部模型：production stdio 的
 `initialized.modelConfigured` 只在持久默认 Provider/model 与同 Provider 默认 credential 均可用时为 true；
 false 时 TUI 自动打开 `ModelSetupState`，先收集 OpenAI-compatible HTTPS Base URL 与模型名，再在同一
 紧凑页面接收 API Key 并实时显示前三位/后四位的脱敏预览。原始字节不进入 React state；Enter 后只通过
@@ -1679,6 +1679,65 @@ React state、Agent stdio、argv、Session、日志或错误。Ink 实时只渲�
 首次必填表单不能用 Esc 绕过；带参数 Provider/Auth/Models 能力和 logout fence 保持兼容。
 
 legacy properties继续最低优先级可读；`auth migrate-legacy`只显式 copy、验证新 store，旧文件 bytes永不自动修改。完整字段、CLI语法、TUI状态机、错误/事件、测试清单、E2E阈值和 Batch A-C见 ADR-070。实现 Commit `f0e274f` 后的未提交工作树回归修复已完成 restricted store、共享 service、CLI/TUI/stdio、masked Console `/connect`、三类 Spring AI factory 与 Run scope、probe、logout lease fence/drain 和 strict `modelOverrides` 的最终对账：真实安装版共享根 `providers/auth/models` exit 0 且根 ACL 不变、auth protected 仅 owner；production stdio initialize/shutdown exit 0 且 stderr 0；临时 home ENV/STORE 全生命周期全部 exit 0、metadata secret 0、logout residue 0；全部 Provider 子命令 help exit 0；本轮 correctness closeout 聚焦 Java 53/53、非 clean Maven verify 1028 tests/13 skips/0 failures/errors（171 个 Surefire XML 独立汇总）、strict aggregate Javadoc 0 warning、完整 TUI 11 files/194 tests；clean verify 因用户现有 codej PID 17212 锁定 domain JAR 在 clean 阶段失败，未终止该进程，因此不宣称 clean 全量通过。模型 deadline/cancel 可中断 Publisher 创建前阻塞并 dispose 永不终止的 Publisher；Print/TUI transport 已收敛到唯一终态并加入非交互 watchdog。真正空 home/profiles 的 production stdio 在 1 秒内形成唯一 `configuration_required`，Print 给出 `/connect` 或 `codej auth login` 指引；`provider_error` 保持独立的服务调用故障提示。本机真实入口存在 ignored legacy Provider 配置，故 `codej --print "只回复OK" --timeout 2s` 约 9324ms 后 exit 1、恰好一次 `cc-java: run timed out`、新增 Java/Node residue 0，只是 deadline + Surface grace + shutdown 收敛证据，不是空配置证据；TUI failure 保留行为不变。由于至少两个 distinct provider 的真实 BYOK E2E 与 remote model sync 仍缺失，`MODEL-13` 不得提升到 L2；Capability Level 无变化，S15 G6 与 Stage Exit 保持 OPEN。
+
+#### 19.7.2.1 ADR-099 新界面的认证生命周期
+
+`--tui-next` 继续使用 `ExperienceRuntimeApp` / `ExperienceRuntime`，认证面板作为同一布局的模态，
+不另建 Renderer。`authLifecycleV1` 显式协商后才可调用 `auth.activate`、`auth.logout.prepare/commit`；
+票据最多16个、120秒、一次性且绑定可信Session和展示时的store generation，提交时继续CAS。
+旧 `auth.logout confirmed=true` 保持即时目标语义，不用于新面板的快照确认降级。
+
+登录在等待独立stdin/浏览器产物前读取持久generation，STORE/ENV同一锁内执行CAS。
+真实Windows ConPTY证伪共享Console输入交接：Node曾读TTY后pause不能防止密码回显。
+Windows共享Console在spawn前拒绝；新TUI改用遮蔽字段的短期字节缓冲和独立Java stdin，
+不进入React状态/历史/Agent协议，退出/提交/断连清零。字段限制单行可打印ASCII、16KiB；
+这不保证V8不可变字符串或OS内存全部擦除。stdin/ENV/browser等待期间保持Ink raw输入，
+只允许Esc取消和Ctrl+C退出；只有legacy非Windows Console交接终端。
+Java浏览器私有帧在消费后擦除，关闭通道与发布同锁，退出时清理部分行/待发布/排队字节。
+独立CLI Console不变。
+成功删除记录删除代次；当前宿主重读新profile并显式激活才能建立新lease代次下界。
+失败的drain/delete不解除fence；旧代次永久拒绝。全局索引generation是保守事务序列，
+无关profile并发更新也可能导致重试；并非每个profile incarnation schema迁移。
+有界共享清理池避免取消/close阻塞logout线程，run真正终止前不提前宣布drain成功。
+probe共用lease/取消；保存probe记录在锁内同时绑定开始时的generation与secret reference，
+防止释放lease后，同名ENV退出再登录的旧结果污染新账号代次；不能恢复已删除凭证。
+
+长期宿主不再固定在启动时的legacy Gateway：每个新Run通过当前selection建立route，
+同一Run的模型与ContextSummarizer使用同源提供方。退出后缺失选择不得退回legacy；
+不改变Java唯一Agent Loop、Tool/Permission/Session管线。
+
+可选 `cc-java-provider-pi` 精确锁定MIT `@earendil-works/pi-ai@0.85.1`，只调用公开认证exports，
+不读Pi用户store、不运行Pi Agent。源码启动器提供固定 `codej.nodeExecutable/codej.piBridge` JVM属性，
+Node最低22.19；缺少组件时隐藏浏览器入口。Java一次性进程和Node桥仅用有界私有JSONL交互，
+授权URL与loopback回调严格校验，禁止手工粘贴Token，产物交给Java现有STORE并按API_KEY持久化。
+取消/超时有提交边界；无法确认helper退出时有界恢复终端但占住登录槽，提示结果待核对。
+不包含Codex订阅、OAuth刷新、Pi模型transport或已打包发行组件；详见
+[ADR-099](adr/ADR-099-s15-login-logout-integration.md)与[验证记录](evidence/S15-login-logout.md)。
+
+#### 19.7.2.2 ADR-100 Pi三家整体适配（已批准/实现中）
+
+新增四条Pi路由`openai/openai-codex/deepseek/qwen-token-plan-cn`，按三个品牌展示。当前工作树中的
+`cc-java-model-pi`实现既有StreamingModelGateway，调用固定Node Worker；Pi仅执行认证或一个模型回合，
+Java继续驱动工具、权限、Session、摘要、预算和重试。旧Spring AI身份保持显式兼容，不作为自动fallback。
+
+Node侧使用公开Provider工厂和Models接口；Java为CredentialStore.modify提供跨进程事务/CAS确认，
+OAuth与Key/ENV按后端、路由、认证方法和Profile隔离。模型私有协议分块、序列号、唯一终态并受预算限制；
+流式partial不作为历史快照。Java持久化框架无关的受限续接元数据，同源恢复保留必要内容，跨源不发送隐藏续接块。
+目录本地只读，组件缺失明确标为不可用；生产不读取用户Pi配置或自动安装依赖。
+
+Root通过RunModelBinding完整重绑模型/摘要/reviewer；Supervisor入队前以可信父身份捕获来源，child独占gateway、lease和Context，
+不继承线程局部作用域。Optional模型覆盖在同provider目录内验证，认证版本只留在边缘闭包；父结束不使旧任务改用新账号。
+compact使用canonical消息与操作局部Guard，保持同源和墙钟取消，不构造假RunId。新端口/装配已有定向Fake及loopback证据，
+四路新Run/RESUME/FORK实际读写及摘要Core采纳已通过独立进程测试；统一CLI/两视图与安装Pi闭包已有受控离线交付证据。
+最终standard clean仍因Git启动OS错误5受阻，不能用中间2193 tests两次通过替代最终候选验收。
+Pi 0.85.1 Codex不序列化maxTokens，不能把本地时间/字节Gate与摘要预算意图描述为服务端Token硬上限；另三路已核对HTTP上限。
+认证入口使用独立双向私有桥，精确字符串epoch只供显式启用；普通Agent stdio不携带秘密。CLI的TTY输入由受信
+`codej.piAuthCli`薄壳独占，Java仍掌握Store/CAS/关闭回执，ENV仅保存名称且不启动Worker。
+外层非秘密JVM数组使用严格Base64url避免Windows拆分；不是秘密传输或加密。Root/child窗口收窄不削减保留预算，
+若保留耗尽窗口则抛出ModelContextBudgetException；仅启动前投影MODEL_CONTEXT_BUDGET_INCOMPATIBLE，两视图指导显式重选或调整参数，
+不自动换模型或重放任务。安装ConPTY已走通原GPT-4失败→重选GPT-4-turbo→真实读工具与正文。
+旧19.7.2.1仍描述原OpenRouter桥。具体字段、安全边界、逐场景对照与分两次交付见
+[ADR-100](adr/ADR-100-s15-pi-provider-runtime.md)和[证据](evidence/S15-pi-provider-runtime.md)。
 
 ### 19.8 `codej` 源码开发启动入口
 

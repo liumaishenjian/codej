@@ -2,6 +2,7 @@ package io.github.liumaishenjian.ccjava.domain;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * 表示一个已经聚合完成的模型回合输出。
@@ -12,21 +13,34 @@ import java.util.Objects;
  *
  * @param text      模型文本，可以为空字符串
  * @param toolCalls 本回合按模型声明顺序产生的全部 Tool Call
+ * @param continuation 成功回合的可选私有续接材料；不属于可见正文，也不影响空响应判断
  * @since 0.1.0
  */
-public record AssistantMessage(String text, List<ToolCall> toolCalls) implements AgentMessage {
+public record AssistantMessage(String text, List<ToolCall> toolCalls,
+        Optional<ModelContinuation> continuation) implements AgentMessage {
 
     /**
      * 防御性复制 Tool Call 列表后创建 Assistant 消息。
      *
      * @param text 模型文本，可以为空字符串
      * @param toolCalls 本回合按声明顺序产生的 Tool Call
-     * @throws NullPointerException 文本、列表或列表元素为空时
+     * @param continuation 可选不可变续接材料；投影重建若不显式传入则有意丢弃
+     * @throws NullPointerException 文本、列表、列表元素或 Optional 为空时
      */
     public AssistantMessage {
         Objects.requireNonNull(text, "text 不能为空");
         Objects.requireNonNull(toolCalls, "toolCalls 不能为空");
         toolCalls = List.copyOf(toolCalls);
+        Objects.requireNonNull(continuation, "continuation 不能为空");
+    }
+
+    /**
+     * 兼容没有私有续接材料的可见消息构造；普通上下文投影不自动继承隐藏数据。
+     * @param text 模型可见文本
+     * @param toolCalls 本回合按顺序产生的调用
+     */
+    public AssistantMessage(String text, List<ToolCall> toolCalls) {
+        this(text, toolCalls, Optional.empty());
     }
 
     /**

@@ -51,7 +51,7 @@ const COMMAND_NAMES: readonly SlashIntent[] = [
   'tasks', 'plan-status', 'plan-resume', 'plan',
 ];
 const COMMANDS = new Set<SlashIntent>(COMMAND_NAMES);
-const TYPO_PROTECTED_COMMANDS: readonly string[] = [...COMMAND_NAMES, 'task'];
+const TYPO_PROTECTED_COMMANDS: readonly string[] = [...COMMAND_NAMES, 'task', 'login', 'logout'];
 const MIN_SHORT_TYPO_LENGTH = 4;
 
 const COMMAND_USAGE: Readonly<Record<SlashIntent, string>> = {
@@ -79,6 +79,13 @@ export function parseSlashCommand(input: string): SlashParseResult {
   if (!input.startsWith('/')) return {kind: 'not-command'};
   const [rawName, ...values] = input.slice(1).trim().split(/\s+/u);
   if (rawName === 'task') return parseTaskCommand(values);
+  if (rawName === 'login') {
+    if (values.length > 2) return {kind: 'invalid', message: '/login [provider [profile]]；不接受密钥参数'};
+    return parseConnectCommand(values.length === 1 ? [values[0]!, 'default'] : values);
+  }
+  if (rawName === 'logout') {
+    return {kind: 'invalid', message: '/logout 确认面板请使用 --tui-next；兼容入口为 /auth list 和 /auth logout <provider> <profile> confirm'};
+  }
   if (rawName === 'connect') return parseConnectCommand(values);
   if (rawName === 'auth') return parseAuthCommand(values);
   if (rawName === 'models') return parseModelsCommand(values);

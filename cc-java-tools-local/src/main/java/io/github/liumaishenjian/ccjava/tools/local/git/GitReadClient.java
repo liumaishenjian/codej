@@ -31,6 +31,45 @@ public final class GitReadClient {
     private static final Duration TIMEOUT = Duration.ofSeconds(10);
 
     private final Path workspace;
+    private final ProcessStarter starter;
+    private final java.util.function.Consumer<ReadDiagnostic> observer;
+    private final Duration timeout;
+
+    /** 包内进程接缝；生产仍固定ProcessBuilder，模型不能替换启动器。 */
+    @FunctionalInterface
+    interface ProcessStarter {
+        Process start(ProcessBuilder builder) throws IOException;
+    }
+
+    /**
+     * 只含本次调用的安全事实；字节数为观测时已捕获量，不承载路径、正文或环境。
+     * failure为空表示成功；exitCode/startupOsCode为空表示未取得相应事实。
+     * 目录存在标记仅在启动失败时采集；未完成reader的诊断不代表最终输出完整。
+     */
+    record ReadDiagnostic(ToolErrorCode failure, Integer exitCode, int stdoutBytes, int stderrBytes,
+                          boolean stdoutReadFailed, boolean stderrReadFailed,
+                          boolean stdoutTruncated, boolean stderrTruncated, boolean interrupted,
+                          Integer startupOsCode, boolean directoryPresentAfterStartupFailure) { }
+
+    private static final class Probe {
+        private Process process;
+        private BoundedBytes stdout;
+        private BoundedBytes stderr;
+        private Integer startupOsCode;
+        private boolean directoryPresentAfterStartupFailure;
+
+        private ReadDiagnostic snapshot(ToolErrorCode failure) {
+            Integer exit = null;
+            if (process != null) {
+                try { exit = process.exitValue(); } catch (IllegalThreadStateException running) { /* 未确认退出。 */ }
+            }
+            return new ReadDiagnostic(failure, exit, stdout == null ? 0 : stdout.captured,
+                    stderr == null ? 0 : stderr.captured, stdout != null && stdout.readFailed,
+                    stderr != null && stderr.readFailed, stdout != null && stdout.exceeded(),
+                    stderr != null && stderr.exceeded(), Thread.currentThread().isInterrupted(),
+                    startupOsCode, directoryPresentAfterStartupFailure);
+        }
+    }
 
     /**
      * 创建固定工作目录的只读 Git Adapter。
@@ -38,7 +77,17 @@ public final class GitReadClient {
      * @param workspace 已解析的真实 Workspace
      */
     public GitReadClient(Path workspace) {
+        this(workspace, ProcessBuilder::start, ignored -> { }, TIMEOUT);
+    }
+
+    /** 测试只替换启动与观测，实际操作枚举、参数和错误分类仍走生产路径。 */
+    GitReadClient(Path workspace, ProcessStarter starter,
+                  java.util.function.Consumer<ReadDiagnostic> observer, Duration timeout) {
         this.workspace = java.util.Objects.requireNonNull(workspace, "workspace 不能为空");
+        this.starter = java.util.Objects.requireNonNull(starter, "starter 不能为空");
+        this.observer = java.util.Objects.requireNonNull(observer, "observer 不能为空");
+        this.timeout = java.util.Objects.requireNonNull(timeout, "timeout 不能为空");
+        if (timeout.isNegative() || timeout.isZero()) throw new IllegalArgumentException("timeout 必须为正");
     }
 
     /**
@@ -126,6 +175,19 @@ public final class GitReadClient {
     }
 
     private GitReadBytes executeBytes(List<String> operation, int maximumStdout) throws GitReadException {
+        Probe probe = new Probe();
+        ToolErrorCode failure = null;
+        try {
+            return executeBytes(operation, maximumStdout, probe);
+        } catch (GitReadException exception) {
+            failure = exception.error().code();
+            throw exception;
+        } finally {
+            observer.accept(probe.snapshot(failure));
+        }
+    }
+
+    private GitReadBytes executeBytes(List<String> operation, int maximumStdout, Probe probe) throws GitReadException {
         ArrayList<String> command = new ArrayList<>(List.of(
                 "git", "--no-pager",
                 "-c", "color.ui=false",
@@ -148,19 +210,41 @@ public final class GitReadClient {
             environment.put("GIT_OPTIONAL_LOCKS", "0");
             environment.put("LC_ALL", "C.UTF-8");
             environment.put("LANG", "C.UTF-8");
-            process = builder.start();
+            process = starter.start(builder);
+            probe.process = process;
         } catch (IOException exception) {
+            // 仅提取JDK标准启动错误的数字，绝不附带IOException正文或cause（其中含路径）。
+            String message = exception.getMessage();
+            if (message != null) {
+                var matcher = java.util.regex.Pattern.compile(": (?:CreateProcess )?error=([0-9]{1,9}),").matcher(message);
+                while (matcher.find()) probe.startupOsCode = Integer.valueOf(matcher.group(1));
+            }
+            try { probe.directoryPresentAfterStartupFailure = java.nio.file.Files.isDirectory(workspace); }
+            catch (SecurityException ignored) { /* 诊断不能改变原始GIT_UNAVAILABLE分类。 */ }
             throw new GitReadException(ToolError.of(
                     ToolErrorCode.GIT_UNAVAILABLE, "Git 程序不可用"));
         }
 
+        // 固定只读命令没有交互输入；立即交还stdin句柄，不依赖GC清理累计的父端管道。
+        try {
+            process.getOutputStream().close();
+        } catch (IOException failure) {
+            process.destroyForcibly();
+            try { process.getInputStream().close(); } catch (IOException ignored) { }
+            try { process.getErrorStream().close(); } catch (IOException ignored) { }
+            throw new GitReadException(ToolError.of(
+                    ToolErrorCode.GIT_READ_FAILED, "Git 输入管道关闭失败"));
+        }
+
         BoundedBytes stdout = new BoundedBytes(process.getInputStream(), maximumStdout);
         BoundedBytes stderr = new BoundedBytes(process.getErrorStream(), MAX_STDERR_BYTES);
+        probe.stdout = stdout;
+        probe.stderr = stderr;
         Thread stdoutThread = Thread.ofVirtual().start(stdout);
         Thread stderrThread = Thread.ofVirtual().start(stderr);
         boolean finished;
         try {
-            finished = process.waitFor(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+            finished = process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             process.destroyForcibly();
@@ -176,6 +260,11 @@ public final class GitReadClient {
         }
         join(stdoutThread);
         join(stderrThread);
+        // 管道读取失败与字节超限是不同事实；任何不完整读取都不能成为成功快照。
+        if (stdout.readFailed || stderr.readFailed) {
+            throw new GitReadException(ToolError.of(
+                    ToolErrorCode.GIT_READ_FAILED, "Git 输出读取失败"));
+        }
         if (stdout.exceeded()) {
             throw new GitReadException(ToolError.of(
                     ToolErrorCode.OUTPUT_LIMIT_EXCEEDED, "Git 输出超过字节上限"));
@@ -209,13 +298,26 @@ public final class GitReadClient {
      * @param porcelainState 有界 porcelain 状态字节
      */
     public record WorkspaceDigestInputs(byte[] paths, byte[] indexState, byte[] porcelainState) {
+        /** 冻结三组原始字节，避免调用方随后改变快照输入。 */
         public WorkspaceDigestInputs {
             paths = paths.clone();
             indexState = indexState.clone();
             porcelainState = porcelainState.clone();
         }
+        /**
+         * 返回路径序列的独立副本。
+         * @return 保持原始排序与编码的路径字节
+         */
         @Override public byte[] paths() { return paths.clone(); }
+        /**
+         * 返回 index 状态的独立副本。
+         * @return 捕获时的 index 原始字节
+         */
         @Override public byte[] indexState() { return indexState.clone(); }
+        /**
+         * 返回工作区状态的独立副本。
+         * @return 有界 porcelain 原始字节
+         */
         @Override public byte[] porcelainState() { return porcelainState.clone(); }
     }
 
@@ -258,6 +360,8 @@ public final class GitReadClient {
         private final int maximum;
         private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         private volatile boolean exceeded;
+        private volatile boolean readFailed;
+        private volatile int captured;
 
         private BoundedBytes(InputStream input, int maximum) {
             this.input = input;
@@ -273,13 +377,14 @@ public final class GitReadClient {
                     int remaining = maximum - bytes.size();
                     if (remaining > 0) {
                         bytes.write(buffer, 0, Math.min(read, remaining));
+                        captured = bytes.size();
                     }
                     if (read > remaining) {
                         exceeded = true;
                     }
                 }
             } catch (IOException exception) {
-                exceeded = true;
+                readFailed = true;
             }
         }
 

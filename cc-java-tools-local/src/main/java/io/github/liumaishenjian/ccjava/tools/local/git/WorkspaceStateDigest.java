@@ -41,7 +41,9 @@ import java.util.Objects;
  * @since 0.14.0
  */
 public final class WorkspaceStateDigest {
+    /** 单次摘要捕获允许枚举的最大路径条目数，超限失败关闭。 */
     public static final int MAX_ENTRIES = 100_000;
+    /** 单次摘要累计读取的文件内容字节上限，不是单文件大小豁免。 */
     public static final long MAX_FILE_BYTES = 512L * 1024L * 1024L;
     private static final String PROJECT_SESSION_DIRECTORY = ".cc-java/sessions";
 

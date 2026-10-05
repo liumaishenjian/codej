@@ -13,6 +13,7 @@ import io.github.liumaishenjian.ccjava.domain.PlanLifecyclePolicy;
 import io.github.liumaishenjian.ccjava.domain.PlanStep;
 import io.github.liumaishenjian.ccjava.domain.AgentMessage;
 import io.github.liumaishenjian.ccjava.domain.AssistantMessage;
+import io.github.liumaishenjian.ccjava.domain.ModelContinuation;
 import io.github.liumaishenjian.ccjava.domain.JsonObject;
 import io.github.liumaishenjian.ccjava.domain.RunId;
 import io.github.liumaishenjian.ccjava.domain.SessionId;
@@ -95,7 +96,7 @@ final class JsonlSessionCodec {
             if (node == null || !node.isObject()) {
                 throw invalid("INVALID_RECORD", "Session record 必须是 JSON Object");
             }
-            validateJsonShape(node);
+            validateJsonShape(node, true);
             return (ObjectNode) node;
         } catch (SessionOpenException known) {
             throw known;
@@ -162,7 +163,34 @@ final class JsonlSessionCodec {
             calls.add(callNode);
         }
         root.set("toolCalls", calls);
+        // 旧记录不写空字段；私有材料不进入 text、metadata 或系统提示。
+        message.continuation().ifPresent(value -> {
+            ObjectNode continuation = root.putObject("continuation");
+            continuation.put("backend", value.backend());
+            continuation.put("providerId", value.providerId());
+            continuation.put("modelId", value.modelId());
+            continuation.put("payload", value.payload());
+        });
         return root;
+    }
+
+    /** 只解释信封身份，不解析 payload；缺字段兼容旧记录，显式 null 不等于缺失。 */
+    private Optional<ModelContinuation> decodeContinuation(ObjectNode record) {
+        if (!record.has("continuation")) return Optional.empty();
+        ObjectNode node = requiredObject(record, "continuation");
+        Set<String> fields = Set.of("backend", "providerId", "modelId", "payload");
+        if (node.size() != fields.size()
+                || node.properties().stream().anyMatch(entry -> !fields.contains(entry.getKey())
+                        || !entry.getValue().isString())) {
+            throw invalid("INVALID_RECORD", "模型续接字段集合或类型无效");
+        }
+        try {
+            return Optional.of(new ModelContinuation(node.get("backend").stringValue(),
+                    node.get("providerId").stringValue(), node.get("modelId").stringValue(),
+                    node.get("payload").stringValue()));
+        } catch (IllegalArgumentException failure) {
+            throw invalid("INVALID_RECORD", "模型续接材料无效");
+        }
     }
 
     ObjectNode encodeToolResolved(
@@ -511,7 +539,7 @@ final class JsonlSessionCodec {
                         }
                         toolCalls.add(call);
                     }
-                    messages.add(new AssistantMessage(text, toolCalls));
+                    messages.add(new AssistantMessage(text, toolCalls, decodeContinuation(record)));
                 }
                 case "tool.resolved" -> {
                     requireActiveRun(record, activeRuns);
@@ -982,13 +1010,23 @@ final class JsonlSessionCodec {
     }
 
     private void validateJsonShape(JsonNode root) {
-        int visited = validateJsonShape(root, 1, 0);
+        validateJsonShape(root, false);
+    }
+
+    private void validateJsonShape(JsonNode root, boolean sessionRecord) {
+        // 仅 assistant 信封的 payload 允许任意严格 Unicode（包括转义 NUL）；
+        // 原有普通正文/工具 JSON 的字符保护不放宽。领域构造器负责该 opaque 值的字节预算。
+        JsonNode opaquePayload = sessionRecord && root.isObject()
+                && "assistant.appended".equals(root.path("recordType").asText())
+                && root.path("continuation").isObject()
+                ? root.path("continuation").get("payload") : null;
+        int visited = validateJsonShape(root, 1, 0, opaquePayload);
         if (visited > MAX_JSON_NODES) {
             throw invalid("LIMIT_EXCEEDED", "Session record JSON 节点过多");
         }
     }
 
-    private int validateJsonShape(JsonNode node, int depth, int visited) {
+    private int validateJsonShape(JsonNode node, int depth, int visited, JsonNode opaquePayload) {
         if (depth > MAX_JSON_DEPTH || visited >= MAX_JSON_NODES) {
             throw invalid("LIMIT_EXCEEDED", "Session record JSON 结构超过限制");
         }
@@ -1000,7 +1038,7 @@ final class JsonlSessionCodec {
             }
             for (Map.Entry<String, JsonNode> entry : object.properties()) {
                 checkedIdentifier(entry.getKey(), "JSON field");
-                count = validateJsonShape(entry.getValue(), depth + 1, count);
+                count = validateJsonShape(entry.getValue(), depth + 1, count, opaquePayload);
             }
         } else if (node.isArray()) {
             ArrayNode array = (ArrayNode) node;
@@ -1008,9 +1046,9 @@ final class JsonlSessionCodec {
                 throw invalid("LIMIT_EXCEEDED", "Session record JSON Array 条目过多");
             }
             for (JsonNode child : array) {
-                count = validateJsonShape(child, depth + 1, count);
+                count = validateJsonShape(child, depth + 1, count, opaquePayload);
             }
-        } else if (node.isString()) {
+        } else if (node.isString() && node != opaquePayload) {
             checkedText(node.stringValue(), "JSON string");
         }
         return count;

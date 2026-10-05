@@ -10,7 +10,27 @@
 
 开发统一使用 `G:\AI Cloud\cc-java` 的 `feat/tui-redesign` 分支；目录与分支说明见[单目录开发指南](docs/development-workspaces.md)。
 
-本分支已接通真实对话、工具审批、完整问卷及 /plan 确认执行。使用 scripts/StartCodejDev.ps1 --tui-next 启动；默认安装入口未替换。离线演示保留 preview:tui。完整路径、按键与验证限制见 [核心流程验收指南](docs/evidence/S15-tui-next-core.md)。
+本分支已接通真实对话、工具审批、完整问卷及 /plan 确认执行。使用 scripts/StartCodejDev.ps1 --tui-next 启动；默认安装入口未替换。新界面支持 `/login` 选择服务商与认证方式、`/logout` 选择账号后确认本机退出，兼容 `/connect`、`/auth`、`/models`。API Key 采用遮蔽输入和独立 Java stdin（单行可打印 ASCII，最多 16 KiB）；Windows 共享 Console 入口因真实 PTY 回显风险已禁用，独立 CLI Console 保留。ENV 只收变量名。可选 OpenRouter 浏览器组件需先运行 `npm.cmd --prefix cc-java-provider-pi ci --ignore-scripts`，仅源码启动器自动发现，不代表订阅登录或通用 OAuth 刷新。离线演示保留 preview:tui。完整路径、按键与验证限制见 [核心流程验收指南](docs/evidence/S15-tui-next-core.md)和[登录退出验证](docs/evidence/S15-login-logout.md)。
+
+## Pi 接入候选（未发布）
+
+本批开发位于 `G:\AI Cloud\cc-java-login-logout` / `feat/login-logout-integration`，不等于上文前端主分支或已安装版本。
+Pi 0.85.1 适配 `openai`、`openai-codex`、`deepseek`、`qwen-token-plan-cn`；Java仍掌握凭证、工具循环、权限、Session与重试，失败不转投兼容后端。
+当前已有四路SDK loopback编码/恢复/Fork/摘要、三路API Key公开CLI、两套TUI及安装版受控ConPTY证据。
+完整候选仍被standard clean中的Git启动OS错误5阻断，不能视为整体验收完成。
+Codex真实OAuth/账号及服务端Token硬上限未获验证，保存凭证不表示在线可用。
+若模型窗口不足以容纳已配置的输出保留与安全余量，会在请求前明确拒绝；需显式重选更大窗口模型或调整Context参数，不自动降低预算。
+
+本工作树的显式CLI示例（ENV只保存名称，模型ID从目录选择）：
+
+```powershell
+./scripts/StartCodejDev.ps1 auth login --backend pi --provider deepseek --profile default --auth-method API_KEY --from-env DEEPSEEK_API_KEY
+./scripts/StartCodejDev.ps1 models list --backend pi --provider deepseek
+```
+
+API Key管道输入另用 `--api-key-stdin`，不要把Key写在命令参数或Shell历史中。Pi默认模型需单独执行
+`models use --backend pi --provider … --profile default --auth-method API_KEY --model … --set-default`。
+省略`--backend`仍是原兼容路线；通义仅国内Token Plan，不是普通百炼。详见[ADR-100](docs/adr/ADR-100-s15-pi-provider-runtime.md)及[分层证据/差距](docs/evidence/S15-pi-provider-runtime.md)。
 
 ## 安装
 

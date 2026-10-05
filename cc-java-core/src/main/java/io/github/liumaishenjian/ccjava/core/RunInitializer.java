@@ -24,7 +24,10 @@ public interface RunInitializer {
      */
     void initialize(SessionId sessionId, RunId runId);
 
-    /** 返回不创建额外应用事实的默认初始化器。 */
+    /**
+     * 返回不创建额外应用事实的默认初始化器。
+     * @return 不执行工具、模型或持久化写入的无操作实现
+     */
     static RunInitializer noop() {
         return (ignoredSession, ignoredRun) -> { };
     }

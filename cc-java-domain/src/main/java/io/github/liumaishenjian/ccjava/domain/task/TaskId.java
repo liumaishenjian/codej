@@ -12,7 +12,10 @@ public record TaskId(long sequence) implements Comparable<TaskId> {
         if (sequence < 1) throw new IllegalArgumentException("Task sequence 必须大于 0");
     }
 
-    /** 返回稳定协议使用的安全文本身份。 */
+    /**
+     * 返回稳定协议使用的安全文本身份。
+     * @return 固定 task- 前缀与十进制正数序号组成的身份
+     */
     public String value() { return "task-" + sequence; }
 
     @Override public int compareTo(TaskId other) { return Long.compare(sequence, other.sequence); }

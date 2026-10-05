@@ -432,7 +432,7 @@ describe('reduceTuiState', () => {
     const task = {
       taskId: 'task-a', definitionId: 'e2e', status: 'running' as const, failure: 'none',
       modelTurns: 0, toolCalls: 0, estimatedTokens: 0, elapsedMillis: 1,
-      summary: '', verified: false, worktreeDisposition: undefined,
+      summary: '', verified: false, worktreeDisposition: undefined, cleanupStatus: 'unknown' as const,
     };
     let state = reduceTuiState({...initialTuiState, childTasks: [task]}, {
       type: 'event.received',

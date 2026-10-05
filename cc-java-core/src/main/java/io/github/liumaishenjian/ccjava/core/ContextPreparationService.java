@@ -13,6 +13,8 @@ import io.github.liumaishenjian.ccjava.domain.RunId;
 import io.github.liumaishenjian.ccjava.domain.SummaryOutcome;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -32,10 +34,9 @@ public final class ContextPreparationService {
     private final ContextSummarizer summarizer;
     private final ContextUsageObserver usageObserver;
     private final boolean enabled;
-    private final AtomicReference<InstalledProjection> installedProjection = new AtomicReference<>();
+    private final AtomicReference<InstalledProjection> installedProjection;
     private final ConcurrentMap<RunId, RunState> runs = new ConcurrentHashMap<>();
-    private final ConcurrentMap<io.github.liumaishenjian.ccjava.domain.SessionId, String> pendingExternalContext
-            = new ConcurrentHashMap<>();
+    private final ConcurrentMap<io.github.liumaishenjian.ccjava.domain.SessionId, String> pendingExternalContext;
 
     /**
      * 创建启用 C1-C4 的准备服务，默认不发布 Context Usage View。
@@ -62,6 +63,17 @@ public final class ContextPreparationService {
             ContextPreparationConfig config,
             ContextSummarizer summarizer,
             ContextUsageObserver usageObserver) {
+        this(config, summarizer, usageObserver, new AtomicReference<>(), new ConcurrentHashMap<>());
+    }
+
+    private ContextPreparationService(
+            ContextPreparationConfig config,
+            ContextSummarizer summarizer,
+            ContextUsageObserver usageObserver,
+            AtomicReference<InstalledProjection> installedProjection,
+            ConcurrentMap<io.github.liumaishenjian.ccjava.domain.SessionId, String> pendingExternalContext) {
+        this.installedProjection = Objects.requireNonNull(installedProjection, "installedProjection 不能为空");
+        this.pendingExternalContext = Objects.requireNonNull(pendingExternalContext, "pendingExternalContext 不能为空");
         this.config = Objects.requireNonNull(config, "config 不能为空");
         this.summarizer = Objects.requireNonNull(summarizer, "summarizer 不能为空");
         this.usageObserver = Objects.requireNonNull(usageObserver, "usageObserver 不能为空");
@@ -69,6 +81,14 @@ public final class ContextPreparationService {
     }
 
     private ContextPreparationService() {
+        this(new AtomicReference<>(), new ConcurrentHashMap<>());
+    }
+
+    private ContextPreparationService(
+            AtomicReference<InstalledProjection> installedProjection,
+            ConcurrentMap<io.github.liumaishenjian.ccjava.domain.SessionId, String> pendingExternalContext) {
+        this.installedProjection = installedProjection;
+        this.pendingExternalContext = pendingExternalContext;
         this.config = null;
         this.summarizer = null;
         this.usageObserver = ContextUsageObserver.noop();
@@ -85,33 +105,140 @@ public final class ContextPreparationService {
     }
 
     /**
-     * 在不发送 Gateway 请求的前提下构造一次显式 compact 的短生命周期候选。
+     * 将 Root 摘要端口显式绑定到当前模型作用域，保留容量及 Root 观察者。
+     *
+     * @param bound 本作用域的摘要端口
+     * @return 共享待消费上下文容器但拥有独立 Run 状态的新视图
+     */
+    public ContextPreparationService withSummarizer(ContextSummarizer bound) {
+        return withSummarizer(bound, Optional.empty(), OptionalLong.empty());
+    }
+
+    /**
+     * 重绑 Root 模型摘要；共享已安装 compact 和晚到外部上下文的容器，不复制快照。
+     *
+     * <p>新视图独占 Run 冷却和恢复状态，closeRun 不影响其他视图。声明窗口只能收窄，
+     * 输出保留和安全余量保持不变，剩余输入不足时拒绝创建；不会暗中扩大预算。</p>
+     *
+     * @param bound 本作用域的摘要端口
+     * @param modelId 可选目标模型标识
+     * @param declaredContextWindow 可选模型声明窗口
+     * @return 新 Root 视图；用户明确关闭 Context 时仍为 no-op
+     * @throws IllegalArgumentException 窗口非法或不足以容纳保留空间时
+     */
+    public ContextPreparationService withSummarizer(
+            ContextSummarizer bound, Optional<String> modelId, OptionalLong declaredContextWindow) {
+        Objects.requireNonNull(bound, "bound 不能为空");
+        Objects.requireNonNull(modelId, "modelId 不能为空");
+        Objects.requireNonNull(declaredContextWindow, "declaredContextWindow 不能为空");
+        if (!enabled) return new ContextPreparationService(installedProjection, pendingExternalContext);
+        return new ContextPreparationService(narrowConfig(modelId, declaredContextWindow), bound,
+                usageObserver, installedProjection, pendingExternalContext);
+    }
+
+    /**
+     * 创建独立子 Context，继承容量策略而不继承任何父状态或父 Usage 观察者。
+     *
+     * @param bound 子模型摘要端口
+     * @return 全部状态独立的子服务
+     */
+    public ContextPreparationService forkForChild(ContextSummarizer bound) {
+        return forkForChild(bound, Optional.empty(), OptionalLong.empty());
+    }
+
+    /**
+     * 按目标模型收窄子 Context；默认关闭子 Usage 旁路，避免污染父观察者。
+     *
+     * @param bound 子模型摘要端口
+     * @param modelId 可选目标模型标识
+     * @param declaredContextWindow 可选声明窗口，只能收窄
+     * @return 全部状态独立的子服务；父级明确 no-op 时保持 no-op
+     */
+    public ContextPreparationService forkForChild(
+            ContextSummarizer bound, Optional<String> modelId, OptionalLong declaredContextWindow) {
+        return forkForChild(bound, modelId, declaredContextWindow, ContextUsageObserver.noop());
+    }
+
+    /**
+     * 创建具有显式子观察者的独立 Context，不共享父 compact、外部上下文或 Run 状态。
+     *
+     * @param bound 子模型摘要端口
+     * @param modelId 可选目标模型标识
+     * @param declaredContextWindow 可选声明窗口，只能收窄且不削减保留空间
+     * @param childObserver 只接收该子服务 Usage 的旁路观察者
+     * @return 子服务；父级明确 no-op 时保持 no-op
+     * @throws IllegalArgumentException 窗口非法或保留空间耗尽输入时
+     */
+    public ContextPreparationService forkForChild(
+            ContextSummarizer bound, Optional<String> modelId, OptionalLong declaredContextWindow,
+            ContextUsageObserver childObserver) {
+        Objects.requireNonNull(bound, "bound 不能为空");
+        Objects.requireNonNull(modelId, "modelId 不能为空");
+        Objects.requireNonNull(declaredContextWindow, "declaredContextWindow 不能为空");
+        Objects.requireNonNull(childObserver, "childObserver 不能为空");
+        if (!enabled) return noop();
+        return new ContextPreparationService(narrowConfig(modelId, declaredContextWindow), bound, childObserver);
+    }
+
+    private ContextPreparationConfig narrowConfig(Optional<String> modelId, OptionalLong declaredContextWindow) {
+        ContextCapacity current = config.capacity();
+        long maximum = declaredContextWindow.isPresent()
+                ? Math.min(current.maximumInputTokens(), declaredContextWindow.getAsLong())
+                : current.maximumInputTokens();
+        // current 已通过容量不变量校验；仅分类正窗口收窄耗尽保留预算，不改写非法窗口语义。
+        if (declaredContextWindow.isPresent() && maximum > 0
+                && current.reservedOutputTokens() + current.safetyMarginTokens() >= maximum) {
+            throw new ModelContextBudgetException();
+        }
+        ContextCapacity narrowed = new ContextCapacity(modelId.orElse(current.modelId()), maximum,
+                current.reservedOutputTokens(), current.safetyMarginTokens());
+        return new ContextPreparationConfig(narrowed, config.largePayloadTokenThreshold(),
+                config.protectedMessageCount(), config.maxSummaryUtf8Bytes(), config.maxSummaryTokens());
+    }
+
+    /**
+     * 兼容旧调用方，仅提取消息并委托无 Run 身份的显式 compact。
+     *
+     * @param canonical 已组装的规范请求，不使用其 Run 或 Session 身份
+     * @param protectedAnchors 摘要 Gate 保护的锚点
+     * @param cancellationToken 协作式取消边界
+     * @return 类型化候选终态
+     */
+    public ExplicitCompactResult compact(
+            ModelRequest canonical, List<String> protectedAnchors, CancellationToken cancellationToken) {
+        return compact(Objects.requireNonNull(canonical, "canonical 不能为空").messages(),
+                protectedAnchors, cancellationToken);
+    }
+
+    /**
+     * 不执行普通 Agent 模型回合，仅通过摘要端口构造显式 compact 的短生命周期候选。
+     * <p>摘要端口可能请求模型，因此本操作不是无网络保证；预算、取消和来源绑定仍由宿主管理。</p>
      *
      * <p>每次调用先无条件执行确定性 C1/C2；显式请求即使 C1/C2 已满足预算，仍可在既有 Gate
      * 下尝试 C3/C4。调用方只可在 idle 生命周期边界将已采用候选安装给下一 Run 的首个模型请求；
      * 本方法每次创建独立 Guard，故不会把冷却或 revision 状态泄漏到普通 Run，也不会修改 Canonical
      * 或 durable Session。</p>
      *
-     * @param canonical 已组装的 Canonical 请求快照
+     * @param canonical Canonical 消息快照；此操作没有 Run 身份
      * @param protectedAnchors 已校验、仅供摘要 Gate 保护的锚点
      * @param cancellationToken 协作式取消边界
      * @return 不含正文的类型化候选终态
      */
     public ExplicitCompactResult compact(
-            ModelRequest canonical,
+            List<AgentMessage> canonical,
             List<String> protectedAnchors,
             CancellationToken cancellationToken) {
-        Objects.requireNonNull(canonical, "canonical 不能为空");
+        canonical = List.copyOf(Objects.requireNonNull(canonical, "canonical 不能为空"));
         protectedAnchors = List.copyOf(Objects.requireNonNull(protectedAnchors, "protectedAnchors 不能为空"));
         Objects.requireNonNull(cancellationToken, "cancellationToken 不能为空");
         if (!enabled) return new ExplicitCompactResult(ExplicitCompactStatus.UNAVAILABLE, java.util.Optional.empty());
         if (cancellationToken.isCancellationRequested()) {
             return new ExplicitCompactResult(ExplicitCompactStatus.CANCELLED, java.util.Optional.empty());
         }
-        int protectedCount = Math.min(config.protectedMessageCount(), canonical.messages().size());
-        long revision = canonical.messages().size();
+        int protectedCount = Math.min(config.protectedMessageCount(), canonical.size());
+        long revision = canonical.size();
         ProjectionRequest request = new ProjectionRequest(
-                canonical.messages(), config.capacity(), revision, protectedCount, true);
+                canonical, config.capacity(), revision, protectedCount, true);
         ContextTokenEstimator estimator = new CodePointContextTokenEstimator();
         DeterministicContextReducer reducer = new DeterministicContextReducer(
                 estimator, config.largePayloadTokenThreshold());
@@ -126,13 +253,13 @@ public final class ContextPreparationService {
                 && reduced.status() != ContextReductionStatus.CONTEXT_LIMIT_REACHED) {
             return new ExplicitCompactResult(ExplicitCompactStatus.REJECTED, java.util.Optional.empty());
         }
-        SummaryAttemptGuard guard = new SummaryAttemptGuard(new RunId("manual-compact-" + revision));
+        SummaryAttemptGuard guard = SummaryAttemptGuard.operationLocal();
         try (SummaryReductionCoordinator coordinator = new SummaryReductionCoordinator(summarizer, estimator, guard)) {
             SummaryReductionPolicy policy = new SummaryReductionPolicy(
                     rollingEnd(reduced.projection(), protectedCount), true, protectedAnchors, protectedAnchors,
                     config.maxSummaryUtf8Bytes(), config.maxSummaryTokens());
             SummaryOutcome outcome = coordinator.reduceExplicitly(
-                    new RunId("manual-compact-" + revision), request, reduced.projection(), policy, cancellationToken);
+                    request, reduced.projection(), policy, cancellationToken);
             if (cancellationToken.isCancellationRequested() || outcome.status() == SummaryOutcome.Status.CANCELLED) {
                 return new ExplicitCompactResult(ExplicitCompactStatus.CANCELLED, java.util.Optional.empty());
             }

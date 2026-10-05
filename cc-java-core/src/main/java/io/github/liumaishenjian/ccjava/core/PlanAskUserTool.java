@@ -38,7 +38,10 @@ public final class PlanAskUserTool implements AgentTool {
 
     private final UserQuestionHandler questions;
 
-    /** 绑定当前 Surface 的结构化交互端口。 */
+    /**
+     * 绑定当前 Surface 的结构化交互端口。
+     * @param questions 非空的用户回答端口，执行时传播取消令牌
+     */
     public PlanAskUserTool(UserQuestionHandler questions) {
         this.questions = Objects.requireNonNull(questions, "questions 不能为空");
     }

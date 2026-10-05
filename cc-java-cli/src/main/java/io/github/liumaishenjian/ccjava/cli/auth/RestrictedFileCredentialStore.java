@@ -120,20 +120,37 @@ public final class RestrictedFileCredentialStore implements CredentialStore {
     @Override
     public CredentialProfile saveStore(String provider, String profile, SecretMaterial secret,
                                        boolean setDefault, CancellationToken cancellation) {
+        return saveStoreInternal(provider, profile, secret, setDefault, -1, cancellation);
+    }
+
+    /** 在同一文件锁内恢复、读取并 CAS；负代次不能从公开 CAS 入口绕过校验。 */
+    @Override
+    public CredentialProfile saveStore(String provider, String profile, SecretMaterial secret,
+                                       boolean setDefault, long expectedGeneration, CancellationToken cancellation) {
+        try (secret) {
+            if (expectedGeneration < 0) throw failure(AUTH_TRANSACTION_CONFLICT, true);
+            return saveStoreInternal(provider, profile, secret, setDefault, expectedGeneration, cancellation);
+        }
+    }
+
+    private CredentialProfile saveStoreInternal(String provider, String profile, SecretMaterial secret,
+                                                boolean setDefault, long expected, CancellationToken cancellation) {
         Objects.requireNonNull(secret, "secret 不能为空");
+        try (secret) {
         return locked(cancellation, () -> {
             recover();
             Snapshot old = readIndex();
+            requireSaveGeneration(old, expected, cancellation);
             ensureCapacity(old, provider, profile);
             String newId = newSecretId();
             Optional<String> oldId = old.find(provider, profile).flatMap(RestrictedFileCredentialStore::storedId);
             char[] chars = secret.copyChars();
             try {
+                requireSaveGeneration(old, expected, cancellation);
                 writeSecret(newId, chars);
                 faults.after(CrashPoint.NEW_SECRET_DURABLE);
             } finally {
                 Arrays.fill(chars, '\0');
-                secret.close();
             }
             Txn txn = new Txn(Operation.SAVE, provider, profile, oldId, Optional.of(newId),
                     old.generation(), Phase.SECRET_DURABLE);
@@ -153,18 +170,34 @@ public final class RestrictedFileCredentialStore implements CredentialStore {
             cleanupOrphans(readIndex(), Set.of());
             return value;
         });
+        }
     }
 
     @Override
     public CredentialProfile saveEnv(String provider, String profile, String envName,
                                      boolean setDefault, CancellationToken cancellation) {
+        return saveEnvInternal(provider, profile, envName, setDefault, -1, cancellation);
+    }
+
+    /** 与 STORE 使用相同锁内 CAS；ENV 不读取或复制环境变量值。 */
+    @Override
+    public CredentialProfile saveEnv(String provider, String profile, String envName,
+                                     boolean setDefault, long expectedGeneration, CancellationToken cancellation) {
+        if (expectedGeneration < 0) throw failure(AUTH_TRANSACTION_CONFLICT, true);
+        return saveEnvInternal(provider, profile, envName, setDefault, expectedGeneration, cancellation);
+    }
+
+    private CredentialProfile saveEnvInternal(String provider, String profile, String envName,
+                                              boolean setDefault, long expected, CancellationToken cancellation) {
         return locked(cancellation, () -> {
             recover();
             Snapshot old = readIndex();
+            requireSaveGeneration(old, expected, cancellation);
             ensureCapacity(old, provider, profile);
             Optional<String> oldId = old.find(provider, profile).flatMap(RestrictedFileCredentialStore::storedId);
             Txn txn = new Txn(Operation.SAVE, provider, profile, oldId, Optional.empty(),
                     old.generation(), Phase.SECRET_DURABLE);
+            requireSaveGeneration(old, expected, cancellation);
             writeTxn(txn);
             faults.after(CrashPoint.JOURNAL_SECRET_DURABLE);
             Instant now = clock.instant();
@@ -212,6 +245,7 @@ public final class RestrictedFileCredentialStore implements CredentialStore {
             recover();
             Snapshot old = readIndex();
             if (old.generation() != expected) throw failure(AUTH_TRANSACTION_CONFLICT, true);
+            if (cancellation.isCancellationRequested()) throw failure(AUTH_CANCELLED, true);
             CredentialProfile target = old.find(provider, profile)
                     .orElseThrow(() -> failure(AUTH_PROFILE_UNKNOWN, false));
             Optional<String> oldId = storedId(target);
@@ -236,14 +270,28 @@ public final class RestrictedFileCredentialStore implements CredentialStore {
         });
     }
 
-    /** 以 generation CAS 原子保存最近 probe 的隐私安全摘要。 */
+    /** 兼容旧调用方的引用检查；异步探测必须改用绑定开始代次的重载。 */
     @Override
     public CredentialProfile saveProbe(String provider, String profile, CredentialProfile.ProbeRecord probe,
                                        SecretRef expectedSecretRef, CancellationToken cancellation) {
+        return saveProbeTransaction(provider, profile, probe, expectedSecretRef, -1, cancellation);
+    }
+
+    /** 锁内同时校验登录代次与引用；元数据更新本身不推进凭据代次。 */
+    @Override
+    public CredentialProfile saveProbe(String provider, String profile, CredentialProfile.ProbeRecord probe,
+                                       SecretRef expectedSecretRef, long expectedGeneration, CancellationToken cancellation) {
+        if (expectedGeneration < 0) throw new IllegalArgumentException("expectedGeneration不能为负");
+        return saveProbeTransaction(provider, profile, probe, expectedSecretRef, expectedGeneration, cancellation);
+    }
+
+    private CredentialProfile saveProbeTransaction(String provider, String profile, CredentialProfile.ProbeRecord probe,
+                                       SecretRef expectedSecretRef, long expectedGeneration, CancellationToken cancellation) {
         Objects.requireNonNull(probe, "probe 不能为空");
         return locked(cancellation, () -> {
             recover();
             Snapshot old = readIndex();
+            requireSaveGeneration(old, expectedGeneration, cancellation);
             CredentialProfile current = old.find(provider, profile)
                     .orElseThrow(() -> failure(AUTH_PROFILE_UNKNOWN, false));
             if (!current.secretRef().equals(expectedSecretRef)) throw failure(AUTH_TRANSACTION_CONFLICT, true);
@@ -256,6 +304,12 @@ public final class RestrictedFileCredentialStore implements CredentialStore {
             return updated;
         });
     }
+    /** -1 只供旧签名无条件写兼容；新应用入口必须使用非负代次。 */
+    private static void requireSaveGeneration(Snapshot old, long expected, CancellationToken cancellation) {
+        if (cancellation.isCancellationRequested()) throw failure(AUTH_CANCELLED, true);
+        if (expected >= 0 && old.generation() != expected) throw failure(AUTH_TRANSACTION_CONFLICT, true);
+    }
+
     private void recover() {
         Snapshot index = readIndexWithoutRecovery();
         Optional<Txn> pending = readTxn();

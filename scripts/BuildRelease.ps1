@@ -40,7 +40,9 @@ if ($out -eq $releaseRoot) {
 function Get-SourceDigest {
     $inputs = @(Get-ChildItem -LiteralPath $root -File -Recurse | Where-Object {
         $relative = [IO.Path]::GetRelativePath($root, $_.FullName).Replace('\','/')
-        ($relative -match '^(cc-java-[^/]+/src/(main|test)/|cc-java-tui/(src|test)/|scripts/).+') -and
+        ($relative -match '^(cc-java-[^/]+/src/(main|test)/|cc-java-tui/(src|test)/|scripts/).+' -or
+         $relative -match '^cc-java-provider-pi/([^/]+\.mjs|package(-lock)?\.json)$' -or
+         $relative -match '^(pom\.xml|cc-java-[^/]+/pom\.xml|cc-java-tui/package(-lock)?\.json|mvnw(\.cmd)?|\.mvn/wrapper/[^/]+)$') -and
         $relative -notmatch '(^|/)(target|dist|node_modules|\.claude)(/|$)' -and
         $relative -ne 'generate_henan_weather_xlsx.py'
     } | Sort-Object FullName)
@@ -54,10 +56,16 @@ function Get-SourceDigest {
         [Text.Encoding]::UTF8.GetBytes($accumulator.ToString()))).ToLowerInvariant()
 }
 
-function Get-TreeDigest([string]$Directory) {
+function Get-TreeDigest([string]$Directory, [switch]$Ordinal) {
     if (-not (Test-Path -LiteralPath $Directory -PathType Container)) { throw 'Compiled TUI directory missing' }
     $accumulator = [Text.StringBuilder]::new()
-    foreach ($file in (Get-ChildItem -LiteralPath $Directory -File -Recurse | Sort-Object FullName)) {
+    $files = @(Get-ChildItem -LiteralPath $Directory -File -Recurse -Force | Sort-Object FullName)
+    if ($Ordinal) {
+        $paths = [string[]]@($files.FullName)
+        [Array]::Sort($paths, [StringComparer]::Ordinal)
+        $files = @($paths | ForEach-Object { Get-Item -LiteralPath $_ -Force })
+    }
+    foreach ($file in $files) {
         $relative = [IO.Path]::GetRelativePath($Directory, $file.FullName).Replace('\','/')
         [void]$accumulator.Append($relative).Append(':').Append(
             (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant()).Append("`n")
@@ -95,11 +103,39 @@ if (-not $SkipTuiBuild) {
 }
 if (-not (Test-Path -LiteralPath $cli -PathType Leaf)) { throw 'CLI JAR missing' }
 if (-not (Test-Path -LiteralPath (Join-Path $tuiDirectory 'index.js') -PathType Leaf)) { throw 'Compiled TUI entry missing' }
+if (-not (Test-Path -LiteralPath (Join-Path $tuiDirectory 'pi-auth-cli.js') -PathType Leaf)) { throw 'Compiled Pi authentication CLI missing' }
 
+# Pi 只复制模块根的生产入口，不递归复制工作区、认证材料或测试 fixture。
+# 独立构建缓存允许 SkipBuild 对生产依赖闭包做身份复验；启动器永不安装依赖。
+$piRoot = Join-Path $root 'cc-java-provider-pi'
+$piDirectory = Join-Path $root 'target/pi-release-runtime'
+if (-not $SkipBuild) {
+    Remove-Item -LiteralPath $piDirectory -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Path $piDirectory -Force | Out-Null
+    foreach ($file in (Get-ChildItem -LiteralPath $piRoot -Filter '*.mjs' -File |
+            Where-Object Name -NotLike '*.test.mjs')) {
+        Copy-Item -LiteralPath $file.FullName -Destination $piDirectory
+    }
+    foreach ($name in @('package.json', 'package-lock.json')) {
+        Copy-Item -LiteralPath (Join-Path $piRoot $name) -Destination $piDirectory
+    }
+    $npm = if ($IsWindows) { 'npm.cmd' } else { 'npm' }
+    # Worker 不需要第三方 CLI shim；禁用 bin links 使跨平台 checksum 都只包含普通文件。
+    & $npm --prefix $piDirectory ci --omit=dev --ignore-scripts --no-audit --no-fund --bin-links=false
+    if ($LASTEXITCODE -ne 0) { throw 'Production Pi dependency installation failed' }
+}
+foreach ($name in @('worker.mjs', 'login.mjs', 'package.json', 'package-lock.json',
+        'node_modules/@earendil-works/pi-ai/package.json')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $piDirectory $name) -PathType Leaf)) {
+        throw "Pi runtime file missing: $name"
+    }
+}
+$piDigest = Get-TreeDigest $piDirectory -Ordinal
 $cliDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $cli).Hash.ToLowerInvariant()
 $tuiDigest = Get-TreeDigest $tuiDirectory
 if (($SkipBuild -and $priorAttestation.cliDigest -ne $cliDigest) `
-        -or ($SkipTuiBuild -and $priorAttestation.tuiDigest -ne $tuiDigest)) {
+        -or ($SkipTuiBuild -and $priorAttestation.tuiDigest -ne $tuiDigest) `
+        -or ($SkipBuild -and $priorAttestation.piDigest -ne $piDigest)) {
     throw 'Skipped build artifact identity mismatch; rebuild the Java and TUI artifacts'
 }
 [ordered]@{
@@ -108,6 +144,7 @@ if (($SkipBuild -and $priorAttestation.cliDigest -ne $cliDigest) `
     sourceDigest = $sourceDigest
     cliDigest = $cliDigest
     tuiDigest = $tuiDigest
+    piDigest = $piDigest
 } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $attestationPath -Encoding utf8NoBOM
 
 $runtimeDependencies = Join-Path $root 'cc-java-cli/target/release-dependency'
@@ -195,6 +232,9 @@ Copy-Item -LiteralPath (Join-Path $tuiRoot 'package-lock.json') -Destination $st
 $npm = if ($IsWindows) { 'npm.cmd' } else { 'npm' }
 & $npm --prefix $stagingTui ci --omit=dev --ignore-scripts --no-audit --no-fund
 if ($LASTEXITCODE -ne 0) { throw 'Production TUI dependency installation failed' }
+
+$stagingPi = Join-Path $staging 'pi'
+Copy-Item -LiteralPath $piDirectory -Destination $stagingPi -Recurse -Force
 
 if (-not [string]::IsNullOrWhiteSpace($JavaRuntimeDirectory)) {
     $source = [IO.Path]::GetFullPath($JavaRuntimeDirectory)
@@ -297,6 +337,39 @@ foreach ($packageName in @('ink', 'marked', 'react')) {
         purl = "pkg:npm/$([Uri]::EscapeDataString($packageName))@$([Uri]::EscapeDataString($package.version))"
     })
 }
+# 以 lockfile 的安装位置枚举实际生产包，包括传递与可选依赖；不列入未安装的平台包。
+$piLock = Get-Content -LiteralPath (Join-Path $stagingPi 'package-lock.json') -Raw |
+    ConvertFrom-Json -Depth 100 -AsHashtable
+foreach ($entry in $piLock.packages.GetEnumerator() | Sort-Object Key) {
+    if ($entry.Key -eq '') { continue }
+    $packagePath = [IO.Path]::GetFullPath((Join-Path $stagingPi $entry.Key))
+    $piPrefix = [IO.Path]::GetFullPath($stagingPi) + [IO.Path]::DirectorySeparatorChar
+    if (-not $packagePath.StartsWith($piPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+            $entry.Key -notmatch '^node_modules/') { throw 'Pi lockfile path escaped runtime' }
+    $metadataPath = Join-Path $packagePath 'package.json'
+    if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) {
+        if ($entry.Value.dev -or $entry.Value.optional) { continue }
+        throw "Pi production dependency missing: $($entry.Key)"
+    }
+    $package = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json -AsHashtable
+    if ($entry.Value.dev -or [string]::IsNullOrWhiteSpace($package.name) -or
+            [string]::IsNullOrWhiteSpace($package.version) -or $package.version -cne $entry.Value.version) {
+        throw "Pi production dependency metadata mismatch: $($entry.Key)"
+    }
+    $component = [ordered]@{
+        type = 'library'
+        name = $package.name
+        version = $package.version
+        purl = "pkg:npm/$([Uri]::EscapeDataString($package.name))@$([Uri]::EscapeDataString($package.version))"
+        properties = @([ordered]@{ name = 'codej:installation-path'; value = "pi/$($entry.Key)" })
+    }
+    # 只记录声明的许可文本，不推断再分发权；包自带许可证随整个目录保留。
+    $license = if ($package.license -is [string]) { $package.license } else { $entry.Value.license }
+    if ($license -is [string] -and -not [string]::IsNullOrWhiteSpace($license)) {
+        $component.licenses = @([ordered]@{ license = [ordered]@{ name = $license } })
+    }
+    $componentList.Add($component)
+}
 $sbom = [ordered]@{
     bomFormat = 'CycloneDX'
     specVersion = '1.6'
@@ -316,13 +389,15 @@ $sbom = [ordered]@{
 $sbom | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $staging 'sbom.cdx.json') -Encoding utf8NoBOM
 
 # staging 必须再次对账受控 build attestation，复制不能改变被证明的产物身份。
+if ((Get-SourceDigest) -ne $sourceDigest) { throw 'Source identity changed during release build' }
 $stagedCliDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $staging 'app/cc-java-cli.jar')).Hash.ToLowerInvariant()
 $stagedTuiDigest = Get-TreeDigest (Join-Path $staging 'tui/dist/src')
-if ($stagedCliDigest -ne $cliDigest -or $stagedTuiDigest -ne $tuiDigest) {
+$stagedPiDigest = Get-TreeDigest $stagingPi -Ordinal
+if ($stagedCliDigest -ne $cliDigest -or $stagedTuiDigest -ne $tuiDigest -or $stagedPiDigest -ne $piDigest) {
     throw 'Staged artifacts do not match the build attestation'
 }
 
-$artifactFiles = Get-ChildItem -LiteralPath $staging -File -Recurse |
+$artifactFiles = Get-ChildItem -LiteralPath $staging -File -Recurse -Force |
     Where-Object Name -ne 'SHA256SUMS' |
     Sort-Object FullName
 $manifest = [ordered]@{
@@ -330,13 +405,14 @@ $manifest = [ordered]@{
     version = $Version
     platform = $Platform
     product = 'codej'
-    build = [ordered]@{ currentCommit = $commit; sourceDigest = $sourceDigest; cliDigest = $cliDigest; tuiDigest = $tuiDigest }
+    build = [ordered]@{ currentCommit = $commit; sourceDigest = $sourceDigest; cliDigest = $cliDigest; tuiDigest = $tuiDigest; piDigest = $piDigest }
     entrypoint = $(if ($Platform -eq 'windows-x64') { 'codej.cmd' } else { 'codej' })
     compatibility = [ordered]@{
         protocolMajors=@(0,1)
         sessionExportMajor=1
         minimumJava=21
         minimumNode=22
+        minimumNodeVersion='22.19.0'
     }
     # 当前尚未写 manifest 与 SHA256SUMS，因此最终总数需加二。
     artifacts = $artifactFiles.Count + 2
@@ -345,7 +421,7 @@ $manifest = [ordered]@{
 $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $staging 'release-manifest.json') -Encoding utf8NoBOM
 
 # Manifest 与 SBOM 均写入后再计算 checksum；SHA256SUMS 自身不自引用。
-$checksumFiles = Get-ChildItem -LiteralPath $staging -File -Recurse |
+$checksumFiles = Get-ChildItem -LiteralPath $staging -File -Recurse -Force |
     Where-Object Name -ne 'SHA256SUMS' |
     Sort-Object FullName
 $checksums = foreach ($file in $checksumFiles) {

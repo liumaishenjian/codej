@@ -1,3 +1,4 @@
+import {authRows} from './auth-screen.js';
 import stringWidth from 'string-width';
 import {glyphs} from './editor.js';
 import type {Draft} from './editor.js';
@@ -10,7 +11,7 @@ export interface RuntimeUi {
   editing: boolean; key: string; expanded: boolean; scroll: number; panelScroll: number; recall: number; history: string[]; saved: Draft;
 }
 export const newRuntimeUi = (): RuntimeUi => ({draft: emptyDraft(), feedback: emptyDraft(), focus: 0, question: 0, answers: {}, free: {}, editing: false, key: '', expanded: false, scroll: 0, panelScroll: 0, recall: -1, history: [], saved: emptyDraft()});
-export const runtimeCommands = ['/plan', '/help'];
+export const runtimeCommands = ['/plan', '/help', '/login', '/logout', '/connect', '/auth', '/models'];
 export function questionAnswers(panel: QuestionsPanel, ui: RuntimeUi): Answer[] {
   return panel.questions.map(q => ui.answers[q.id] ?? {questionId: q.id, optionIds: [], freeText: ''});
 }
@@ -34,7 +35,7 @@ function toolTitle(tool: ToolRecord): string {
 function failure(tool: ToolRecord): string {
   return (({permission_denied: '操作已被拒绝', invalid_arguments: '工具参数无效', plan_gate_blocked: '计划尚未满足审核条件', timeout: '操作超时', cancelled: '已取消'} as Record<string, string>)[tool.failure] ?? tool.failure) || '工具执行失败';
 }
-export function runtimeFrame(state: RuntimeSnapshot, ui: RuntimeUi, width: number, height: number, now = Date.now()): {rows: Row[]; total: number; maxScroll: number; maxPanelScroll: number} {
+export function runtimeFrame(state: RuntimeSnapshot, ui: RuntimeUi, width: number, height: number, now = Date.now(), authorizationUrl?: string): {rows: Row[]; total: number; maxScroll: number; maxPanelScroll: number} {
   const body = writer(Math.max(12, width)), panel = writer(Math.max(12, width)), detail = writer(Math.max(12, width));
   const muted = (text: string) => [span(text, palette.muted)];
   const rule = () => panel.add(muted('─'.repeat(width)));
@@ -99,7 +100,9 @@ export function runtimeFrame(state: RuntimeSnapshot, ui: RuntimeUi, width: numbe
   }
   const pending = state.pending;
   let fixed: Row[] = []; let maxPanelScroll = 0;
-  if (pending?.kind === 'approval') {
+  if (state.auth) {
+    panel.rows.push(...authRows(state.auth, width, height, authorizationUrl));
+  } else if (pending?.kind === 'approval') {
     detail.add([span(pending.command ? ' ' + (pending.shell || '命令审批') : ' 操作审批', undefined, true)]); detail.blank();
     if (pending.command) {detail.add('  ' + pending.command); detail.add(muted('  目录：' + pending.directory));}
     else {detail.add('  ' + pending.tool + (pending.target ? ' · ' + pending.target : '')); if (pending.operation) detail.add(muted('  ' + pending.operation));}
@@ -173,6 +176,6 @@ export function runtimeFrame(state: RuntimeSnapshot, ui: RuntimeUi, width: numbe
   if (top > 0 || ui.scroll > 0) visible.unshift(...lines(muted(ui.scroll ? '↑ 回看中 · End 返回最新' : '↑ 更早内容 · PgUp 回看'), width));
   return {rows: [...visible, ...fixed].slice(-height), total: body.rows.length, maxScroll: maximum, maxPanelScroll};
 }
-export function RuntimeScreen({state, ui, columns, rows, now}: {state: RuntimeSnapshot; ui: RuntimeUi; columns: number; rows: number; now: number}) {
-  return <RowView columns={columns} rows={runtimeFrame(state, ui, columns, rows, now).rows}/>;
+export function RuntimeScreen({state, ui, columns, rows, now, authorizationUrl}: {state: RuntimeSnapshot; ui: RuntimeUi; columns: number; rows: number; now: number; authorizationUrl?: string}) {
+  return <RowView columns={columns} rows={runtimeFrame(state, ui, columns, rows, now, authorizationUrl).rows}/>;
 }

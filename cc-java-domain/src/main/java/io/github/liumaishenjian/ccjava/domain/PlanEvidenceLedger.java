@@ -67,7 +67,13 @@ public record PlanEvidenceLedger(SessionId sessionId, String planId, long approv
         }
     }
 
-    /** 创建尚未批准、只含声明的 Ledger。 */
+    /**
+     * 创建尚未批准、尚无要求或引用的 Ledger。
+     * @param sessionId 所属 Session 身份
+     * @param planId 所属计划身份
+     * @param now 创建时间
+     * @return 未绑定执行交接的空账本
+     */
     public static PlanEvidenceLedger planning(SessionId sessionId, String planId, Instant now) {
         return new PlanEvidenceLedger(sessionId, planId, 0, "", "", List.of(), List.of(), now, now);
     }
@@ -77,6 +83,9 @@ public record PlanEvidenceLedger(SessionId sessionId, String planId, long approv
      *
      * <p>相同 {@code requirementId} 表示同一逻辑要求。完全相同的重复声明幂等返回；内容变化时
      * 原位替换，允许模型纠正 locator、label 或 required，而不会累计重复项或突破数量上限。</p>
+     * @param requirement 待声明或替换的非空要求
+     * @param now 本次更新时间，早于已有时间时取已有时间
+     * @return 更新后的不可变账本；完全相同声明返回当前实例
      */
     public PlanEvidenceLedger declare(PlanEvidenceRequirement requirement, Instant now) {
         if (approvedPlanRevision != 0) throw new IllegalStateException("批准后不能修改证据要求");
@@ -106,14 +115,26 @@ public record PlanEvidenceLedger(SessionId sessionId, String planId, long approv
                 createdAt, monotonic(now));
     }
 
-    /** 在批准原子提交中固定 ExecutionBrief 与 Workspace revision。 */
+    /**
+     * 在批准原子提交中固定 ExecutionBrief 与 Workspace revision。
+     * @param planRevision 正数的获批计划修订号
+     * @param briefDigest 执行交接的 SHA-256 摘要
+     * @param workspaceDigest 审批时工作区的 SHA-256 摘要
+     * @param now 绑定时间，保持账本更新时间单调
+     * @return 首次绑定后的不可变账本；重复绑定抛出异常
+     */
     public PlanEvidenceLedger bind(long planRevision, String briefDigest, String workspaceDigest, Instant now) {
         if (approvedPlanRevision != 0 || planRevision < 1) throw new IllegalStateException("Ledger 已绑定或 revision 无效");
         return new PlanEvidenceLedger(sessionId, planId, planRevision, briefDigest, workspaceDigest,
                 requirements, references, createdAt, monotonic(now));
     }
 
-    /** 由确定性验证器写入或替换单项引用。 */
+    /**
+     * 由确定性验证器写入或替换单项引用。
+     * @param reference 对应已声明要求的非空引用
+     * @param now 记录时间，保持账本更新时间单调
+     * @return 替换该要求引用后的已绑定账本；不修改要求声明
+     */
     public PlanEvidenceLedger record(PlanEvidenceReference reference, Instant now) {
         if (approvedPlanRevision == 0) throw new IllegalStateException("未批准 Ledger 不能记录证据");
         ArrayList<PlanEvidenceReference> next = new ArrayList<>(references);
@@ -123,7 +144,10 @@ public record PlanEvidenceLedger(SessionId sessionId, String planId, long approv
                 approvedWorkspaceDigest, requirements, next, createdAt, monotonic(now));
     }
 
-    /** required 项全部 PASS 或显式 SKIP 时才允许完成，且至少声明一项 required evidence。 */
+    /**
+     * required 项全部 PASS 或显式 SKIP 时才允许完成，且至少声明一项 required evidence。
+     * @return 存在必需项且每项都有通过或跳过引用时为 true；不检查任务板完成情况
+     */
     public boolean completionSatisfied() {
         List<PlanEvidenceRequirement> required = requirements.stream().filter(PlanEvidenceRequirement::required).toList();
         if (required.isEmpty()) return false;
@@ -135,7 +159,10 @@ public record PlanEvidenceLedger(SessionId sessionId, String planId, long approv
         });
     }
 
-    /** 返回第一个阻止完成的稳定 requirement ID。 */
+    /**
+     * 返回第一个阻止完成的稳定 requirement ID。
+     * @return 按声明顺序的阻塞身份；无必需声明时为固定缺失标记，全部满足时为空
+     */
     public Optional<String> firstBlockingRequirement() {
         Map<String, PlanEvidenceStatus> status = new LinkedHashMap<>();
         references.forEach(reference -> status.put(reference.requirementId(), reference.status()));

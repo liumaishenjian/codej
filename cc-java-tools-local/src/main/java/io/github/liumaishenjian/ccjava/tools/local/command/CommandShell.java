@@ -134,6 +134,7 @@ public enum CommandShell {
     public record ProcessInvocation(
             List<String> arguments,
             Map<String, String> environment) {
+        /** 冻结参数与环境，防止审批后的启动事实被可变集合改写。 */
         public ProcessInvocation {
             arguments = List.copyOf(arguments);
             environment = Map.copyOf(environment);

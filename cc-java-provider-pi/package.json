@@ -1,0 +1,9 @@
+{
+  "name": "@codej/provider-pi",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "scripts": { "test": "node --test" },
+  "dependencies": { "@earendil-works/pi-ai": "0.85.1" }
+}

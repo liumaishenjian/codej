@@ -3,9 +3,12 @@ package io.github.liumaishenjian.ccjava.core.subagent;
 import io.github.liumaishenjian.ccjava.core.CancellationSource;
 import io.github.liumaishenjian.ccjava.core.CancellationToken;
 import io.github.liumaishenjian.ccjava.domain.AgentLimits;
+import io.github.liumaishenjian.ccjava.domain.ResourceCleanupStatus;
 import io.github.liumaishenjian.ccjava.domain.AgentRunRequest;
 import io.github.liumaishenjian.ccjava.domain.AgentRunResult;
 import io.github.liumaishenjian.ccjava.domain.StopReason;
+import io.github.liumaishenjian.ccjava.domain.SessionId;
+import io.github.liumaishenjian.ccjava.domain.RunId;
 import io.github.liumaishenjian.ccjava.domain.UserMessage;
 import io.github.liumaishenjian.ccjava.domain.subagent.*;
 import java.time.Clock;
@@ -47,6 +50,7 @@ public final class AgentSupervisor implements AutoCloseable {
     private final ConcurrentMap<ChildTaskId, ChildTaskHandle> recoveredTasks = new ConcurrentHashMap<>();
     private final AtomicLong sequence = new AtomicLong();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final Object admissionLock = new Object();
     private final java.util.function.Consumer<String> parentContextSink;
     private final int maxDepth;
 
@@ -135,25 +139,72 @@ public final class AgentSupervisor implements AutoCloseable {
      * @throws RejectedExecutionException 队列、深度、定义、Hook 或预算拒绝时
      */
     public ChildTaskHandle submit(ChildTaskRequest request, CancellationToken parentCancellation) {
+        if (scopeFactory.requiresParentIdentity()) {
+            throw new RejectedExecutionException("子运行来源要求可信父身份");
+        }
+        return submitPrepared(null, null, request, parentCancellation);
+    }
+
+    /**
+     * 在提交线程捕获真实父 Run 来源，然后预留预算并入队。
+     *
+     * <p>父身份来自 ToolInvocation，而不是模型参数；准备阶段不得取得 lease 或启动进程。
+     * 关闭与入队共用 fence，捕获或拒绝失败不留下预算及父取消订阅。</p>
+     * @param parentSessionId 可信父 Session
+     * @param parentRunId 可信父 Run
+     * @param request 已受父级 ceiling 约束的请求
+     * @param parentCancellation 父 Run 取消信号
+     * @return 可检查、等待、精确取消的子任务句柄
+     */
+    public ChildTaskHandle submit(SessionId parentSessionId, RunId parentRunId,
+            ChildTaskRequest request, CancellationToken parentCancellation) {
+        Objects.requireNonNull(parentSessionId); Objects.requireNonNull(parentRunId);
+        return submitPrepared(parentSessionId, parentRunId, request, parentCancellation);
+    }
+
+    private ChildTaskHandle submitPrepared(SessionId parentSessionId, RunId parentRunId,
+            ChildTaskRequest request, CancellationToken parentCancellation) {
         Objects.requireNonNull(request); Objects.requireNonNull(parentCancellation);
         if (closed.get()) throw new RejectedExecutionException("Supervisor 已关闭");
         if (request.depth() > maxDepth) throw new RejectedExecutionException("委托深度超过上限");
         AgentDefinitionSnapshot original = catalog.find(request.definitionId())
                 .orElseThrow(() -> new RejectedExecutionException("Agent definition 不存在"));
         AgentDefinitionSnapshot definition = validateNarrowing(original, narrower.narrow(original, request), request);
+        if (parentCancellation.isCancellationRequested()) throw new RejectedExecutionException("父 Run 已取消");
+        PreparedChildRuntime prepared = Objects.requireNonNull(scopeFactory.prepare(
+                parentSessionId, parentRunId, definition, request, parentCancellation), "prepare 返回 null");
         ChildBudgetLedger.Reservation reservation = ledger.reserve(request.requestedBudget())
                 .orElseThrow(() -> new RejectedExecutionException("父预算不足"));
-        ChildTaskId id = new ChildTaskId("task-" + Long.toUnsignedString(sequence.incrementAndGet(), 36));
-        Task task = new Task(id, definition, request, reservation, parentCancellation, clock.instant());
-        tasks.put(id, task);
+        Task task = null;
         try {
-            journal.requested(id);
-            workers.execute(task);
-            return task;
-        } catch (RuntimeException failure) {
-            tasks.remove(id, task); reservation.close();
+            ChildTaskId id = new ChildTaskId("task-" + Long.toUnsignedString(sequence.incrementAndGet(), 36));
+            task = new Task(id, definition, request, prepared, reservation, parentCancellation, clock.instant());
+            task.registerParent();
+            synchronized (admissionLock) {
+                if (closed.get() || parentCancellation.isCancellationRequested()
+                        || task.cancellation.token().isCancellationRequested()) {
+                    throw new RejectedExecutionException("Supervisor 已关闭或父 Run 已取消");
+                }
+                tasks.put(id, task);
+                journal.requested(id);
+                if (closed.get() || task.cancellation.token().isCancellationRequested()) {
+                    throw new RejectedExecutionException("子任务提交已取消");
+                }
+                workers.execute(task);
+            }
+        } catch (RuntimeException | Error failure) {
+            if (task != null) tasks.remove(task.id, task);
+            try {
+                if (task != null) task.parentRegistration.close();
+            } finally {
+                reservation.close();
+            }
+            if (failure instanceof Error error) throw error;
             throw new RejectedExecutionException("子任务队列已满或 journal 不可用", failure);
         }
+        // 父取消可能发生在 execute 前，届时 remove 尚找不到等待项；接受后补收敛，不再回滚预算。
+        if (task.cancellation.token().isCancellationRequested()) task.cancel();
+        return task;
     }
 
     /**
@@ -189,7 +240,7 @@ public final class AgentSupervisor implements AutoCloseable {
         if (!original.id().equals(narrowed.id()) || !original.contentDigest().equals(narrowed.contentDigest())
                 || !original.visibleTools().containsAll(narrowed.visibleTools())
                 || !narrowed.visibleTools().containsAll(request.requestedTools())
-                || !original.modelName().equals(narrowed.modelName())
+                || !original.modelOverride().equals(narrowed.modelOverride())
                 || !permissionWithin(narrowed.permissionCeiling(), original.permissionCeiling())
                 || !within(narrowed.budget(), original.budget()) || !within(request.requestedBudget(), narrowed.budget())) {
             throw new RejectedExecutionException("Agent Hook 或委托企图放宽 scope");
@@ -210,33 +261,86 @@ public final class AgentSupervisor implements AutoCloseable {
     }
 
     @Override public void close() {
-        if (!closed.compareAndSet(false, true)) return;
-        tasks.values().forEach(Task::cancel);
-        workers.shutdownNow(); notifications.shutdown();
+        synchronized (admissionLock) {
+            if (!closed.compareAndSet(false, true)) return;
+            tasks.values().forEach(Task::cancel);
+            workers.shutdownNow(); notifications.shutdown();
+        }
         try { workers.awaitTermination(5, TimeUnit.SECONDS); notifications.awaitTermination(2, TimeUnit.SECONDS); }
         catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+    }
+
+    /**
+     * 合并任务与来源取消；每次订阅只通知一次，关闭时解除两个上游注册。
+     * 剩余时间取所有已声明值的最小值，不把缺省当作零或覆盖较短期限。
+     * @param task Supervisor 自有任务取消
+     * @param startup 捕获来源提供的启动取消
+     * @return 不拥有上游取消源、每次注册独立收敛的合成 Token
+     */
+    static CancellationToken combineCancellation(CancellationToken task, CancellationToken startup) {
+        Objects.requireNonNull(task); Objects.requireNonNull(startup);
+        return new CancellationToken() {
+            @Override public boolean isCancellationRequested() {
+                return task.isCancellationRequested() || startup.isCancellationRequested();
+            }
+            @Override public Registration onCancellation(Runnable action) {
+                Objects.requireNonNull(action);
+                AtomicBoolean resolved = new AtomicBoolean();
+                Runnable once = () -> { if (resolved.compareAndSet(false, true)) action.run(); };
+                Registration first = task.onCancellation(once);
+                Registration second;
+                try {
+                    second = startup.onCancellation(once);
+                } catch (RuntimeException | Error failure) {
+                    resolved.set(true);
+                    first.close();
+                    throw failure;
+                }
+                AtomicBoolean released = new AtomicBoolean();
+                return () -> {
+                    if (!released.compareAndSet(false, true)) return;
+                    resolved.set(true);
+                    try { first.close(); } finally { second.close(); }
+                };
+            }
+            @Override public java.util.Optional<Duration> remainingTime() {
+                java.util.Optional<Duration> left = task.remainingTime();
+                java.util.Optional<Duration> right = startup.remainingTime();
+                if (left.isEmpty()) return right;
+                if (right.isEmpty()) return left;
+                return java.util.Optional.of(left.orElseThrow().compareTo(right.orElseThrow()) <= 0
+                        ? left.orElseThrow() : right.orElseThrow());
+            }
+        };
     }
 
     private final class Task implements Runnable, ChildTaskHandle {
         private final ChildTaskId id; private final AgentDefinitionSnapshot definition;
         private final ChildTaskRequest request; private final ChildBudgetLedger.Reservation reservation;
         private final CancellationToken parent; private final CancellationSource cancellation = new CancellationSource();
-        private final CancellationToken.Registration parentRegistration;
+        private final PreparedChildRuntime prepared;
+        private CancellationToken.Registration parentRegistration = () -> { };
         private final Instant submitted; private final CountDownLatch terminalLatch = new CountDownLatch(1);
         private final AtomicReference<ChildTaskReport> report;
+        // 只保存值快照，不保留 scope、Runtime 或探针作为后续查询入口。
+        private final AtomicReference<ResourceCleanupStatus> cleanupStatus =
+                new AtomicReference<>(ResourceCleanupStatus.NOT_STARTED);
         private final AtomicBoolean terminal = new AtomicBoolean();
         private volatile Thread runner;
         private volatile boolean started;
 
         private Task(ChildTaskId id, AgentDefinitionSnapshot definition, ChildTaskRequest request,
-                ChildBudgetLedger.Reservation reservation, CancellationToken parent, Instant submitted) {
+                PreparedChildRuntime prepared, ChildBudgetLedger.Reservation reservation,
+                CancellationToken parent, Instant submitted) {
             this.id=id; this.definition=definition; this.request=request; this.reservation=reservation;
-            this.parent=parent; this.submitted=submitted;
+            this.prepared=prepared; this.parent=parent; this.submitted=submitted;
             report = new AtomicReference<>(report(ChildTaskStatus.QUEUED, ChildTaskFailureCode.NONE, 0, 0, "queued", false));
-            parentRegistration = parent.onCancellation(this::cancel);
+        }
+        private void registerParent() {
+            parentRegistration = Objects.requireNonNull(parent.onCancellation(this::cancel));
         }
         @Override public ChildTaskId id() { return id; }
-        @Override public ChildTaskReport inspect() { return report.get(); }
+        @Override public ChildTaskReport inspect() { return report.get().withCleanupStatus(cleanupStatus.get()); }
         @Override public ChildTaskReport await(Duration timeout) throws InterruptedException {
             if (!terminalLatch.await(timeout.toMillis(), TimeUnit.MILLISECONDS)) return inspect();
             return inspect();
@@ -244,7 +348,10 @@ public final class AgentSupervisor implements AutoCloseable {
         @Override public boolean cancel() {
             boolean first = cancellation.cancel();
             Thread current = runner; if (current != null) current.interrupt();
-            if (workers.remove(this)) finish(ChildTaskStatus.CANCELLED, ChildTaskFailureCode.CANCELLED, 0, 0, "cancelled", false);
+            if (workers.remove(this)) {
+                cleanupStatus.set(ResourceCleanupStatus.RELEASED);
+                finish(ChildTaskStatus.CANCELLED, ChildTaskFailureCode.CANCELLED, 0, 0, "cancelled", false);
+            }
             return first;
         }
         @Override public java.util.Optional<String> keepWorktree() {
@@ -256,11 +363,13 @@ public final class AgentSupervisor implements AutoCloseable {
         @Override public void run() {
             runner = Thread.currentThread();
             started = true;
-            if (parent.isCancellationRequested() || cancellation.token().isCancellationRequested()) {
-                finish(ChildTaskStatus.CANCELLED, ChildTaskFailureCode.CANCELLED, 0, 0, "cancelled", false); return;
-            }
-            report.set(report(ChildTaskStatus.STARTING, ChildTaskFailureCode.NONE, 0, 0, "starting", false));
+            ChildRuntimeScope scope = null;
             try {
+                if (parent.isCancellationRequested() || cancellation.token().isCancellationRequested()) {
+                    cleanupStatus.set(ResourceCleanupStatus.RELEASED);
+                    finish(ChildTaskStatus.CANCELLED, ChildTaskFailureCode.CANCELLED, 0, 0, "cancelled", false); return;
+                }
+                report.set(report(ChildTaskStatus.STARTING, ChildTaskFailureCode.NONE, 0, 0, "starting", false));
                 java.util.Optional<String> startContext = taskLifecycle.beforeStart(request, cancellation.token());
                 ChildTaskRequest effectiveRequest = startContext.map(context -> new ChildTaskRequest(
                         request.delegationId(), request.definitionId(), request.prompt()
@@ -269,27 +378,51 @@ public final class AgentSupervisor implements AutoCloseable {
                         request.requestedTools(), request.requestedBudget(), request.background(), request.depth(),
                         request.worktree(), request.taskScope())).orElse(request);
                 journal.started(id);
-                try (ChildRuntimeScope scope = scopeFactory.create(definition, effectiveRequest, cancellation.token())) {
-                    report.set(report(ChildTaskStatus.RUNNING, ChildTaskFailureCode.NONE, 0, 0, "running", false));
-                    AgentRunResult result = scope.runtime().run(scope.sessionId(), new AgentRunRequest(
-                            new UserMessage(effectiveRequest.prompt()), new AgentLimits(request.requestedBudget().modelTurns(),
-                            request.requestedBudget().toolCalls(), request.requestedBudget().duration())));
-                    boolean cancelled = cancellation.token().isCancellationRequested() || parent.isCancellationRequested()
-                            || result.stopReason() == StopReason.USER_CANCELLED;
-                    finish(cancelled ? ChildTaskStatus.CANCELLED : result.stopReason() == StopReason.COMPLETED
-                                    ? ChildTaskStatus.SUCCEEDED : ChildTaskStatus.FAILED,
-                            cancelled ? ChildTaskFailureCode.CANCELLED : result.stopReason() == StopReason.COMPLETED
-                                    ? ChildTaskFailureCode.NONE : ChildTaskFailureCode.RUNTIME_FAILED,
-                            result.modelTurns(), result.toolCalls(), safeSummary(result), true,
-                            scope.worktreeDisposition().get());
+                scope = Objects.requireNonNull(prepared.create(effectiveRequest, cancellation.token()));
+                report.set(report(ChildTaskStatus.RUNNING, ChildTaskFailureCode.NONE, 0, 0, "running", false));
+                AgentRunResult result = scope.runtime().run(scope.sessionId(), new AgentRunRequest(
+                        new UserMessage(effectiveRequest.prompt()), new AgentLimits(request.requestedBudget().modelTurns(),
+                        request.requestedBudget().toolCalls(), request.requestedBudget().duration())),
+                        scope.initializer(), combineCancellation(cancellation.token(), scope.startupCancellation()));
+                cleanupStatus.set(ResourceCleanupStatus.CLEANING);
+                boolean cancelled = cancellation.token().isCancellationRequested() || parent.isCancellationRequested()
+                        || result.stopReason() == StopReason.USER_CANCELLED;
+                finish(cancelled ? ChildTaskStatus.CANCELLED : result.stopReason() == StopReason.COMPLETED
+                                ? ChildTaskStatus.SUCCEEDED : ChildTaskStatus.FAILED,
+                        cancelled ? ChildTaskFailureCode.CANCELLED : result.stopReason() == StopReason.COMPLETED
+                                ? ChildTaskFailureCode.NONE : ChildTaskFailureCode.RUNTIME_FAILED,
+                        result.modelTurns(), result.toolCalls(), safeSummary(result), true,
+                        scope.worktreeDisposition().get());
+            } catch (RuntimeException | Error failure) {
+                // finish 内的清账/通知异常不能触发第二次 finish，也不能改写已发布的运行终态。
+                if (!terminal.get()) {
+                    cleanupStatus.set(scope == null ? ResourceCleanupStatus.UNCONFIRMED : ResourceCleanupStatus.CLEANING);
+                    boolean blocked = failure instanceof ChildTaskStartBlockedException;
+                    finish(cancellation.token().isCancellationRequested() ? ChildTaskStatus.CANCELLED : ChildTaskStatus.FAILED,
+                            cancellation.token().isCancellationRequested() ? ChildTaskFailureCode.CANCELLED
+                                    : blocked ? ChildTaskFailureCode.START_HOOK_BLOCKED : ChildTaskFailureCode.RUNTIME_FAILED,
+                            0, 0, blocked ? "start_hook_blocked" : "runtime_failed", false);
                 }
-            } catch (RuntimeException failure) {
-                boolean blocked = failure instanceof ChildTaskStartBlockedException;
-                finish(cancellation.token().isCancellationRequested() ? ChildTaskStatus.CANCELLED : ChildTaskStatus.FAILED,
-                        cancellation.token().isCancellationRequested() ? ChildTaskFailureCode.CANCELLED
-                                : blocked ? ChildTaskFailureCode.START_HOOK_BLOCKED : ChildTaskFailureCode.RUNTIME_FAILED,
-                        0, 0, blocked ? "start_hook_blocked" : "runtime_failed", false);
-            } finally { runner = null; }
+                if (failure instanceof Error error) throw error;
+            } finally {
+                try {
+                    if (scope != null) freezeCleanup(scope);
+                } finally { runner = null; }
+            }
+        }
+
+        /** 终态已发布后清理并只采样一次；清理异常绝不能覆盖原运行结果。 */
+        private void freezeCleanup(ChildRuntimeScope scope) {
+            ResourceCleanupStatus snapshot = ResourceCleanupStatus.UNCONFIRMED;
+            try {
+                scope.close();
+                if (scope.cleanupStatus().get() == ResourceCleanupStatus.RELEASED) {
+                    snapshot = ResourceCleanupStatus.RELEASED;
+                }
+            } catch (RuntimeException | Error ignored) {
+                // 包括探针异常；不保存 cause、scope 或 supplier，迟到成功不会改变本次证据。
+            }
+            cleanupStatus.set(snapshot);
         }
         private String safeSummary(AgentRunResult result) {
             // 子模型正文与 Tool 输出均属于不可信/可能敏感内容；父级只接收可验证的确定性计数。
@@ -304,7 +437,8 @@ public final class AgentSupervisor implements AutoCloseable {
         private ChildTaskReport report(ChildTaskStatus status, ChildTaskFailureCode code, int turns, int calls,
                 String summary, boolean verified, java.util.Optional<String> worktreeDisposition) {
             return new ChildTaskReport(id, definition.id(), status, code, turns, calls, 0,
-                    Duration.between(submitted, clock.instant()), summary, verified, worktreeDisposition);
+                    Duration.between(submitted, clock.instant()), summary, verified, worktreeDisposition,
+                    cleanupStatus.get());
         }
         private void finish(ChildTaskStatus status, ChildTaskFailureCode code, int turns, int calls,
                 String summary, boolean verified) {
@@ -328,8 +462,8 @@ public final class AgentSupervisor implements AutoCloseable {
             }
             report.set(durable);
             terminalLatch.countDown();
-            parentRegistration.close();
-            settleReservation(turns, calls, durable.elapsed());
+            try { parentRegistration.close(); }
+            finally { settleReservation(turns, calls, durable.elapsed()); }
             ChildTaskReport observable = durable;
             try {
                 taskLifecycle.afterTerminal(observable).ifPresent(parentContextSink);

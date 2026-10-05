@@ -50,12 +50,22 @@ public record TaskBoardCapability(TaskBoardId boardId, SessionId ownerSessionId,
         }
     }
 
-    /** 当前 capability 是否允许读取或尝试操作目标 Task。 */
+    /**
+     * 判断目标 Task 是否位于 capability 的身份范围内，不替代 effect 或 mutation Gate。
+     * @param taskId 目标任务身份
+     * @return root 或显式 scope 包含该任务时为 true
+     */
     public boolean allows(TaskId taskId) { return root || taskScope.contains(taskId); }
 
-    /** 当前 capability 是否包含 Task Board 只读投影所需的读 effect。 */
+    /**
+     * 当前 capability 是否包含 Task Board 只读投影所需的读 effect。
+     * @return 含 READ_SESSION_STATE 时为 true，仍需校验身份范围
+     */
     public boolean canRead() { return effects.contains(ToolEffect.READ_SESSION_STATE); }
 
-    /** 当前 capability 是否包含 Task Board mutation 所需的写 effect。 */
+    /**
+     * 当前 capability 是否包含 Task Board mutation 所需的写 effect。
+     * @return 含 WRITE_SESSION_STATE 时为 true，仍需校验 mutation 与领取规则
+     */
     public boolean canWrite() { return effects.contains(ToolEffect.WRITE_SESSION_STATE); }
 }

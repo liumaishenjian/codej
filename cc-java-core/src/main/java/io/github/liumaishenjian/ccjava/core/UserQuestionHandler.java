@@ -13,10 +13,18 @@ import io.github.liumaishenjian.ccjava.domain.UserQuestionRequest;
  */
 @FunctionalInterface
 public interface UserQuestionHandler {
-    /** 发布问题并等待同一 callId 的单题或整批答案；取消时不得伪造答案。 */
+    /**
+     * 发布问题并等待同一 callId 的单题或整批答案；取消时不得伪造答案。
+     * @param request 含调用身份、问题和选项的结构化请求
+     * @param cancellationToken 必须贯穿等待过程的取消与时间预算
+     * @return 与请求身份匹配的真实用户答案；无有效答案时必须失败关闭
+     */
     UserQuestionAnswer ask(UserQuestionRequest request, CancellationToken cancellationToken);
 
-    /** 返回不支持交互的失败关闭实现。 */
+    /**
+     * 返回不支持交互的失败关闭实现。
+     * @return 每次提问均抛出 IllegalStateException、不会伪造默认答案的端口
+     */
     static UserQuestionHandler unavailable() {
         return (request, cancellationToken) -> {
             throw new IllegalStateException("结构化用户问题 Surface 不可用");

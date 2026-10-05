@@ -131,7 +131,8 @@ public final class FileChildTaskJournal implements ChildTaskJournal, AutoCloseab
         if (report != null) json.append(",\"definitionId\":\"").append(report.definitionId().value())
                 .append("\",\"status\":\"").append(report.status()).append("\",\"failure\":\"")
                 .append(report.failureCode()).append("\",\"modelTurns\":").append(report.modelTurns())
-                .append(",\"toolCalls\":").append(report.toolCalls());
+                .append(",\"toolCalls\":").append(report.toolCalls())
+                .append(",\"cleanupStatus\":\"").append(report.cleanupStatus()).append('"');
         json.append("}\n");
         byte[] bytes = json.toString().getBytes(StandardCharsets.UTF_8);
         try {

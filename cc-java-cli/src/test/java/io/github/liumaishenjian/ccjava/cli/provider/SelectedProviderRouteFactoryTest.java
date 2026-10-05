@@ -170,7 +170,7 @@ class SelectedProviderRouteFactoryTest {
         assertThat(leases.activeCount("anthropic","personal")).isZero();
     }
 
-    @Test void concurrentRunsKeepIndependentRoutesVisibleToInheritedModelWorkers() throws Exception {
+    @Test void concurrentRunsKeepIndependentRoutesVisibleToExplicitlyBoundModelWorkers() throws Exception {
         Path home=Files.createDirectory(temporary.resolve("concurrent-home"));
         ProviderDefinitionStore definitions=new ProviderDefinitionStore(home);
         FakeStore store=new FakeStore(); CredentialLeaseRegistry leases=new CredentialLeaseRegistry();
@@ -212,12 +212,65 @@ class SelectedProviderRouteFactoryTest {
         assertThat(leases.activeCount("anthropic","personal")).isZero();
     }
 
+    @Test void piTaggedSelectionNeverResolvesSameNamedLegacyCredential() throws Exception {
+        var definitions = new ProviderDefinitionStore(Files.createDirectory(temporary.resolve("pi-tag")));
+        var store = new FakeStore();
+        try (var leases = new CredentialLeaseRegistry()) {
+            var calls = new AtomicInteger(); var closes = new AtomicInteger();
+            var registry = new ProviderGatewayFactoryRegistry(List.of(
+                    passthrough(ProviderGatewayKind.ANTHROPIC, calls, closes),
+                    passthrough(ProviderGatewayKind.OPENAI_COMPATIBLE, calls, closes),
+                    passthrough(ProviderGatewayKind.OPENROUTER, calls, closes)));
+            var routes = new SelectedProviderRouteFactory(definitions,
+                    new CredentialResolver(store, Map.of("CC_TEST", "synthetic")), leases, registry);
+            String model = definitions.snapshot(CancellationToken.none()).catalog().require("anthropic").defaultModelId();
+            var gateway = routes.lazyGateway(() -> Optional.of(new ProviderSelectionSnapshot(
+                    "anthropic", "personal", model, "pi", "API_KEY")));
+            try (var run = gateway.openRun()) {
+                assertThatThrownBy(() -> gateway.complete(new ModelRequest(
+                        new io.github.liumaishenjian.ccjava.domain.SessionId("session"),
+                        new io.github.liumaishenjian.ccjava.domain.RunId("run"), 1, List.of(), List.of())))
+                        .isInstanceOf(io.github.liumaishenjian.ccjava.core.ModelGatewayException.class);
+            }
+            assertThat(store.snapshotCalls).hasValue(0);
+            assertThat(calls).hasValue(0);
+        }
+    }
+
+    @Test void providerCloseFailureCannotFalselyDrainItsLease() throws Exception {
+        var definitions = new ProviderDefinitionStore(Files.createDirectory(temporary.resolve("failed-close")));
+        var store = new FakeStore();
+        class FailedClose implements ModelGateway, AutoCloseable {
+            public ModelTurn complete(ModelRequest request) { return ModelTurn.text("ok"); }
+            public void close() { throw new IllegalStateException("synthetic-close-failure"); }
+        }
+        try (var leases = new CredentialLeaseRegistry()) {
+            var registry = new ProviderGatewayFactoryRegistry(List.of(new ProviderGatewayFactory() {
+                public ProviderGatewayKind kind() { return ProviderGatewayKind.ANTHROPIC; }
+                public ModelGateway create(ProviderGatewayConfiguration configuration) { return new FailedClose(); }
+            }, passthrough(ProviderGatewayKind.OPENAI_COMPATIBLE, new AtomicInteger(), new AtomicInteger()),
+                    passthrough(ProviderGatewayKind.OPENROUTER, new AtomicInteger(), new AtomicInteger())));
+            var routes = new SelectedProviderRouteFactory(definitions,
+                    new CredentialResolver(store, Map.of("CC_TEST", "synthetic")), leases, registry);
+            String model = definitions.snapshot(CancellationToken.none()).catalog().require("anthropic").defaultModelId();
+            var gateway = routes.lazyGateway(() -> Optional.of(new ProviderSelectionSnapshot("anthropic", "personal", model)));
+            try (var run = gateway.openRun()) {
+                gateway.complete(new ModelRequest(new io.github.liumaishenjian.ccjava.domain.SessionId("session"),
+                        new io.github.liumaishenjian.ccjava.domain.RunId("run"), 1, List.of(), List.of()));
+            }
+            assertThat(leases.activeCount("anthropic", "personal")).isOne();
+            assertThat(leases.fenceAndDrain("anthropic", "personal", java.time.Duration.ofMillis(20), CancellationToken.none())).isFalse();
+        }
+    }
+
     private static void runConcurrent(io.github.liumaishenjian.ccjava.core.RunScopedModelGateway gateway,
                                       String runId,AtomicReference<Throwable> failure){
         try(var run=gateway.openRun(java.time.Duration.ofSeconds(2))){
             AtomicReference<ModelTurn> result=new AtomicReference<>();
+            // 仍验证两个Run的精确路由/资源隔离，只将跨线程传递改为显式所有权而非线程继承。
+            ModelGateway bound = run.binding().orElseThrow().gateway();
             Thread worker=Thread.ofVirtual().start(()->{
-                try{result.set(gateway.complete(new ModelRequest(
+                try{result.set(bound.complete(new ModelRequest(
                         new io.github.liumaishenjian.ccjava.domain.SessionId("session"),
                         new io.github.liumaishenjian.ccjava.domain.RunId(runId),1,List.of(),List.of())));}
                 catch(Throwable thrown){failure.compareAndSet(null,thrown);}

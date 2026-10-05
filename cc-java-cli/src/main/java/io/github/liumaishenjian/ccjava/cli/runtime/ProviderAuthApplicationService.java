@@ -1,6 +1,17 @@
 package io.github.liumaishenjian.ccjava.cli.runtime;
 
 import io.github.liumaishenjian.ccjava.cli.auth.CredentialProfile;
+import io.github.liumaishenjian.ccjava.cli.auth.CredentialVersion;
+import io.github.liumaishenjian.ccjava.cli.auth.PiCredentialIdentity;
+import io.github.liumaishenjian.ccjava.cli.auth.PiCredentialStore;
+import io.github.liumaishenjian.ccjava.cli.auth.PiLoginOperation;
+import io.github.liumaishenjian.ccjava.cli.provider.PiProviderCatalog;
+import io.github.liumaishenjian.ccjava.model.pi.process.PiWorkerConfiguration;
+import io.github.liumaishenjian.ccjava.model.pi.process.PiWorkerException;
+import java.util.function.Supplier;
+import java.time.Duration;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import io.github.liumaishenjian.ccjava.cli.auth.CredentialStore;
 import io.github.liumaishenjian.ccjava.cli.auth.CredentialLeaseRegistry;
 import io.github.liumaishenjian.ccjava.cli.auth.LegacyCredentialMigrationService;
@@ -29,6 +40,11 @@ import java.util.concurrent.atomic.AtomicReference;
  * <p>服务是 store mutation 的唯一入口。list/status/models 全部零网络且不读取 secret value；login
  * 消费 {@link SecretInput}，logout 只删除本机 credential；model selection 用 CAS 更新默认值并以
  * last-known-good 进程快照决定下一 Run，active Run 时拒绝切换。本服务不创建或调用 ModelGateway。</p>
+ *
+ * <p>Pi 入口使用独立 Store、完整身份和非阻塞 Interaction；只共享进程内租约与确认票据池，
+ * 认证操作不修改选择或默认值；显式模型选择另由 generation CAS 发布。
+ * Pi 列表仅投影元数据，CONFIGURED_UNVERIFIED 不证明材料或账号有效。
+ * Pi Worker 与用户提示从不在选择锁内等待，清理未确认时保留唯一登录槽及身份 fence。</p>
  */
 public final class ProviderAuthApplicationService {
     /** CodeJ 首次连接向导隐藏使用的稳定 Provider ID。 */
@@ -42,6 +58,55 @@ public final class ProviderAuthApplicationService {
     private final ProviderProbePort probePort;
     private final java.time.Clock clock;
     private final AtomicBoolean runActive = new AtomicBoolean();
+    private final Object selectionMonitor = new Object();
+    private volatile boolean selectionRequired;
+    private final Map<String, LogoutConfirmation> logoutConfirmations = new java.util.HashMap<>();
+    private final PiCredentialStore piCredentials;
+    private final Supplier<PiWorkerConfiguration> piConfiguration;
+    private final PiOperationFactory piOperations;
+    // Pi 短状态只在 selectionMonitor 内修改；Pi 提示、配置、Store 与 Worker 均在锁外运行。
+    private PiLoginSlot piLogin;
+    private boolean piControlBusy;
+    private boolean authClosed;
+
+    private record LogoutConfirmation(String provider, String profile, String session, long generation,
+                                      long expires, Optional<PiCredentialIdentity> piIdentity) {
+        private LogoutConfirmation(String provider, String profile, String session, long generation, long expires) {
+            this(provider, profile, session, generation, expires, Optional.empty());
+        }
+    }
+
+    /** 包级确定性测试接缝；生产装配始终委派真正的一次性 PiLoginOperation。 */
+    interface PiOperation extends AutoCloseable {
+        PiLoginOperation.Receipt run();
+        @Override void close();
+    }
+    /** 只替换协调器，不向公共控制面开放任意 Worker 或秘密输入。 */
+    @FunctionalInterface interface PiOperationFactory {
+        PiOperation create(PiWorkerConfiguration configuration, PiCredentialStore store,
+                PiCredentialIdentity identity, long expected, PiLoginOperation.Interaction interaction,
+                CancellationToken cancellation, Duration timeout);
+    }
+    /**
+     * 进程内唯一登录所有权：reserved → ready → finished；cleanupFailed 为不可逆状态。
+     * ready/finished 只确认资源移交与关闭，不代表登录成功，迟到工厂仍由原槽负责清理。
+     */
+    private static final class PiLoginSlot {
+        private final PiCredentialIdentity identity;
+        private final CountDownLatch ready = new CountDownLatch(1);
+        private final CountDownLatch finished = new CountDownLatch(1);
+        private PiOperation operation;
+        private boolean stopping;
+        private boolean cleanupFailed;
+        private PiLoginSlot(PiCredentialIdentity identity) { this.identity = identity; }
+    }
+
+    /** 不含凭证值的退出确认投影；票据只能在原会话使用一次。
+     * @param providerId 服务商标识
+     * @param profileId 本地账号标识
+     * @param confirmationId 有界时效的一次性确认标识
+     */
+    public record LogoutPreview(String providerId, String profileId, String confirmationId) { }
 
     /**
      * 创建使用独立 lease registry 的测试兼容控制面。
@@ -90,6 +155,44 @@ public final class ProviderAuthApplicationService {
                                           LegacyCredentialMigrationService migration, Map<String, String> environment,
                                           CredentialLeaseRegistry leases, ProviderProbePort probePort,
                                           java.time.Clock clock) {
+        this(definitions, credentials, migration, environment, leases, probePort, clock, null, null);
+    }
+
+    /**
+     * 装配明确隔离的 Pi 认证入口；旧构造器不具备 Pi 能力，绝不回退 legacy。
+     * @param definitions 旧 Provider 定义
+     * @param credentials 旧凭证存储
+     * @param migration 显式旧配置迁移
+     * @param environment 旧 ENV 解析快照
+     * @param leases 两种后端共享但按完整身份隔离的进程内租约
+     * @param probePort 旧受控探测端口
+     * @param clock 票据时钟
+     * @param piCredentials 独立 Pi 存储；兼容构造时为 null
+     * @param piConfiguration 延迟解析的可信配置；列表不会调用它
+     */
+    public ProviderAuthApplicationService(ProviderDefinitionStore definitions, CredentialStore credentials,
+            LegacyCredentialMigrationService migration, Map<String, String> environment,
+            CredentialLeaseRegistry leases, ProviderProbePort probePort, java.time.Clock clock,
+            PiCredentialStore piCredentials, Supplier<PiWorkerConfiguration> piConfiguration) {
+        this(definitions, credentials, migration, environment, leases, probePort, clock,
+                piCredentials, piConfiguration, (configuration, store, identity, expected, interaction, token, timeout) -> {
+                    PiLoginOperation operation = new PiLoginOperation(configuration, store, identity, expected,
+                            interaction, token, timeout);
+                    return new PiOperation() {
+                        public PiLoginOperation.Receipt run() { return operation.run(); }
+                        public void close() { operation.close(); }
+                    };
+                });
+    }
+
+    ProviderAuthApplicationService(ProviderDefinitionStore definitions, CredentialStore credentials,
+            LegacyCredentialMigrationService migration, Map<String, String> environment,
+            CredentialLeaseRegistry leases, ProviderProbePort probePort, java.time.Clock clock,
+            PiCredentialStore piCredentials, Supplier<PiWorkerConfiguration> piConfiguration,
+            PiOperationFactory piOperations) {
+        this.piCredentials = piCredentials;
+        this.piConfiguration = piConfiguration;
+        this.piOperations = Objects.requireNonNull(piOperations);
         this.definitions = Objects.requireNonNull(definitions);
         this.credentials = Objects.requireNonNull(credentials);
         this.migration = Objects.requireNonNull(migration);
@@ -109,7 +212,8 @@ public final class ProviderAuthApplicationService {
         ProviderDefinitionStore.Snapshot snapshot = definitions.snapshot(cancellation);
         return snapshot.catalog().list().stream().map(value -> new ProviderSummary(value.providerId(),
                 value.kind(), value.models().size(), value.defaultModelId(),
-                snapshot.defaultSelection().filter(selected -> selected.providerId().equals(value.providerId()))
+                snapshot.defaultSelection().filter(selected -> selected.backend().equals("spring-ai")
+                        && selected.providerId().equals(value.providerId()))
                         .isPresent())).toList();
     }
 
@@ -178,16 +282,23 @@ public final class ProviderAuthApplicationService {
      * 判断下一次 Run 是否已有可用的默认模型与本机 credential。
      *
      * <p>检查完全离线，不读取 secret value；STORE 文件不存在或 ENV 值为空时返回 false，
-     * 让首次启动重新进入连接表单。</p>
+     * 让首次启动重新进入连接表单。Pi 分支只证明精确身份元数据已配置且未被本进程撤销
+     * （CONFIGURED_UNVERIFIED），不读取材料/ENV，也不证明账号或组件可用。</p>
      *
      * @param cancellation 读取本地状态时使用的取消令牌
-     * @return 默认模型与同 Provider 默认 profile 都可用时为 true
+     * @return legacy 本地可用或 Pi 精确身份元数据已配置且无 fence 时为 true
      */
     public boolean hasUsableDefaultSelection(CancellationToken cancellation) {
         Optional<ProviderDefinitionStore.DefaultSelection> selected =
                 definitions.snapshot(cancellation).defaultSelection();
         if (selected.isEmpty()) return false;
-        String providerId = selected.orElseThrow().providerId();
+        ProviderDefinitionStore.DefaultSelection value = selected.orElseThrow();
+        if (value.backend().equals("pi")) {
+            PiCredentialIdentity identity = piSelectionIdentity(value);
+            return piCredentials != null && piCredentials.snapshot(cancellation).find(identity).isPresent()
+                    && !leases.fenced(identity);
+        }
+        String providerId = value.providerId();
         return listProfiles(Optional.of(providerId), cancellation).stream()
                 .anyMatch(profile -> profile.providerDefault()
                         && profile.status() == ProviderAuthStatusCode.AVAILABLE_LOCAL);
@@ -259,17 +370,379 @@ public final class ProviderAuthApplicationService {
      */
     public ProfileSummary login(LoginRequest request, SecretInput input, CancellationToken cancellation) {
         requireProvider(definitions.snapshot(cancellation).catalog(), request.providerId());
+        synchronized (selectionMonitor) {
+            if (runActive.get() || piLogin != null || piControlBusy || authClosed) throw conflict();
+        }
+        // 必须在等待秘密/浏览器输入前取代次；另一进程退出后，迟到提交不能恢复磁盘凭证。
+        long expected = credentials.snapshot(cancellation).generation();
         CredentialProfile saved;
         if (request.refKind() == RefKind.STORE) {
             try (SecretMaterial material = Objects.requireNonNull(input, "secret input 不能为空").read()) {
-                saved = credentials.saveStore(request.providerId(), request.profileId(), material,
-                        request.setDefault(), cancellation);
+                synchronized (selectionMonitor) {
+                    if (runActive.get() || piLogin != null || piControlBusy || authClosed) throw conflict();
+                    saved = credentials.saveStore(request.providerId(), request.profileId(), material,
+                            request.setDefault(), expected, cancellation);
+                }
             }
         } else {
-            saved = credentials.saveEnv(request.providerId(), request.profileId(), request.environmentName(),
-                    request.setDefault(), cancellation);
+            synchronized (selectionMonitor) {
+                if (runActive.get() || piLogin != null || piControlBusy || authClosed) throw conflict();
+                saved = credentials.saveEnv(request.providerId(), request.profileId(), request.environmentName(),
+                        request.setDefault(), expected, cancellation);
+            }
         }
         return summarize(saved, request.setDefault(), localStatus(saved));
+    }
+
+    /**
+     * 异步输入端口驱动一次 Pi 登录；总预算三百秒，输入前捕获索引 CAS。
+     * 不设置默认、不切换下一 Run；ACK 后失败不代表持久提交已回滚。
+     * @param identity 明确的 Pi 完整身份
+     * @param interaction 非阻塞提示端口，不能替换为同步 SecretInput
+     * @param cancellation 取消令牌
+     * @return 仅表示已配置、未在线验证的安全摘要
+     */
+    public PiProfileSummary loginPi(PiCredentialIdentity identity, PiLoginOperation.Interaction interaction,
+                                    CancellationToken cancellation) {
+        return loginPiWithReceipt(identity, interaction, cancellation).summary();
+    }
+
+    /**
+     * 返回原操作的精确存储回执，供私有认证 helper 桥使用；不从保存后的索引推测代次。
+     * 清理或宿主关闭失败阻止成功返回，但不虚构已持久化材料的回滚。
+     * @param identity 完整 Pi 身份
+     * @param interaction 非阻塞输入端口
+     * @param cancellation 调用方取消令牌
+     * @return 安全摘要与仅供私有 helper 通道传递的精确回执
+     */
+    public PiLoginResult loginPiWithReceipt(PiCredentialIdentity identity, PiLoginOperation.Interaction interaction,
+                                           CancellationToken cancellation) {
+        Objects.requireNonNull(interaction);
+        return coordinatePiLogin(identity, cancellation, expected -> piOperations.create(piConfiguration.get(),
+                piCredentials, identity, expected, interaction, cancellation, Duration.ofSeconds(300)));
+    }
+
+    /**
+     * 仅保存 API_KEY 身份的 ENV_REF 名称，不读取环境值、不解析 Pi 配置、不启动 Node。
+     * 复用唯一登录槽及输入前 CAS；不修改模型选择或默认值。
+     * @param identity API_KEY 完整身份，OAuth 被拒绝
+     * @param environmentName 合法的 ENV_REF 名称
+     * @param cancellation 调用方取消令牌
+     * @return 经相同关闭 Gate 确认的摘要与实际提交回执
+     */
+    public PiLoginResult loginPiEnvironment(PiCredentialIdentity identity, String environmentName,
+                                           CancellationToken cancellation) {
+        requirePi(); Objects.requireNonNull(identity); Objects.requireNonNull(cancellation);
+        if (identity.authMethod() != PiCredentialIdentity.AuthMethod.API_KEY)
+            throw new IllegalArgumentException("PI_MATERIAL_INVALID");
+        // 复用材料工厂的名称校验，不复制另一份 ENV 语法或权限边界。
+        try (var ignored = io.github.liumaishenjian.ccjava.cli.auth.PiCredentialMaterial.envRef(environmentName)) { }
+        return coordinatePiLogin(identity, cancellation,
+                expected -> new PiEnvironmentOperation(identity, environmentName, expected, cancellation));
+    }
+
+    /** 所有登录共享所有权、提交验证、本进程激活和最终清理 Gate；创建器只替换操作资源。 */
+    private PiLoginResult coordinatePiLogin(PiCredentialIdentity identity, CancellationToken cancellation,
+                                            java.util.function.LongFunction<PiOperation> creator) {
+        requirePi(); Objects.requireNonNull(identity); Objects.requireNonNull(cancellation);
+        PiLoginSlot slot = new PiLoginSlot(identity);
+        synchronized (selectionMonitor) {
+            if (authClosed || piLogin != null || piControlBusy || runActive.get()) throw conflict();
+            piLogin = slot;
+        }
+        try {
+            try {
+                long expected = piCredentials.snapshot(cancellation).generation();
+                PiOperation operation = Objects.requireNonNull(creator.apply(expected));
+                synchronized (selectionMonitor) { slot.operation = operation; }
+            } finally { slot.ready.countDown(); }
+            synchronized (selectionMonitor) { if (slot.stopping || slot.cleanupFailed) throw conflict(); }
+            PiLoginOperation.Receipt receipt = slot.operation.run();
+            if (!identity.equals(receipt.identity())) throw conflict();
+            PiCredentialStore.Metadata current = requirePiEpoch(identity, receipt.authEpoch(), cancellation);
+            synchronized (selectionMonitor) {
+                if (slot.stopping || slot.cleanupFailed || authClosed || piControlBusy) throw conflict();
+                leases.activateAfterLogin(identity, new CredentialVersion.PiAuthEpoch(receipt.authEpoch()));
+            }
+            return new PiLoginResult(summarizePi(current), receipt);
+        } finally {
+            try {
+                if (slot.operation != null) slot.operation.close();
+            } catch (RuntimeException | Error failure) {
+                failPiCleanup(slot);
+                throw piCleanupFailure();
+            } finally {
+                synchronized (selectionMonitor) {
+                    if (!slot.cleanupFailed && piLogin == slot) piLogin = null;
+                }
+                slot.finished.countDown();
+                synchronized (selectionMonitor) {
+                    if (slot.cleanupFailed) throw piCleanupFailure();
+                    // 槽位释放后的外部close同样必须参加最终回执判定。
+                    if (slot.stopping || authClosed) throw conflict();
+                }
+            }
+        }
+    }
+
+    /**
+     * 本地 ENV 单次事务资源。状态锁只保护启动/关闭交接，不包围 Store IO；close 取消后
+     * 有界等待实际 run 收敛，未确认时交给共享槽保存 sticky failure，不声称强制中断文件 IO。
+     */
+    private final class PiEnvironmentOperation implements PiOperation {
+        private final PiCredentialIdentity identity;
+        private final String environmentName;
+        private final long expected;
+        private final io.github.liumaishenjian.ccjava.core.CancellationSource source;
+        private final CancellationToken.Registration registration;
+        private final CountDownLatch completed = new CountDownLatch(1);
+        private boolean started;
+        private boolean closed;
+
+        private PiEnvironmentOperation(PiCredentialIdentity identity, String environmentName, long expected,
+                                       CancellationToken caller) {
+            this.identity = identity; this.environmentName = environmentName; this.expected = expected;
+            Duration budget = caller.remainingTime().filter(value -> value.compareTo(Duration.ofSeconds(300)) < 0)
+                    .orElse(Duration.ofSeconds(300));
+            if (budget.isZero() || budget.isNegative()) throw failure(ProviderAuthException.Code.AUTH_CANCELLED);
+            source = new io.github.liumaishenjian.ccjava.core.CancellationSource(budget);
+            registration = caller.onCancellation(source::cancel);
+        }
+
+        @Override public PiLoginOperation.Receipt run() {
+            synchronized (this) {
+                if (closed || started) throw conflict();
+                started = true;
+            }
+            try (var material = io.github.liumaishenjian.ccjava.cli.auth.PiCredentialMaterial.envRef(environmentName)) {
+                var saved = piCredentials.saveLogin(identity, material, expected, false, source.token());
+                if (source.token().isCancellationRequested()
+                        || source.token().remainingTime().filter(value -> value.isZero() || value.isNegative()).isPresent())
+                    throw failure(ProviderAuthException.Code.AUTH_CANCELLED);
+                return new PiLoginOperation.Receipt(identity, saved.authEpoch());
+            } finally { completed.countDown(); }
+        }
+
+        @Override public void close() {
+            synchronized (this) {
+                closed = true;
+                if (!started) completed.countDown();
+            }
+            source.cancel();
+            try {
+                if (!completed.await(10, TimeUnit.SECONDS)) throw piCleanupFailure();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt(); throw piCleanupFailure();
+            } finally { registration.close(); }
+        }
+    }
+
+    /**
+     * 只读 Pi 元数据与进程 fence；不解析配置、不启动 Node、不读取秘密或 ENV 值。
+     * @param provider 可选的精确 Pi 路由过滤器
+     * @param cancellation 本地读取取消令牌
+     * @return 不含代次、引用、环境名或账户 ID 的稳定排序摘要
+     */
+    public List<PiProfileSummary> listPiProfiles(Optional<String> provider, CancellationToken cancellation) {
+        requirePi(); Objects.requireNonNull(provider);
+        provider.ifPresent(value -> new PiProviderCatalog().require(value));
+        return piCredentials.snapshot(cancellation).profiles().stream()
+                .filter(value -> provider.isEmpty() || provider.orElseThrow().equals(value.identity().providerId()))
+                .sorted(Comparator.comparing((PiCredentialStore.Metadata value) -> value.identity().providerId())
+                        .thenComparing(value -> value.identity().profileId())
+                        .thenComparing(value -> value.identity().authMethod().name()))
+                .map(this::summarizePi).toList();
+    }
+
+    /**
+     * 独立 helper 完成后显式激活精确 epoch；验证材料存在并立即擦除，不刷新、不设置默认。
+     * @param identity 明确的 Pi 身份，不能用同名旧配置替代
+     * @param expected helper 返回的确切登录代次
+     * @param cancellation 本地校验取消令牌
+     * @return 配置未在线验证的安全摘要
+     */
+    public PiProfileSummary activatePiLogin(PiCredentialIdentity identity, CredentialVersion.PiAuthEpoch expected,
+                                           CancellationToken cancellation) {
+        requirePi(); Objects.requireNonNull(identity); Objects.requireNonNull(expected);
+        synchronized (selectionMonitor) {
+            if (authClosed || piControlBusy || piLogin != null || runActive.get()) throw conflict();
+            piControlBusy = true;
+        }
+        try {
+            requirePiEpoch(identity, expected.value(), cancellation);
+            // beginModify 内部读取并验证 typed 材料；不取得 snapshot 副本，不调用 finish/刷新。
+            try (var ignored = piCredentials.beginModify(identity, expected.value(), cancellation)) { }
+            PiCredentialStore.Metadata current = requirePiEpoch(identity, expected.value(), cancellation);
+            synchronized (selectionMonitor) {
+                if (authClosed) throw conflict();
+                leases.activateAfterLogin(identity, expected);
+            }
+            return summarizePi(current);
+        } finally { synchronized (selectionMonitor) { piControlBusy = false; } }
+    }
+
+    /**
+     * 按当前精确登录代次退出 Pi 身份；只承诺本进程租约和跨进程 Store CAS。
+     * @param identity 明确的 Pi 身份
+     * @param cancellation 排空与删除取消令牌
+     * @return 不表示远端 revoke 的本地结果
+     */
+    public LogoutResult logoutPi(PiCredentialIdentity identity, CancellationToken cancellation) {
+        requirePi();
+        Objects.requireNonNull(identity);
+        var current = piCredentials.snapshot(cancellation).find(identity);
+        // 首次登录尚未发布时也必须先阻止该本地操作；不存在的 epoch 不会获得删除回执。
+        return logoutPiAtEpoch(identity, current.map(PiCredentialStore.Metadata::authEpoch).orElse(0L), cancellation);
+    }
+
+    private LogoutResult logoutPiAtEpoch(PiCredentialIdentity identity, long expected, CancellationToken cancellation) {
+        requirePi();
+        PiLoginSlot captured;
+        synchronized (selectionMonitor) {
+            if (authClosed || piControlBusy) throw conflict();
+            piControlBusy = true;
+            captured = piLogin != null && piLogin.identity.equals(identity) ? piLogin : null;
+            if (captured != null) captured.stopping = true;
+        }
+        try {
+            // 先发布 fence，零等待阶段的 false 不是排空证据；本地登录随后必须真正关闭。
+            leases.fenceAndDrain(identity, Duration.ZERO, CancellationToken.none());
+            if (captured != null) stopPiLogin(captured);
+            if (!leases.fenceAndDrain(identity, Duration.ofSeconds(10), cancellation))
+                throw failure(ProviderAuthException.Code.AUTH_LOGOUT_DRAIN_FAILED);
+            long deleted = piCredentials.deleteWithReceipt(identity, expected, cancellation);
+            leases.markRevoked(identity, deleted);
+            return new LogoutResult(identity.providerId(), identity.profileId(), false);
+        } finally { synchronized (selectionMonitor) { piControlBusy = false; } }
+    }
+
+    /**
+     * 与旧入口共用十六张、两分钟、会话绑定的一次性票据池；backend 只来自受信票据。
+     * @param identity 待退出的完整 Pi 身份
+     * @param sessionIdentity 当前可信宿主会话
+     * @param cancellation 元数据读取取消令牌
+     * @return 不含材料和代次的确认投影
+     */
+    public LogoutPreview preparePiLogout(PiCredentialIdentity identity, String sessionIdentity,
+                                         CancellationToken cancellation) {
+        requirePi(); Objects.requireNonNull(sessionIdentity);
+        var current = piCredentials.snapshot(cancellation).find(identity)
+                .orElseThrow(() -> failure(ProviderAuthException.Code.AUTH_PROFILE_UNKNOWN));
+        synchronized (selectionMonitor) {
+            logoutConfirmations.entrySet().removeIf(entry -> entry.getValue().expires() <= clock.millis());
+            if (logoutConfirmations.size() >= 16) throw conflict();
+            String id = java.util.UUID.randomUUID().toString();
+            logoutConfirmations.put(id, new LogoutConfirmation(identity.providerId(), identity.profileId(),
+                    sessionIdentity, current.authEpoch(), clock.millis() + 120_000, Optional.of(identity)));
+            return new LogoutPreview(identity.providerId(), identity.profileId(), id);
+        }
+    }
+
+    /**
+     * 宿主永久关闭认证入口并确认当前登录资源收敛；失败 sticky，不能释放槽或吞掉异常。
+     * 不在 selectionMonitor 中等待输入、配置工厂或 Worker；重复关闭仍报告未确认清理。
+     */
+    public void closePiLogin() {
+        PiLoginSlot captured;
+        synchronized (selectionMonitor) {
+            authClosed = true;
+            captured = piLogin;
+            if (captured != null) captured.stopping = true;
+        }
+        if (captured != null) stopPiLogin(captured);
+    }
+
+    private void stopPiLogin(PiLoginSlot slot) {
+        try {
+            if (!slot.ready.await(2, TimeUnit.SECONDS)) throw piCleanupFailure();
+            PiOperation operation;
+            synchronized (selectionMonitor) { operation = slot.operation; }
+            if (operation != null) operation.close();
+            if (!slot.finished.await(10, TimeUnit.SECONDS)) throw piCleanupFailure();
+            synchronized (selectionMonitor) { if (slot.cleanupFailed) throw piCleanupFailure(); }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt(); failPiCleanup(slot); throw piCleanupFailure();
+        } catch (RuntimeException | Error failure) {
+            failPiCleanup(slot); throw piCleanupFailure();
+        }
+    }
+
+    private void failPiCleanup(PiLoginSlot slot) {
+        synchronized (selectionMonitor) {
+            slot.cleanupFailed = true; slot.stopping = true;
+            // 外部 close 与 run finally 竞争时，也不能遗失失败资源的所有权。
+            if (piLogin == null) piLogin = slot;
+        }
+        leases.fenceAndDrain(slot.identity, Duration.ZERO, CancellationToken.none());
+    }
+    private static PiWorkerException piCleanupFailure() {
+        return new PiWorkerException(PiWorkerException.Code.CLEANUP_FAILED);
+    }
+    /**
+     * 只查询已装配的Pi控制端口，不读取配置、凭据或文件，也不表示Worker已安装。
+     * @return 宿主是否能够协商Pi控制协议
+     */
+    public boolean supportsPiControl() { return piCredentials != null && piConfiguration != null; }
+
+    /**
+     * 验证可信Worker路径配置的可用性，不启动进程、不解析凭据、不进行联网探测。
+     * @return 配置不可用时为false，不触发legacy fallback
+     */
+    public boolean piComponentAvailable() {
+        if (!supportsPiControl()) return false;
+        try { return piConfiguration.get() != null; }
+        catch (RuntimeException unavailable) { return false; }
+    }
+
+    private void requirePi() {
+        if (piCredentials == null || piConfiguration == null)
+            throw new PiWorkerException(PiWorkerException.Code.CONFIGURATION_INVALID);
+    }
+    private PiCredentialStore.Metadata requirePiEpoch(PiCredentialIdentity identity, long expected,
+                                                       CancellationToken cancellation) {
+        var current = piCredentials.snapshot(cancellation).find(identity).orElseThrow(ProviderAuthApplicationService::conflict);
+        if (current.authEpoch() != expected) throw conflict();
+        return current;
+    }
+    private PiProfileSummary summarizePi(PiCredentialStore.Metadata metadata) {
+        PiCredentialIdentity identity = metadata.identity();
+        return new PiProfileSummary(identity.backend(), identity.providerId(), identity.profileId(),
+                identity.authMethod().name(), metadata.kind().name(),
+                leases.fenced(identity) ? "REVOKED_IN_PROCESS" : "CONFIGURED_UNVERIFIED");
+    }
+
+    /**
+     * Pi 安全投影：元数据存在不等于密钥或账号已验证；不包含任何内部引用。
+     * @param backend 固定 pi
+     * @param providerId 公开路由 ID
+     * @param profileId 本地 profile ID
+     * @param authMethod API_KEY 或 OAUTH
+     * @param refKind API_KEY、ENV_REF 或 OAUTH 材料种类
+     * @param status CONFIGURED_UNVERIFIED 或 REVOKED_IN_PROCESS
+     */
+    public record PiProfileSummary(String backend, String providerId, String profileId, String authMethod,
+                                   String refKind, String status) { }
+
+    /**
+     * 登录成功的双投影：summary 不含版本；receipt 仅供私有 helper 通道和精确激活使用，
+     * 不得整体序列化到普通控制面、Session 或日志。身份不一致时拒绝构造。
+     * @param summary 不含代次、环境名或秘密的安全摘要
+     * @param receipt 原操作返回的确切回执，不是事后快照推测值
+     */
+    public record PiLoginResult(PiProfileSummary summary, PiLoginOperation.Receipt receipt) {
+        /**
+         * 保留原回执对象并校验双投影的完整身份，拒绝拼接不同登录的摘要和回执。
+         * @param summary 非空安全摘要
+         * @param receipt 非空原始存储回执
+         */
+        public PiLoginResult {
+            Objects.requireNonNull(summary); Objects.requireNonNull(receipt);
+            PiCredentialIdentity identity = receipt.identity();
+            if (!identity.backend().equals(summary.backend()) || !identity.providerId().equals(summary.providerId())
+                    || !identity.profileId().equals(summary.profileId())
+                    || !identity.authMethod().name().equals(summary.authMethod())) throw conflict();
+        }
+        @Override public String toString() { return "PiLoginResult[summary=" + summary + "]"; }
     }
 
     /**
@@ -326,15 +799,20 @@ public final class ProviderAuthApplicationService {
         io.github.liumaishenjian.ccjava.cli.auth.CredentialResolver resolver =
                 new io.github.liumaishenjian.ccjava.cli.auth.CredentialResolver(credentials, environment);
         ProviderProbePort.ProbeOutcome outcome;
-        try (var resolved = resolver.resolve(request.providerId(), Optional.of(request.profileId()), cancellation)) {
+        var source = new io.github.liumaishenjian.ccjava.core.CancellationSource(request.timeout());
+        try (var registration = cancellation.onCancellation(source::cancel);
+             var lease = leases.acquire(request.providerId(), request.profileId(), snapshot.generation(), source::cancel);
+             var resolved = resolver.resolve(request.providerId(), Optional.of(request.profileId()), source.token())) {
+            lease.bindCancellation(source::cancel);
+            if (source.token().isCancellationRequested()) throw conflict();
             char[] secret = resolved.secret().copyChars();
-            try { outcome = probePort.probe(definition, request.modelId(), secret, request.timeout(), cancellation); }
+            try { outcome = probePort.probe(definition, request.modelId(), secret, request.timeout(), source.token()); }
             finally { java.util.Arrays.fill(secret, '\0'); }
         }
         java.time.Instant now = clock.instant();
         CredentialProfile.ProbeRecord record = new CredentialProfile.ProbeRecord(
                 outcome.name(), now, definitionDigest(definition), request.modelId());
-        credentials.saveProbe(request.providerId(), request.profileId(), record, profile.secretRef(), cancellation);
+        credentials.saveProbe(request.providerId(), request.profileId(), record, profile.secretRef(), snapshot.generation(), cancellation);
         ProbeResult result = new ProbeResult(request.providerId(), request.profileId(), request.modelId(), outcome, now);
         if (outcome != ProviderProbePort.ProbeOutcome.SUCCESS) throw probeFailure(outcome);
         return result;
@@ -349,14 +827,22 @@ public final class ProviderAuthApplicationService {
      * @return 仅描述本机删除结果的安全摘要
      */
     public LogoutResult logout(String providerId, String profileId, CancellationToken cancellation) {
+        return logoutAtGeneration(providerId, profileId, credentials.snapshot(cancellation).generation(), cancellation);
+    }
+
+    private LogoutResult logoutAtGeneration(String providerId, String profileId, long expected,
+                                             CancellationToken cancellation) {
         requireProvider(definitions.snapshot(cancellation).catalog(), providerId);
         CredentialStore.Snapshot snapshot = credentials.snapshot(cancellation);
+        if (snapshot.generation() != expected) throw conflict();
+        snapshot.find(providerId, profileId).orElseThrow(() -> failure(ProviderAuthException.Code.AUTH_PROFILE_UNKNOWN));
+        selectionRequired = true;
         if (!leases.fenceAndDrain(providerId, profileId, java.time.Duration.ofSeconds(10), cancellation)) {
             throw failure(ProviderAuthException.Code.AUTH_LOGOUT_DRAIN_FAILED);
         }
         try {
             credentials.delete(providerId, profileId, snapshot.generation(), cancellation);
-            leases.markRevoked(providerId, profileId);
+            leases.markRevoked(providerId, profileId, snapshot.generation() + 1);
         } catch (ProviderAuthException storeFailure) {
             if (storeFailure.code() == ProviderAuthException.Code.AUTH_TRANSACTION_CONFLICT) {
                 throw new ProviderAuthException(ProviderAuthException.Code.AUTH_STORE_DELETE_FAILED,
@@ -367,6 +853,72 @@ public final class ProviderAuthApplicationService {
         nextSelection.updateAndGet(value -> value != null && value.providerId().equals(providerId)
                 && value.profileId().equals(profileId) ? null : value);
         return new LogoutResult(providerId, profileId, false);
+    }
+
+    /** 准备与展示时凭证索引绑定的退出确认，不读取secret、不执行删除。
+     * @param providerId 服务商标识
+     * @param profileId 待退出账号
+     * @param sessionIdentity 当前可信宿主会话身份
+     * @param cancellation 取消信号
+     * @return 两分钟内有效的一次性确认投影
+     */
+    public LogoutPreview prepareLogout(String providerId, String profileId, String sessionIdentity,
+                                       CancellationToken cancellation) {
+        Objects.requireNonNull(sessionIdentity);
+        CredentialStore.Snapshot snapshot = credentials.snapshot(cancellation);
+        snapshot.find(providerId, profileId).orElseThrow(() -> failure(ProviderAuthException.Code.AUTH_PROFILE_UNKNOWN));
+        synchronized (selectionMonitor) {
+            logoutConfirmations.entrySet().removeIf(entry -> entry.getValue().expires() <= clock.millis());
+            if (logoutConfirmations.size() >= 16) throw conflict();
+            String id = java.util.UUID.randomUUID().toString();
+            logoutConfirmations.put(id, new LogoutConfirmation(providerId, profileId, sessionIdentity,
+                    snapshot.generation(), clock.millis() + 120_000));
+            return new LogoutPreview(providerId, profileId, id);
+        }
+    }
+
+    /** 消费原会话确认，按展示时的索引CAS删除；目标被替换时必须重新确认。
+     * @param confirmationId 原确认标识
+     * @param sessionIdentity 当前可信宿主会话身份
+     * @param cancellation 取消信号
+     * @return 本地退出结果，不表示远端撤销
+     */
+    public LogoutResult commitLogout(String confirmationId, String sessionIdentity, CancellationToken cancellation) {
+        LogoutConfirmation confirmation;
+        synchronized (selectionMonitor) {
+            confirmation = logoutConfirmations.remove(confirmationId);
+        }
+        if (confirmation == null || !confirmation.session().equals(sessionIdentity)
+                || confirmation.expires() <= clock.millis()) throw conflict();
+        if (confirmation.piIdentity().isPresent()) {
+            return logoutPiAtEpoch(confirmation.piIdentity().orElseThrow(), confirmation.generation(), cancellation);
+        }
+        return logoutAtGeneration(confirmation.provider(), confirmation.profile(), confirmation.generation(), cancellation);
+    }
+
+    /** 独立认证进程提交后，由当前宿主显式验证新凭证并恢复可用代次；list/status绝不隐式执行此动作。
+     * @param providerId 服务商标识
+     * @param profileId 明确登录的本地账号
+     * @param cancellation 取消信号
+     * @return 本机安全状态；不代表在线验证成功
+     */
+    public ProfileSummary activateLogin(String providerId, String profileId, CancellationToken cancellation) {
+        synchronized (selectionMonitor) {
+            if (runActive.get()) throw conflict();
+            requireProvider(definitions.snapshot(cancellation).catalog(), providerId);
+            CredentialStore.Snapshot snapshot = credentials.snapshot(cancellation);
+            CredentialProfile profile = snapshot.find(providerId, profileId)
+                    .orElseThrow(() -> failure(ProviderAuthException.Code.AUTH_PROFILE_UNKNOWN));
+            if (profile.secretRef() instanceof SecretRef.Store store && !credentials.secretExists(store, cancellation)) {
+                throw failure(ProviderAuthException.Code.AUTH_SECRET_UNAVAILABLE);
+            }
+            if (profile.secretRef() instanceof SecretRef.Env env
+                    && (environment.get(env.variableName()) == null || environment.get(env.variableName()).isBlank())) {
+                throw failure(ProviderAuthException.Code.AUTH_SECRET_UNAVAILABLE);
+            }
+            leases.activateAfterLogin(providerId, profileId, snapshot.generation());
+            return summarize(profile, profileId.equals(snapshot.providerDefaults().get(providerId)), localStatus(profile));
+        }
     }
 
     /**
@@ -409,12 +961,68 @@ public final class ProviderAuthApplicationService {
                 .orElseThrow(() -> failure(ProviderAuthException.Code.AUTH_PROFILE_UNKNOWN));
         ProviderSelectionSnapshot selected = new ProviderSelectionSnapshot(
                 request.providerId(), profileId, request.modelId());
-        if (request.setDefault()) {
-            definitions.selectDefault(Optional.of(new ProviderDefinitionStore.DefaultSelection(
-                    request.providerId(), request.modelId())), providerSnapshot.generation(), cancellation);
+        synchronized (selectionMonitor) {
+            if (runActive.get()) throw conflict();
+            if (request.setDefault()) {
+                definitions.selectDefault(Optional.of(new ProviderDefinitionStore.DefaultSelection(
+                        request.providerId(), request.modelId())), providerSnapshot.generation(), cancellation);
+            }
+            selectionRequired = true;
+            nextSelection.set(selected);
         }
-        nextSelection.set(selected);
         return selected;
+    }
+
+    /**
+     * 选择下一 Run 的 Pi 完整身份；仅检查目录、元数据和进程 fence，不激活账号。
+     *
+     * <p>DefinitionStore generation 仅用于持久默认 CAS，不与 authEpoch 或材料版本比较。
+     * CAS 成功后才更新 LKG；Run 打开时由路由工厂另行固定认证租约。这里不启动 Node、
+     * 不读取材料/ENV，也不修改 PiStore 默认。元数据存在只表示配置未验证。</p>
+     *
+     * @param identity 明确的 Pi 认证身份
+     * @param modelId 静态目录中的精确模型
+     * @param setDefault 是否持久化为默认选择
+     * @param cancellation 本地存储等待的取消令牌
+     * @return 下一 Run 的五字段选择，不影响当前 Run
+     */
+    public ProviderSelectionSnapshot selectPiModel(PiCredentialIdentity identity, String modelId,
+            boolean setDefault, CancellationToken cancellation) {
+        ProviderDefinitionStore.Snapshot snapshot = definitions.snapshot(cancellation);
+        if (identity == null) throw failure(ProviderAuthException.Code.PROVIDER_DEFINITION_INVALID);
+        var value = new ProviderDefinitionStore.DefaultSelection(identity.providerId(), modelId,
+                identity.backend(), identity.authMethod().name(), Optional.of(identity.profileId()));
+        requirePiSelection(value, cancellation);
+        ProviderSelectionSnapshot selected = new ProviderSelectionSnapshot(identity.providerId(), identity.profileId(),
+                modelId, identity.backend(), identity.authMethod().name());
+        synchronized (selectionMonitor) {
+            if (runActive.get() || authClosed || piLogin != null || piControlBusy) throw conflict();
+            if (leases.fenced(identity)) throw conflict();
+            if (setDefault) definitions.selectDefault(Optional.of(value), snapshot.generation(), cancellation);
+            selectionRequired = true;
+            nextSelection.set(selected);
+        }
+        return selected;
+    }
+
+    private static PiCredentialIdentity piSelectionIdentity(ProviderDefinitionStore.DefaultSelection value) {
+        try {
+            return new PiCredentialIdentity(value.backend(), value.providerId(),
+                    PiCredentialIdentity.AuthMethod.valueOf(value.authMethod()), value.profileId().orElseThrow());
+        } catch (RuntimeException invalid) {
+            throw failure(ProviderAuthException.Code.PROVIDER_DEFINITION_INVALID);
+        }
+    }
+
+    private ProviderSelectionSnapshot requirePiSelection(ProviderDefinitionStore.DefaultSelection value,
+                                                          CancellationToken cancellation) {
+        PiCredentialIdentity identity = piSelectionIdentity(value);
+        if (piCredentials == null || piCredentials.snapshot(cancellation).find(identity).isEmpty()) {
+            throw failure(ProviderAuthException.Code.AUTH_PROFILE_UNKNOWN);
+        }
+        if (leases.fenced(identity)) throw conflict();
+        return new ProviderSelectionSnapshot(value.providerId(), identity.profileId(), value.modelId(),
+                value.backend(), value.authMethod());
     }
 
     /**
@@ -437,9 +1045,12 @@ public final class ProviderAuthApplicationService {
      * @return 持有本次 Run 固定选择及 active fence 的作用域
      */
     public RunSelection beginRun() {
-        if (!runActive.compareAndSet(false, true)) throw new IllegalStateException("RUN_ACTIVE");
-        ProviderSelectionSnapshot captured = nextSelection.get();
-        return new RunSelection(captured, runActive);
+        synchronized (selectionMonitor) {
+            if (authClosed || piLogin != null || piControlBusy) throw conflict();
+            if (!runActive.compareAndSet(false, true)) throw new IllegalStateException("RUN_ACTIVE");
+            ProviderSelectionSnapshot captured = nextSelection.get();
+            return new RunSelection(captured, runActive);
+        }
     }
 
     /**
@@ -455,16 +1066,33 @@ public final class ProviderAuthApplicationService {
      * @return 可供下一 Run 使用的有效选择；本地尚无完整选择时为空
      */
     public Optional<ProviderSelectionSnapshot> effectiveSelection() {
+        return effectiveSelection(CancellationToken.none());
+    }
+
+    /**
+     * 在同一启动预算内读取LKG或持久默认选择，不读取Pi秘密材料。
+     * @param cancellation 贯穿默认定义、账号元数据与存在性检查的取消边界
+     * @return 固定选择，或从未配置时的empty
+     */
+    public Optional<ProviderSelectionSnapshot> effectiveSelection(CancellationToken cancellation) {
+        checkSelectionCancellation(cancellation);
         ProviderSelectionSnapshot selected = nextSelection.get();
         if (selected != null) return Optional.of(selected);
-        var definitionSnapshot = definitions.snapshot(CancellationToken.none());
-        var credentialSnapshot = credentials.snapshot(CancellationToken.none());
+        var definitionSnapshot = definitions.snapshot(cancellation);
+        checkSelectionCancellation(cancellation);
         return definitionSnapshot.defaultSelection().flatMap(value -> {
+            if (value.backend().equals("pi")) {
+                var piSelection = requirePiSelection(value, cancellation);
+                checkSelectionCancellation(cancellation);
+                return Optional.of(piSelection);
+            }
+            var credentialSnapshot = credentials.snapshot(cancellation);
+            checkSelectionCancellation(cancellation);
             String profile = credentialSnapshot.providerDefaults().get(value.providerId());
             if (profile == null) return Optional.empty();
             CredentialProfile credential = credentialSnapshot.find(value.providerId(), profile)
                     .orElseThrow(() -> failure(ProviderAuthException.Code.AUTH_PROFILE_UNKNOWN));
-            ProviderAuthStatusCode status = localStatus(credential);
+            ProviderAuthStatusCode status = localStatus(credential, cancellation);
             if (status != ProviderAuthStatusCode.AVAILABLE_LOCAL) {
                 throw switch (status) {
                     case MISSING_SECRET -> failure(ProviderAuthException.Code.AUTH_SECRET_UNAVAILABLE);
@@ -477,7 +1105,39 @@ public final class ProviderAuthApplicationService {
             return Optional.of(new ProviderSelectionSnapshot(value.providerId(), profile, value.modelId()));
         });
     }
+    /** 请求路径使用的严格路由选择；显式配置/退出之后缺失账号不得回退启动时legacy。
+     * @return 从未选择时允许为空，否则返回有效选择或抛出类型化认证错误
+     */
+    public Optional<ProviderSelectionSnapshot> routingSelection() {
+        return routingSelection(CancellationToken.none());
+    }
+
+    /**
+     * 严格且可取消的生产选择；任何异常都不能换成启动legacy。
+     * @param cancellation 启动期取消边界
+     * @return 尚未配置时可为空，否则为选择或类型化错误
+     */
+    public Optional<ProviderSelectionSnapshot> routingSelection(CancellationToken cancellation) {
+        Optional<ProviderSelectionSnapshot> selected = effectiveSelection(cancellation);
+        checkSelectionCancellation(cancellation);
+        if (selected.isEmpty() && selectionRequired) throw failure(ProviderAuthException.Code.AUTH_PROFILE_REQUIRED);
+        return selected;
+    }
+
+    private static void checkSelectionCancellation(CancellationToken cancellation) {
+        Objects.requireNonNull(cancellation);
+        if (cancellation.isCancellationRequested()
+                || cancellation.remainingTime().map(time -> time.isZero() || time.isNegative()).orElse(false)) {
+            throw failure(ProviderAuthException.Code.AUTH_CANCELLED);
+        }
+    }
+
     private ProviderAuthStatusCode localStatus(CredentialProfile profile) {
+        return localStatus(profile, CancellationToken.none());
+    }
+
+    private ProviderAuthStatusCode localStatus(CredentialProfile profile, CancellationToken cancellation) {
+        checkSelectionCancellation(cancellation);
         if (leases.fenced(profile.providerId(), profile.profileId())) {
             return ProviderAuthStatusCode.REVOKED_IN_PROCESS;
         }
@@ -487,9 +1147,12 @@ public final class ProviderAuthApplicationService {
                     : ProviderAuthStatusCode.AVAILABLE_LOCAL;
         }
         try {
-            return credentials.secretExists((SecretRef.Store) profile.secretRef(), CancellationToken.none())
-                    ? ProviderAuthStatusCode.AVAILABLE_LOCAL : ProviderAuthStatusCode.MISSING_SECRET;
+            boolean exists = credentials.secretExists((SecretRef.Store) profile.secretRef(), cancellation);
+            checkSelectionCancellation(cancellation);
+            return exists ? ProviderAuthStatusCode.AVAILABLE_LOCAL : ProviderAuthStatusCode.MISSING_SECRET;
         } catch (ProviderAuthException failure) {
+            if (failure.code() == ProviderAuthException.Code.AUTH_CANCELLED) throw failure;
+            checkSelectionCancellation(cancellation);
             return failure.code() == ProviderAuthException.Code.AUTH_STORE_INSECURE
                     ? ProviderAuthStatusCode.INSECURE_STORE : ProviderAuthStatusCode.CORRUPT_STORE;
         }

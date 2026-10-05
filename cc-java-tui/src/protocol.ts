@@ -1,3 +1,5 @@
+import {validatePiProviderResult} from './pi-provider-control.js';
+
 export const PROTOCOL_VERSION = 0;
 export const MAX_LINE_BYTES = 64 * 1024;
 export const MAX_IDENTIFIER_CHARS = 128;
@@ -179,6 +181,12 @@ export class ProtocolViolation extends Error {
   }
 }
 
+/** 本项目独立 owned 资源诊断；不表示运行结果、Worktree 删除或 OS 隔离。 */
+export type ResourceCleanupStatus = 'unknown' | 'not_started' | 'cleaning' | 'released' | 'unconfirmed';
+const RESOURCE_CLEANUP_STATUSES: ReadonlySet<string> = new Set<ResourceCleanupStatus>([
+  'unknown', 'not_started', 'cleaning', 'released', 'unconfirmed',
+]);
+
 export function decodeEvent(line: string, expectedSequence: number): ProtocolEvent {
   let value: unknown;
   try {
@@ -221,7 +229,9 @@ export function decodeEvent(line: string, expectedSequence: number): ProtocolEve
     ...(sessionId === undefined ? {} : {sessionId}),
     ...(runId === undefined ? {} : {runId}),
     sequence,
-    payload,
+    payload: (type === 'task.status' || type === 'task.terminal')
+      && !Object.hasOwn(payload, 'cleanupStatus')
+      ? {...payload, cleanupStatus: 'unknown'} : payload,
   };
 }
 
@@ -244,7 +254,8 @@ function validateEventShape(
   if (type === 'run.launch.failed') {
     if (sessionId === undefined || runId !== undefined
       || !hasExactFields(payload, new Set(['code', 'stopReason']))
-      || payload.code !== 'RUNTIME_LAUNCH_FAILED' || payload.stopReason !== 'internal_error') {
+      || (payload.code !== 'RUNTIME_LAUNCH_FAILED' && payload.code !== 'MODEL_CONTEXT_BUDGET_INCOMPATIBLE')
+      || payload.stopReason !== 'internal_error') {
       throw new ProtocolViolation('run.launch.failed 包含无效启动失败投影');
     }
   }
@@ -683,7 +694,11 @@ function validateTaskEvent(
     'taskId', 'definitionId', 'status', 'failure', 'modelTurns', 'toolCalls',
     'estimatedTokens', 'elapsedMillis', 'summary', 'verified', 'worktreeDisposition',
   ]);
+  if (Object.hasOwn(payload, 'cleanupStatus')) fields.add('cleanupStatus');
   if (!hasExactFields(payload, fields)
+    || (Object.hasOwn(payload, 'cleanupStatus')
+      && (typeof payload.cleanupStatus !== 'string'
+        || !RESOURCE_CLEANUP_STATUSES.has(payload.cleanupStatus)))
     || sessionId === undefined || runId !== undefined
     || typeof payload.taskId !== 'string' || !/^task-[A-Za-z0-9_-]{1,96}$/.test(payload.taskId)
     || typeof payload.definitionId !== 'string' || payload.definitionId.length > MAX_IDENTIFIER_CHARS
@@ -818,7 +833,9 @@ function validateSteeringDiscarded(
 }
 
 const PROVIDER_CONTROL_INTENTS = new Set([
+  'providers.catalog',
   'providers.configure', 'providers.add', 'auth.list', 'auth.probe', 'auth.logout',
+  'auth.activate', 'auth.logout.prepare', 'auth.logout.commit',
   'models.list', 'models.add', 'models.remove', 'models.use',
 ]);
 
@@ -841,6 +858,8 @@ function validateProviderControlResult(
     return;
   }
   const result = payload.result;
+  try { if (validatePiProviderResult(payload.intent, result)) return; }
+  catch { throw new ProtocolViolation('provider.control Pi 安全投影无效'); }
   if (payload.intent === 'providers.add' || payload.intent === 'providers.configure') {
     if (!hasExactFields(result, new Set(['providerId', 'displayName', 'modelId']))
       || !isProviderId(result.providerId)
@@ -856,7 +875,7 @@ function validateProviderControlResult(
       const required = new Set(['providerId', 'profileId', 'authMethod', 'refKind', 'localStatus', 'providerDefault']);
       if (!isRecord(item) || !Object.keys(item).every(key => required.has(key) || key === 'lastProbeCode' || key === 'lastProbeAt')
         || ![...required].every(key => key in item) || !isBoundedIdentifier(item.providerId)
-        || !isBoundedIdentifier(item.profileId) || !isBoundedProjectionEnum(item.authMethod)
+        || !isBoundedIdentifier(item.profileId) || item.authMethod !== 'API_KEY'
         || (item.refKind !== 'STORE' && item.refKind !== 'ENV') || !isBoundedProjectionEnum(item.localStatus)
         || typeof item.providerDefault !== 'boolean') throw new ProtocolViolation('provider.control profile 条目无效');
     }
@@ -885,9 +904,18 @@ function validateProviderControlResult(
       || !isProviderModelId(result.modelId) || typeof result.setDefault !== 'boolean') {
       throw new ProtocolViolation('provider.control selection 投影无效');
     }
+  } else if (payload.intent === 'auth.activate') {
+    if (!hasExactFields(result, new Set(['providerId', 'profileId', 'localStatus']))
+      || !isProviderId(result.providerId) || !isProviderId(result.profileId) || !isBoundedProjectionEnum(result.localStatus))
+      throw new ProtocolViolation('provider.control 激活投影无效');
+  } else if (payload.intent === 'auth.logout.prepare') {
+    if (!hasExactFields(result, new Set(['providerId', 'profileId', 'confirmationId']))
+      || !isProviderId(result.providerId) || !isProviderId(result.profileId) || !isBoundedIdentifier(result.confirmationId))
+      throw new ProtocolViolation('provider.control 确认投影无效');
   } else if (payload.intent === 'auth.probe') {
     if (!hasExactFields(result, new Set(['providerId', 'profileId', 'modelId', 'outcome', 'probedAt']))) throw new ProtocolViolation('provider.control probe 投影无效');
-  } else if (!hasExactFields(result, new Set(['providerId', 'profileId', 'remoteRevoked'])) || result.remoteRevoked !== false) {
+  } else if (!hasExactFields(result, new Set(['providerId', 'profileId', 'remoteRevoked']))
+    || !isProviderId(result.providerId) || !isProviderId(result.profileId) || result.remoteRevoked !== false) {
     throw new ProtocolViolation('provider.control logout 投影无效');
   }
 }

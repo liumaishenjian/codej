@@ -155,6 +155,9 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
     private final InstructionContextService instructionContext;
     private final ModelGateway configuredGateway;
     private final ContextPreparationService contextPreparation;
+    /** 只按真实 Run 身份保存冻结来源和独立 child 模板，不持有父网关。 */
+    private final io.github.liumaishenjian.ccjava.cli.provider.RunModelSourceRegistry modelSources =
+            new io.github.liumaishenjian.ccjava.cli.provider.RunModelSourceRegistry();
     private final ApprovalHandler approvalHandler;
     private final io.github.liumaishenjian.ccjava.core.MemoryContextService memoryContext;
     private final LifecycleDispatcher lifecycle;
@@ -265,9 +268,14 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
             ModelGateway gateway, AgentEventSink eventSink, HeadlessRuntimeOptions options,
             ApprovalHandler approvalHandler) {
         HeadlessInstructionLayout instructions = HeadlessInstructionLayout.production();
+        Objects.requireNonNull(gateway, "gateway 不能为空");
+        ContextComponents context = contextComponents(options,
+                gateway instanceof ContextSummarizer sameSource ? sameSource : (request, cancellation) -> {
+                    throw new IllegalStateException("Provider summary unavailable");
+                });
         HeadlessRuntimeSession value = new HeadlessRuntimeSession(
-                Objects.requireNonNull(gateway, "gateway 不能为空"), eventSink, options, approvalHandler,
-                ContextPreparationService.noop(), null, HeadlessMemoryLayout.production(), instructions,
+                gateway, eventSink, options, approvalHandler,
+                context.service(), context.usage(), HeadlessMemoryLayout.production(), instructions,
                 null, true);
         try {
             value.settingsApplication = SettingsApplicationService.production(value, instructions.userHome());
@@ -340,7 +348,10 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                 .resolve("openai-compatible", settings.model(), supported, supported);
         ModelGateway gateway = new io.github.liumaishenjian.ccjava.core.model.ProviderRouter(
                 java.util.List.of(new io.github.liumaishenjian.ccjava.core.model.ModelProviderRoute(
-                        "openai-compatible", provider, capabilities)));
+                        "openai-compatible", provider, capabilities)),
+                new io.github.liumaishenjian.ccjava.core.model.ProviderRoutePolicy(1,
+                        java.time.Duration.ofMinutes(30), java.time.Duration.ZERO, -1, 1,
+                        java.time.Clock.systemUTC()));
         LatestContextUsageCollector usage = options.contextPreparation()
                 .map(ignored -> new LatestContextUsageCollector())
                 .orElse(null);
@@ -858,13 +869,13 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         io.github.liumaishenjian.ccjava.core.RunScopedModelGateway.RunScope modelRun = null;
         try {
             if (configuredGateway instanceof io.github.liumaishenjian.ccjava.core.RunScopedModelGateway runScoped) {
-                modelRun = runScoped.openRun();
-                modelRun.bindCancellation(this::cancelActive);
+                modelRun = runScoped.openRun(captured.cancellation.token());
+                bindRootModel(captured, modelRun);
             }
             return captured.scope().runtime().run(captured.sessionId(), new AgentRunRequest(
                     userMessage,
                     AgentLimits.interactive(),
-                    Optional.empty()));
+                    Optional.empty()), rootInitializer(captured), captured.cancellation.token());
         } finally {
             try {
                 if (modelRun != null) modelRun.close();
@@ -1013,7 +1024,10 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                 io.github.liumaishenjian.ccjava.core.plugin.PluginRunHooks.none(), finalHandler, eligibility);
     }
 
-    /** 在 Session 打开前安装 verification skip 的可信用户决定端口。 */
+    /**
+     * 在 Session 打开前安装 verification skip 的可信用户决定端口。
+     * @param coordinator 非空的可信决定签发与消费协调器
+     */
     public void installPlanVerificationSkipCoordinator(
             io.github.liumaishenjian.ccjava.core.PlanVerificationSkipCoordinator coordinator) {
         synchronized (lifecycleMonitor) {
@@ -1036,7 +1050,10 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         }
     }
 
-    /** 在 Session 打开前安装结构化用户问题 Surface。 */
+    /**
+     * 在 Session 打开前安装结构化用户问题 Surface。
+     * @param handler 非空的用户问题交互端口，不由模型代答
+     */
     public void installUserQuestionHandler(io.github.liumaishenjian.ccjava.core.UserQuestionHandler handler) {
         synchronized (lifecycleMonitor) {
             if (session != null) throw new IllegalStateException("Session 打开后不能替换用户问题端口");
@@ -1101,6 +1118,10 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
      *
      * <p>身份、revision 与 digest 必须全部匹配；该迁移不创建新 Session/planId，不执行 Tool，
      * 也不批准或启动 Batch 3 的执行路径。</p>
+     * @param planId Surface 正在展示的计划身份
+     * @param revision Surface 正在展示的修订号
+     * @param contentDigest 该修订的正文摘要
+     * @return 保存后的草稿；身份或待审批状态不匹配时为空
      */
     public Optional<io.github.liumaishenjian.ccjava.domain.PlanArtifact> returnPlanForFeedback(
             String planId, long revision, String contentDigest) {
@@ -1128,7 +1149,13 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                 .orElse(io.github.liumaishenjian.ccjava.domain.PlanContextPolicy.KEEP);
     }
 
-    /** 仅拒绝 Surface 展示的精确 durable review revision。 */
+    /**
+     * 仅拒绝 Surface 展示的精确 durable review revision。
+     * @param planId Surface 展示的计划身份
+     * @param revision Surface 展示的修订号
+     * @param contentDigest 该修订的正文摘要
+     * @return 保存后的拒绝工件；绑定或待审批状态不匹配时为空
+     */
     public Optional<io.github.liumaishenjian.ccjava.domain.PlanArtifact> rejectDurablePlan(
             String planId, long revision, String contentDigest) {
         requireOpen();
@@ -1146,7 +1173,10 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         return Optional.of(store.save(rejected, revision, contentDigest));
     }
 
-    /** 返回当前 Session 已提交的 Markdown PlanArtifact，不读取模型输出。 */
+    /**
+     * 返回当前 Session 已提交的 Markdown PlanArtifact，不读取模型输出。
+     * @return 持久化工件；尚未创建时为空
+     */
     public Optional<io.github.liumaishenjian.ccjava.domain.PlanArtifact> planArtifact() {
         requireOpen();
         return sessions.planArtifacts(session.id()).load(session.id());
@@ -1172,7 +1202,51 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         }
     }
 
+    /** 完整重绑后再注册取消，worker/reviewer 不读取同步 facade。 */
+    private void bindRootModel(ActiveRun captured,
+                              io.github.liumaishenjian.ccjava.core.RunScopedModelGateway.RunScope modelRun) {
+        var binding = modelRun.binding();
+        if (providesExplicitModelBindings() && binding.isEmpty()) {
+            throw new IllegalStateException("Declared model binding unavailable");
+        }
+        if (binding.isPresent()) {
+            var bound = binding.orElseThrow();
+            var preparation = contextPreparation.withSummarizer(bound.summarizer(),
+                    bound.selection().map(value -> value.modelId()), bound.contextWindowTokens());
+            var rebound = captured.scope().bindModel(bound, preparation);
+            synchronized (lifecycleMonitor) {
+                if (activeRun != captured || captured.runId() != null) {
+                    throw new IllegalStateException("Run binding ownership changed");
+                }
+                captured.scope = rebound;
+                captured.modelBinding = bound;
+                captured.preparation = preparation;
+            }
+        }
+        // empty 仅兼容旧 Fake；生产失败绑定仍进入 Runtime 失败终态，不 fallback。
+        modelRun.bindCancellation(() -> cancelCaptured(captured));
+    }
+
+    /** 只登记 Runtime 分配的真实身份；初始化失败也由外层 finally 解除。 */
+    private io.github.liumaishenjian.ccjava.core.RunInitializer rootInitializer(ActiveRun captured) {
+        return (actualSession, actualRun) -> {
+            if (captured.modelBinding != null) {
+                captured.modelRegistration.set(modelSources.register(actualSession, actualRun,
+                        captured.modelBinding, captured.preparation, Optional.of(options.model())));
+            }
+        };
+    }
+
+    private boolean cancelCaptured(ActiveRun captured) {
+        synchronized (lifecycleMonitor) {
+            if (activeRun != captured) return false;
+        }
+        // 取消可能通知模型清理；不持宿主锁调用外部回调，避免等待 worker 时锁住终态事件。
+        return captured.cancellation.cancel();
+    }
+
     private void releaseActiveRun(ActiveRun captured) {
+        captured.closeModelRegistration();
         synchronized (lifecycleMonitor) {
             AgentRuntime runtime = captured.scope().runtime();
             if (runtime.hasInFlightModelWork()) drainingModelRuntimes.put(runtime, captured.runId());
@@ -1212,17 +1286,19 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         try {
             if (configuredGateway instanceof io.github.liumaishenjian.ccjava.core.RunScopedModelGateway runScoped) {
                 modelRun = request.limits().runDeadline()
-                        .map(runScoped::openRun)
-                        .orElseGet(runScoped::openRun);
-                modelRun.bindCancellation(this::cancelActive);
+                        .map(duration -> runScoped.openRun(duration, captured.cancellation.token()))
+                        .orElseGet(() -> runScoped.openRun(captured.cancellation.token()));
+                bindRootModel(captured, modelRun);
             }
-            return captured.scope().runtime().run(captured.sessionId(), request);
+            return captured.scope().runtime().run(captured.sessionId(), request,
+                    rootInitializer(captured), captured.cancellation.token());
         } finally {
             try {
                 if (modelRun != null) {
                     modelRun.close();
                 }
             } finally {
+                captured.closeModelRegistration();
                 synchronized (lifecycleMonitor) {
                     AgentRuntime runtime = captured.scope().runtime();
                     if (runtime.hasInFlightModelWork()) {
@@ -1270,12 +1346,10 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
      */
     public boolean cancelActive() {
         ActiveRun captured;
-        RunId runId;
         synchronized (lifecycleMonitor) {
             captured = activeRun;
-            runId = captured == null ? null : captured.runId();
         }
-        return runId != null && captured.scope().runtime().cancel(captured.sessionId(), runId);
+        return captured != null && cancelCaptured(captured);
     }
 
     /**
@@ -1293,7 +1367,7 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                 return false;
             }
         }
-        return captured.scope().runtime().cancel(captured.sessionId(), runId);
+        return cancelCaptured(captured);
     }
 
     /**
@@ -1306,12 +1380,23 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         return session.id();
     }
 
-    /** Session-owned Plan adapter；命令层只读取此处的权威状态。 */
+    /**
+     * Session-owned Plan adapter；命令层只读取此处的权威状态。
+     * @return Session 的协调器；尚未安装时为空
+     */
     public Optional<io.github.liumaishenjian.ccjava.core.PlanModeCoordinator> planStatus() {
         requireOpen();
         return session.plan();
     }
 
+    /**
+     * 安装旧结构化计划并同步持久化工件，不启动执行。
+     * @param id 计划身份
+     * @param objective 用户目标
+     * @param steps 已规范化的有序步骤
+     * @param digest 创建时工作区摘要
+     * @return 新协调器；Session 有活动 Run 时为空
+     */
     public Optional<io.github.liumaishenjian.ccjava.core.PlanModeCoordinator> createPlan(
             String id, String objective, List<io.github.liumaishenjian.ccjava.domain.PlanStep> steps, String digest) {
         requireOpen();
@@ -1350,12 +1435,20 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         });
     }
 
-    /** 旧内部协议兼容入口。 */
+    /**
+     * 旧内部协议兼容入口，仍验证实时工作区摘要。
+     * @param digest 服务端发布的计划工作区摘要
+     * @return 匹配的当前计划；摘要不匹配或无计划时为空
+     */
     public Optional<io.github.liumaishenjian.ccjava.core.PlanModeCoordinator> approvePlan(String digest) {
         return approvePlan("", digest);
     }
 
-    /** 仅拒绝 Surface 实际展示的当前 Plan；空 planId 保留旧内部协议兼容。 */
+    /**
+     * 仅拒绝 Surface 实际展示的当前 Plan；空 planId 保留旧内部协议兼容。
+     * @param planId 当前展示的身份，空串表示旧协议
+     * @return 匹配的计划；无计划或身份不同则为空
+     */
     public Optional<io.github.liumaishenjian.ccjava.core.PlanModeCoordinator> rejectPlan(String planId) {
         requireOpen();
         Optional<io.github.liumaishenjian.ccjava.core.PlanModeCoordinator> rejected =
@@ -1371,23 +1464,41 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         return rejected;
     }
 
-    /** 旧内部协议兼容入口。 */
+    /**
+     * 旧内部协议兼容入口，拒绝调用时的当前计划。
+     * @return 当前计划；尚未安装时为空
+     */
     public Optional<io.github.liumaishenjian.ccjava.core.PlanModeCoordinator> rejectPlan() {
         return rejectPlan("");
     }
+    /**
+     * 以实时工作区摘要领取步骤；调用摘要失配会进入冲突处理而非执行。
+     * @param digest 调用方预期的执行前摘要
+     * @return 当前计划与领取结果；无计划时为空
+     */
     public Optional<PlanStepOutcome> beginPlanStep(String digest) {
         requireOpen();
         String current = currentWorkspaceDigest();
         var step = session.beginPlanStep(digest.equals(current) ? current : "conflict-" + current);
         return session.plan().map(plan -> new PlanStepOutcome(plan.document(), plan.state(), step));
     }
+    /**
+     * 完成当前步骤，同时把调用摘要与实时工作区状态核对。
+     * @param digest 调用方报告的执行后摘要
+     * @return 完成或冲突处理后的协调器；无计划时为空
+     */
     public Optional<io.github.liumaishenjian.ccjava.core.PlanModeCoordinator> completePlanStep(String digest) {
         requireOpen();
         String current = currentWorkspaceDigest();
         return session.completePlanStep(digest.equals(current) ? current : "conflict-" + current);
     }
 
-    /** 执行当前已批准 Plan；步骤执行只能通过当前 Scope 的统一 Pipeline。 */
+    /**
+     * 执行当前已批准 Plan；步骤执行只能通过当前 Scope 的统一 Pipeline。
+     * @param cancellationToken 非空的协作式取消令牌
+     * @param maxSteps 本次执行步骤上限
+     * @return 执行后的协调器；Session 被 fence 或无计划时为空
+     */
     public Optional<io.github.liumaishenjian.ccjava.core.PlanModeCoordinator> executePlan(
             CancellationToken cancellationToken, int maxSteps) {
         requireOpen();
@@ -1760,7 +1871,11 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         }
     }
 
-    /** 在已领取句柄上启动唯一正常 Agent Run。 */
+    /**
+     * 在已领取句柄上启动唯一正常 Agent Run；启动前再次验证工件交接与工作区摘要。
+     * @param acceptance 本宿主已接受且尚未启动的单次句柄
+     * @return Runtime 的唯一终态，返回前同步记录持久化计划终态
+     */
     public AgentRunResult runAcceptedPlan(PlanExecutionAcceptance acceptance) {
         Objects.requireNonNull(acceptance, "acceptance 不能为空");
         ActiveRun captured = acceptance.activeRun;
@@ -1797,12 +1912,13 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         io.github.liumaishenjian.ccjava.core.RunScopedModelGateway.RunScope modelRun = null;
         try {
             if (configuredGateway instanceof io.github.liumaishenjian.ccjava.core.RunScopedModelGateway runScoped) {
-                modelRun = runScoped.openRun();
-                modelRun.bindCancellation(this::cancelActive);
+                modelRun = runScoped.openRun(captured.cancellation.token());
+                bindRootModel(captured, modelRun);
             }
             AgentRunResult result = captured.scope().runtime().run(captured.sessionId(),
                     new AgentRunRequest(new UserMessage(executionUserMessage(acceptance.brief)),
-                            AgentLimits.interactive(), Optional.empty()));
+                            AgentLimits.interactive(), Optional.empty()), rootInitializer(captured),
+                    captured.cancellation.token());
             recordDurablePlanTerminal(result, executionMessageStart);
             return result;
         } catch (RuntimeException failure) {
@@ -1837,7 +1953,10 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                 : "Implement the approved plan. Additional user feedback:\n" + brief.userFeedback();
     }
 
-    /** 入队失败时释放尚未开始的句柄；APPROVED 保持可显式恢复。 */
+    /**
+     * 入队失败时释放尚未开始的句柄；APPROVED 保持可显式恢复。
+     * @param acceptance 待释放的非空句柄；已启动或非当前句柄不改变活动 Run
+     */
     public void releaseAcceptedPlan(PlanExecutionAcceptance acceptance) {
         Objects.requireNonNull(acceptance, "acceptance 不能为空");
         synchronized (lifecycleMonitor) {
@@ -2176,6 +2295,9 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
     /**
      * 旧字符串入口不再具有授权语义；所有调用 fail closed。
      *
+     * @param requirementId 旧调用的要求身份，不赋予授权
+     * @param decisionId 旧字符串决定身份，不作为可信凭据
+     * @return 始终抛出异常，不返回工件
      * @deprecated 使用可信端口签发并消费 typed 决定
      */
     @Deprecated
@@ -2209,7 +2331,10 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
             this.activeRun = activeRun;
             this.correction = correction;
         }
-        /** 返回不可变执行交接。 */
+        /**
+         * 返回不可变执行交接。
+         * @return 绑定获批修订、摘要和执行策略的交接值
+         */
         public io.github.liumaishenjian.ccjava.domain.ExecutionBrief brief() { return brief; }
     }
 
@@ -2324,12 +2449,21 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                         : io.github.liumaishenjian.ccjava.core.PlanStepExecutionResult.Status.FAILURE,
                 current, "pipeline tool execution failed");
     }
-    /** 旧版无摘要入口显式失败，不允许静默完成。 */
+    /**
+     * 旧版无摘要入口显式失败，不允许静默完成。
+     * @return 始终抛出异常，不返回协调器
+     */
     @Deprecated
     public Optional<io.github.liumaishenjian.ccjava.core.PlanModeCoordinator> completePlanStep() {
         requireOpen(); return session.completePlanStep();
     }
 
+    /**
+     * 将步骤领取后的权威状态投影给命令层，而非用是否存在步骤推断计划已完成。
+     * @param document 当前计划文档
+     * @param state Gate 和步骤游标的当前状态
+     * @param step 本次领取的步骤；Gate 不允许或无剩余步骤时为空
+     */
     public record PlanStepOutcome(io.github.liumaishenjian.ccjava.domain.PlanDocument document,
                                   io.github.liumaishenjian.ccjava.domain.PlanExecutionState state,
                                   Optional<io.github.liumaishenjian.ccjava.domain.PlanStep> step) {}
@@ -2627,14 +2761,24 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
      * 快照，下一 Run 的 ContextPreparationService 仅在来源前缀不变时一次性消费；任何新 canonical
      * 消息、活动 Run、关闭、取消或竞争均使候选失效，Canonical/JSONL/Checkpoint 保持不变。</p>
      *
+     * <p>开启、准备、摘要及候选提交受 min(options.timeout, 300秒) 单调墙钟与调用取消共同约束；
+     * 绑定视图共享 Root 已安装 projection 和 pending，不创建 canonical Run 或 Session。</p>
      * @param commandAnchors 仅本次命令给出的已验证锚点
-     * @param cancellationToken 命令取消边界
+     * @param callerCancellation 命令取消边界
      * @return 不含 Context 正文的类型化终态
      */
     public CompactResult compactForNextRun(List<String> commandAnchors,
-                                           io.github.liumaishenjian.ccjava.core.CancellationToken cancellationToken) {
+                                           io.github.liumaishenjian.ccjava.core.CancellationToken callerCancellation) {
         Objects.requireNonNull(commandAnchors, "commandAnchors 不能为空");
-        Objects.requireNonNull(cancellationToken, "cancellationToken 不能为空");
+        Objects.requireNonNull(callerCancellation, "cancellationToken 不能为空");
+        try (var deadline = new CompactDeadline(options.timeout(), callerCancellation)) {
+            return compactWithinDeadline(commandAnchors, deadline);
+        }
+    }
+
+    /** 私有操作不创建 Run identity；返回前 scope 关闭，随后外层解除 deadline 订阅。 */
+    private CompactResult compactWithinDeadline(List<String> commandAnchors, CompactDeadline deadline) {
+        var cancellationToken = deadline.token();
         final List<io.github.liumaishenjian.ccjava.domain.AgentMessage> canonical;
         final List<String> anchors;
         final long revision;
@@ -2647,49 +2791,71 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
             anchors = mergedCompactAnchors(scope.get().configuration().compactAnchors(), commandAnchors);
             revision = ++compactRevision;
         }
-        var preCompact = extensions.hooks().evaluate(
-                new io.github.liumaishenjian.ccjava.domain.hook.HookInvocation(
-                        io.github.liumaishenjian.ccjava.domain.hook.HookEventKind.PRE_COMPACT,
-                        session.id(), Optional.empty(), "compact",
-                        new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
-                                "messageCount", canonical.size(), "anchorCount", anchors.size()))),
-                cancellationToken);
-        if (preCompact.blocking()) {
-            return CompactResult.HOOK_BLOCKED;
-        }
-        List<String> effectiveAnchors = new java.util.ArrayList<>(anchors);
-        preCompact.additionalContext().ifPresent(effectiveAnchors::add);
-        var result = contextPreparation.compact(new io.github.liumaishenjian.ccjava.domain.ModelRequest(
-                session.id(), new RunId("compact-" + revision), 1, canonical, List.of()),
-                List.copyOf(effectiveAnchors), cancellationToken);
-        CompactResult finalResult;
-        synchronized (lifecycleMonitor) {
-            if (closed || activeRun != null || !canonical.equals(currentCanonicalSnapshot())) {
-                finalResult = CompactResult.STALE;
-            } else if (cancellationToken.isCancellationRequested() || result.status()
-                    == io.github.liumaishenjian.ccjava.core.ContextPreparationService.ExplicitCompactStatus.CANCELLED) {
-                finalResult = CompactResult.CANCELLED;
-            } else if (result.status()
-                    == io.github.liumaishenjian.ccjava.core.ContextPreparationService.ExplicitCompactStatus.ADOPTED) {
-                contextPreparation.installForNextRun(canonical, result.projection().orElseThrow());
-                finalResult = CompactResult.ADOPTED;
-            } else {
-                finalResult = switch (result.status()) {
-                    case UNAVAILABLE -> CompactResult.UNAVAILABLE;
-                    case SUMMARIZER_FAILURE -> CompactResult.SUMMARIZER_FAILURE;
-                    case SUMMARIZER_REJECTED, REJECTED -> CompactResult.REJECTED;
-                    case ADOPTED, CANCELLED -> throw new IllegalStateException("已处理的 compact status");
-                };
+        io.github.liumaishenjian.ccjava.core.RunScopedModelGateway.RunScope modelRun = null;
+        try {
+            ContextPreparationService preparation = contextPreparation;
+            if (configuredGateway instanceof io.github.liumaishenjian.ccjava.core.RunScopedModelGateway runScoped) {
+                if (cancellationToken.isCancellationRequested()) return CompactResult.CANCELLED;
+                modelRun = runScoped.openRun(cancellationToken.remainingTime().orElseThrow(), cancellationToken);
+                modelRun.bindCancellation(deadline::cancel);
+                var binding = modelRun.binding();
+                if (runScoped.providesRunBindings() && binding.isEmpty()) {
+                    throw new IllegalStateException("Declared model binding unavailable");
+                }
+                if (binding.isPresent()) {
+                    var bound = binding.orElseThrow();
+                    preparation = contextPreparation.withSummarizer(bound.summarizer(),
+                            bound.selection().map(value -> value.modelId()), bound.contextWindowTokens());
+                }
             }
+            if (cancellationToken.isCancellationRequested()) return CompactResult.CANCELLED;
+            var preCompact = extensions.hooks().evaluate(
+                    new io.github.liumaishenjian.ccjava.domain.hook.HookInvocation(
+                            io.github.liumaishenjian.ccjava.domain.hook.HookEventKind.PRE_COMPACT,
+                            session.id(), Optional.empty(), "compact",
+                            new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
+                                    "messageCount", canonical.size(), "anchorCount", anchors.size()))),
+                    cancellationToken);
+            if (preCompact.blocking()) return CompactResult.HOOK_BLOCKED;
+            List<String> effectiveAnchors = new java.util.ArrayList<>(anchors);
+            preCompact.additionalContext().ifPresent(effectiveAnchors::add);
+            var result = preparation.compact(canonical, List.copyOf(effectiveAnchors), cancellationToken);
+            CompactResult finalResult;
+            synchronized (lifecycleMonitor) {
+                if (closed || activeRun != null || revision != compactRevision
+                        || !canonical.equals(currentCanonicalSnapshot())) {
+                    finalResult = CompactResult.STALE;
+                } else if (cancellationToken.isCancellationRequested() || result.status()
+                        == io.github.liumaishenjian.ccjava.core.ContextPreparationService.ExplicitCompactStatus.CANCELLED) {
+                    finalResult = CompactResult.CANCELLED;
+                } else if (result.status()
+                        == io.github.liumaishenjian.ccjava.core.ContextPreparationService.ExplicitCompactStatus.ADOPTED) {
+                    preparation.installForNextRun(canonical, result.projection().orElseThrow());
+                    finalResult = CompactResult.ADOPTED;
+                } else {
+                    finalResult = switch (result.status()) {
+                        case UNAVAILABLE -> CompactResult.UNAVAILABLE;
+                        case SUMMARIZER_FAILURE -> CompactResult.SUMMARIZER_FAILURE;
+                        case SUMMARIZER_REJECTED, REJECTED -> CompactResult.REJECTED;
+                        case ADOPTED, CANCELLED -> throw new IllegalStateException("已处理的 compact status");
+                    };
+                }
+            }
+            extensions.hooks().evaluate(
+                    new io.github.liumaishenjian.ccjava.domain.hook.HookInvocation(
+                            io.github.liumaishenjian.ccjava.domain.hook.HookEventKind.POST_COMPACT,
+                            session.id(), Optional.empty(), "compact",
+                            new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
+                                    "status", finalResult.name()))),
+                    cancellationToken);
+            return finalResult;
+        } catch (RuntimeException failure) {
+            // 生产绑定/摘要失败只返回失败码，绝不转向启动摘要器重试。
+            return cancellationToken.isCancellationRequested() ? CompactResult.CANCELLED
+                    : CompactResult.SUMMARIZER_FAILURE;
+        } finally {
+            if (modelRun != null) modelRun.close();
         }
-        extensions.hooks().evaluate(
-                new io.github.liumaishenjian.ccjava.domain.hook.HookInvocation(
-                        io.github.liumaishenjian.ccjava.domain.hook.HookEventKind.POST_COMPACT,
-                        session.id(), Optional.empty(), "compact",
-                        new io.github.liumaishenjian.ccjava.domain.JsonObject(Map.of(
-                                "status", finalResult.name()))),
-                cancellationToken);
-        return finalResult;
     }
 
     /** Headless 显式 compact 的固定终态。 */
@@ -2972,14 +3138,24 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                                 agentSupervisor))).toList());
     }
 
+    /** 端口声明只决定可信装配路径；绝不以一次lookup/模型失败决定是否回退。 */
+    private boolean providesExplicitModelBindings() {
+        return configuredGateway instanceof io.github.liumaishenjian.ccjava.core.RunScopedModelGateway routed
+                && routed.providesRunBindings();
+    }
+
     private void initializeSubagents() {
+        boolean capturedModelRoutes = providesExplicitModelBindings();
         Set<String> tools = registeredTools().stream().map(tool -> tool.definition().name())
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
-        agentDefinitions = io.github.liumaishenjian.ccjava.cli.subagent.FileAgentDefinitionCatalog.load(
-                agentDefinitionUserRoot,
-                workspaceBootstrap.workspaceGuard().workspace().resolve(".cc-java").resolve("agents"),
-                tools, Set.of(options.model()), io.github.liumaishenjian.ccjava.core.CancellationToken.none(),
-                extensions.status().projectTrusted());
+        Path projectAgents = workspaceBootstrap.workspaceGuard().workspace().resolve(".cc-java").resolve("agents");
+        agentDefinitions = capturedModelRoutes
+                ? io.github.liumaishenjian.ccjava.cli.subagent.FileAgentDefinitionCatalog.loadForCapturedRoutes(
+                        agentDefinitionUserRoot, projectAgents, tools,
+                        io.github.liumaishenjian.ccjava.core.CancellationToken.none(), extensions.status().projectTrusted())
+                : io.github.liumaishenjian.ccjava.cli.subagent.FileAgentDefinitionCatalog.load(
+                        agentDefinitionUserRoot, projectAgents, tools, Set.of(options.model()),
+                        io.github.liumaishenjian.ccjava.core.CancellationToken.none(), extensions.status().projectTrusted());
         childTaskJournal = new io.github.liumaishenjian.ccjava.cli.subagent.FileChildTaskJournal(
                 options.sessionStoreRoot().resolve("subagent-journal").resolve(session.id().value()));
         // 恢复扫描只生成 INTERRUPTED_UNKNOWN 投影；不提交 Supervisor 任务，因此不会重放任何副作用。
@@ -2993,7 +3169,8 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
                 () -> agentSupervisor,
                 options.executionBackend(),
                 options.executionShell(),
-                request -> childTaskBoardAccess(request));
+                request -> childTaskBoardAccess(request),
+                capturedModelRoutes ? modelSources : null);
         var total = new io.github.liumaishenjian.ccjava.domain.subagent.ChildBudget(
                 Math.max(AgentLimits.DEFAULT.totalModelTurns().orElseThrow() * 4, 1),
                 Math.max(AgentLimits.DEFAULT.totalToolCalls().orElseThrow() * 4, 0), 1_000_000L, 262_144,
@@ -3015,8 +3192,8 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
         List<String> enabled = new java.util.ArrayList<>(current.enabledBuiltinTools());
         if (!enabled.contains("delegate_agent")) enabled.add("delegate_agent");
         scope.set(buildScope(new RuntimeConfiguration(current.modelName(), current.permissionMode(),
-                current.permissionRules(), enabled, current.toolConfigurations(), current.compactAnchors(),
-                current.diagnosticsVerbosity())));
+                current.approvalReviewer(), current.permissionRules(), enabled, current.toolConfigurations(),
+                current.compactAnchors(), current.diagnosticsVerbosity())));
     }
 
     private RuntimeConfiguration initialConfiguration() {
@@ -3569,7 +3746,20 @@ public final class HeadlessRuntimeSession implements AutoCloseable {
     }
 
     private static final class ActiveRun {
-        private final HeadlessRuntimeScope scope;
+        // 同一 identity 保持取消/accepted-plan 所有权，只在 Runtime 启动前发布新依赖图。
+        private volatile HeadlessRuntimeScope scope;
+        private io.github.liumaishenjian.ccjava.core.RunModelBinding modelBinding;
+        private ContextPreparationService preparation;
+        private final io.github.liumaishenjian.ccjava.core.CancellationSource cancellation =
+                new io.github.liumaishenjian.ccjava.core.CancellationSource();
+        private final java.util.concurrent.atomic.AtomicReference<
+                io.github.liumaishenjian.ccjava.cli.provider.RunModelSourceRegistry.Registration> modelRegistration =
+                new java.util.concurrent.atomic.AtomicReference<>();
+
+        private void closeModelRegistration() {
+            var registration = modelRegistration.getAndSet(null);
+            if (registration != null) registration.close();
+        }
         private final SessionId sessionId;
         private final String planId;
         private RunId runId;

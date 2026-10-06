@@ -28,8 +28,6 @@ import tools.jackson.databind.json.JsonMapper;
  */
 final class PiCliLogin {
     private static final String MAIN = "io.github.liumaishenjian.ccjava.cli.CcJavaCliMain";
-    private static final Set<String> ENVIRONMENT = Set.of("SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR",
-            "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY");
     private final Runner runner;
 
     PiCliLogin() { this(PiCliLogin::spawn); }
@@ -54,10 +52,10 @@ final class PiCliLogin {
             Path helper = regular(Path.of(required(properties, "codej.piAuthCli")));
             if (!"pi-auth-cli.js".equals(helper.getFileName().toString())) throw new IOException();
             Map<String,String> env = new HashMap<>();
-            for (String name : ENVIRONMENT) if (environment.containsKey(name)) env.put(name, environment.get(name));
-            Map<String,String> proxies = new HashMap<>();
-            for (String name : Set.of("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"))
-                if (env.containsKey(name)) proxies.put(name, env.get(name));
+            for (String name : Set.of("SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR"))
+                if (environment.containsKey(name)) env.put(name, environment.get(name));
+            Map<String,String> proxies = PiRuntimeConfiguration.normalizeProxyEnvironment(environment);
+            env.putAll(proxies);
             new PiWorkerConfiguration(node, worker, proxies);
             regular(worker.getParent().resolve("node_modules/@earendil-works/pi-ai/package.json"));
             Path java = regular(Path.of(required(properties, "java.home"), "bin",

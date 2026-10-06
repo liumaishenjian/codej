@@ -32,10 +32,7 @@ public final class PiAuthBridgeMain {
             Map<String, String> environment = new HashMap<>();
             if (parsed.environmentName() == null) {
                 // 交互认证也不读取 ENV 密钥，只把可信代理白名单交给固定装配器。
-                for (String name : Set.of("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")) {
-                    String value = System.getenv(name);
-                    if (value != null) environment.put(name, value);
-                }
+                environment.putAll(PiRuntimeConfiguration.normalizeProxyEnvironment(System.getenv()));
                 PiRuntimeConfiguration.resolve(environment);
             }
             resources = ProviderAuthRuntimeResources.open(home, directory, environment);

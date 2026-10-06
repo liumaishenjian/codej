@@ -35,7 +35,7 @@ class PiRuntimeConfigurationTest {
                 "HTTP_PROXY", "http://private-user:private-password@127.0.0.1:8080",
                 "HTTPS_PROXY", "http://127.0.0.1:8081", "NO_PROXY", "localhost,127.0.0.1",
                 "NODE_OPTIONS", "--require private-script", "OPENAI_API_KEY", "private-key",
-                "PATH", "private-path", "http_proxy", "http://unexpected.invalid"));
+                "PATH", "private-path"));
         var configuration = PiRuntimeConfiguration.resolve(properties, environment);
         // 不扩展生产 API、不启动进程；检查进程配置拥有的防御复制快照。
         var field = PiWorkerConfiguration.class.getDeclaredField("proxies");
@@ -46,6 +46,33 @@ class PiRuntimeConfigurationTest {
         environment.clear();
         assertThat((Map<?, ?>) field.get(configuration)).hasSize(3);
         assertThat(configuration.toString()).doesNotContain(directory.toString(), "private", "127.0.0.1");
+    }
+
+    @Test
+    void windowsStyleLowercaseProxyNamesAreCanonicalized() throws Exception {
+        Properties properties = installation();
+        Map<String, String> environment = Map.of(
+                "http_proxy", "http://127.0.0.1:8080",
+                "https_proxy", "http://127.0.0.1:8081",
+                "no_proxy", "localhost,127.0.0.1");
+        var configuration = PiRuntimeConfiguration.resolve(properties, environment);
+        var field = PiWorkerConfiguration.class.getDeclaredField("proxies");
+        field.setAccessible(true);
+        assertThat(field.get(configuration)).isEqualTo(Map.of(
+                "HTTP_PROXY", environment.get("http_proxy"),
+                "HTTPS_PROXY", environment.get("https_proxy"),
+                "NO_PROXY", environment.get("no_proxy")));
+    }
+
+    @Test
+    void proxyNamesThatOnlyDifferByCaseAreRejected() {
+        Map<String, String> environment = Map.of(
+                "HTTP_PROXY", "http://one",
+                "http_proxy", "http://two");
+        assertThatThrownBy(() -> PiRuntimeConfiguration.normalizeProxyEnvironment(environment))
+                .isInstanceOf(PiWorkerException.class)
+                .hasMessage("CONFIGURATION_INVALID")
+                .hasNoCause();
     }
 
     @Test

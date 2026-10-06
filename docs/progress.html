@@ -223,7 +223,7 @@
     }
   </style>
 </head>
-<body data-matrix-digest="fd96be0e8197" data-state-digest="451e5bd04088" data-code-digest="38f15fb2182b">
+<body data-matrix-digest="fd96be0e8197" data-state-digest="8218efc869a6" data-code-digest="489bae1b484e">
   <main class="shell">
     <section class="hero">
       <p class="eyebrow">Reference-driven Java Agent Runtime</p>
@@ -330,13 +330,13 @@
         </div>
       </div>
       <dl class="evidence-grid">
-        <div class="evidence-item"><dt>Last change</dt><dd>修复开发启动器 Java 构建指纹漏计 cc-java-model-pi，确保 Pi Worker 代理修复进入实际运行的 class；保留 OAuth 阶段摘要与最小环境白名单。当前在线 OAuth 未完成，Maven 构建受本机网络权限阻断。</dd></div>
+        <div class="evidence-item"><dt>Last change</dt><dd>修复 Windows 小写 http_proxy/https_proxy/no_proxy 未进入 Pi Java/Node 链路的问题：统一代理键规范化、拒绝大小写重复，并覆盖登录 helper 与模型 worker；真实 StartCodejDev --print 已在当前 OAuth profile 上返回 OK（约 5.7 秒）。仍未提升双 Provider 在线等级或 S15 Exit。</dd></div>
         <div class="evidence-item"><dt>Evidence stage</dt><dd><code>S15</code></dd></div>
         <div class="evidence-item"><dt>Evidence class</dt><dd><code>WORKTREE_DIRECTION_VALIDATION_CANDIDATE</code></dd></div>
         <div class="evidence-item"><dt>Code commit</dt><dd><code>2bb02b0</code></dd></div>
         <div class="evidence-item"><dt>Standard command</dt><dd><code>Pi Node/TUI 登录回归、Pi release/launcher 自检、Java CLI/依赖模块与既有 TUI 回归；完整复验命令与限制见 docs/evidence/S15-login-logout.md、docs/evidence/S15-pi-provider-runtime.md</code></dd></div>
-        <div class="evidence-item"><dt>Result</dt><dd>Pi 登录注销与 Provider Runtime 的受控离线证据已合入：Node 238/238、TUI 登录注销回归、Pi release/launcher 自检、安装版 Plan TUI→Java 1/1，以及既有 Java/TUI 回归均保留。多种完整构建条件仍被 Git 启动 OS5 阻断；未读取真实凭证，在线 Provider、物理 UI 与跨平台安装未验证，不声明完整候选通过。</dd></div>
-        <div class="evidence-item"><dt>Source digests</dt><dd><code>matrix fd96be0e8197</code><br><code>state 451e5bd04088</code><br><code>code/build 38f15fb2182b</code></dd></div>
+        <div class="evidence-item"><dt>Result</dt><dd>Pi 登录注销与 Provider Runtime 的受控证据已合入：代理键大小写归一化回归通过，Java/TUI 登录回归与既有 Node 238/238 保留；真实 stdio 与 StartCodejDev --print 在当前 OAuth profile 上返回 OK 并完成 run.completed。双 Provider 在线证据、物理 UI、跨平台安装与 S15 Exit 仍未完成，不声明整体候选通过。</dd></div>
+        <div class="evidence-item"><dt>Source digests</dt><dd><code>matrix fd96be0e8197</code><br><code>state 8218efc869a6</code><br><code>code/build 489bae1b484e</code></dd></div>
       </dl>
     </section>
 

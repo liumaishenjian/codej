@@ -61,10 +61,7 @@ public final class PiRuntimeConfiguration {
                 if (!"login.mjs".equals(bridge.getFileName().toString())) throw invalid();
                 worker = realFile(bridge).getParent().resolve("worker.mjs");
             }
-            Map<String, String> proxies = new HashMap<>();
-            for (String name : PROXIES) {
-                if (environment.containsKey(name)) proxies.put(name, environment.get(name));
-            }
+            Map<String, String> proxies = normalizeProxyEnvironment(environment);
             PiWorkerConfiguration configuration = new PiWorkerConfiguration(node, worker, proxies);
             Path realWorker = realFile(worker);
             realFile(realWorker.getParent().resolve("node_modules/@earendil-works/pi-ai/package.json"));
@@ -77,6 +74,42 @@ public final class PiRuntimeConfiguration {
     static boolean available(Properties properties, Map<String, String> environment) {
         try { resolve(properties, environment); return true; }
         catch (RuntimeException failure) { return false; }
+    }
+
+    /**
+     * 规范化 Windows 环境中的代理变量名，同时保持最小白名单。
+     *
+     * <p>Windows 环境变量名大小写不敏感，但 Java {@link System#getenv()} 返回的 Map
+     * 仍可能保留宿主写入的小写键。只做大小写归一化，不读取其它环境变量；同一规范名
+     * 同时出现时拒绝，避免调用方利用大小写差异制造不确定的代理选择。</p>
+     *
+     * @param environment 来源环境快照；不包含秘密值的完整 Map 也可以直接传入
+     * @return 只含大写 {@code HTTP_PROXY}/{@code HTTPS_PROXY}/{@code NO_PROXY} 的不可变 Map
+     * @throws PiWorkerException 环境为空、代理键重复或代理值非法
+     */
+    public static Map<String, String> normalizeProxyEnvironment(Map<String, String> environment) {
+        try {
+            if (environment == null) throw invalid();
+            Map<String, String> result = new HashMap<>();
+            for (var entry : environment.entrySet()) {
+                String key = entry.getKey();
+                if (key == null) throw invalid();
+                String canonical = PROXIES.stream()
+                        .filter(name -> name.equalsIgnoreCase(key))
+                        .findFirst().orElse(null);
+                if (canonical == null) continue;
+                if (result.containsKey(canonical)) throw invalid();
+                String value = entry.getValue();
+                if (value == null || value.length() > 8192 || value.indexOf('\0') >= 0
+                        || value.indexOf('\r') >= 0 || value.indexOf('\n') >= 0) throw invalid();
+                result.put(canonical, value);
+            }
+            return Map.copyOf(result);
+        } catch (PiWorkerException failure) {
+            throw failure;
+        } catch (RuntimeException failure) {
+            throw invalid();
+        }
     }
 
     private static String property(Properties properties, String key) {

@@ -53,6 +53,17 @@ class PiCliLoginTest {
                 .hasMessage("PI_COMPONENT_UNAVAILABLE");
     }
 
+    @Test void lowercaseWindowsProxyNamesReachTheHelperAsCanonicalKeys() throws Exception {
+        var spec = PiCliLogin.launchSpec(configuration(), Map.of(
+                "http_proxy", "http://127.0.0.1:8080",
+                "https_proxy", "http://127.0.0.1:8081",
+                "no_proxy", "localhost"), temporary, ID, false);
+        assertThat(spec.environment()).containsEntry("HTTP_PROXY", "http://127.0.0.1:8080")
+                .containsEntry("HTTPS_PROXY", "http://127.0.0.1:8081")
+                .containsEntry("NO_PROXY", "localhost")
+                .doesNotContainKeys("http_proxy", "https_proxy", "no_proxy");
+    }
+
     @Test void helperIsExplicitAndMustHaveFixedNameAndOrdinaryAbsolutePath() throws Exception {
         var properties = configuration();
         for (String key : List.of("codej.nodeExecutable", "codej.piWorker", "codej.piAuthCli")) {

@@ -14,6 +14,13 @@
 
 ## 当前批次
 
+### 2026-10-06 真实入口超时根因与代理键修复
+
+- **Observed**：真实 stdio 入口已发布 `initialized`、`run.started`、`model.turn.started`，随后在用户可见正文前长时间无终态；生产路由的 `PRODUCTION_DEFAULT` 会在无正文的可重试传输失败后按 0.5/1/2/4/8/16 秒退避，TUI 当时只显示“正在思考”。
+- **Observed**：Windows 当前宿主的 Java `System.getenv()` Map 可能提供小写代理键；原 Pi 配置只按大写键筛选，Node worker 因此没有拿到代理开关。浏览器回调页不能证明后续授权码交换或模型请求成功。
+- **Implemented**：`PiRuntimeConfiguration` 统一规范化 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`，拒绝大小写重复；Pi 登录 helper 与模型 worker 共用该结果。新增 lowercase/duplicate 回归，保留最小白名单和秘密不落日志约束。
+- **Verified**：`PiRuntimeConfigurationTest` 与 `PiCliLoginTest` 通过；尚未据此宣称真实 OAuth/官方模型成功，仍需在本机用修复后的启动器跑到 `auth.stored`、最终正文、EOF/退出码和下一轮。
+
 | 批次 | 实现 / 验证状态 |
 | --- | --- |
 | A 目录、协议、失败Fake | 本批基础通过：Node55；Java协议52+宿主42+真实Node目录1，合计95且零skip；严格模块Javadoc通过。仅目录/传输，不是认证或模型闭环 |

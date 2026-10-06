@@ -29,7 +29,7 @@ function Initialize-FakeRepository {
     Write-Utf8File (Join-Path $Path 'pom.xml') '<project />'
     Write-Utf8File (Join-Path $Path 'mvnw') 'wrapper'
     Write-Utf8File (Join-Path $Path 'mvnw.cmd') 'wrapper'
-    foreach ($module in @('cc-java-domain','cc-java-core','cc-java-model-spring-ai','cc-java-tools-local','cc-java-cli')) {
+    foreach ($module in @('cc-java-domain','cc-java-core','cc-java-model-spring-ai','cc-java-model-pi','cc-java-tools-local','cc-java-cli')) {
         Write-Utf8File (Join-Path $Path "$module\pom.xml") "<$module />"
         Write-Utf8File (Join-Path $Path "$module\src\main\java\Sample.java") "class $($module.Replace('-', '_')) {}"
         Write-Utf8File (Join-Path $Path "$module\src\main\resources\app.txt") 'resource'
@@ -37,7 +37,7 @@ function Initialize-FakeRepository {
 }
 function New-FakeBuildOutputs {
     param([string]$Path)
-    foreach ($module in @('cc-java-domain','cc-java-core','cc-java-model-spring-ai','cc-java-tools-local','cc-java-cli')) {
+    foreach ($module in @('cc-java-domain','cc-java-core','cc-java-model-spring-ai','cc-java-model-pi','cc-java-tools-local','cc-java-cli')) {
         $null = New-Item -ItemType Directory -Path (Join-Path $Path "$module\target\classes") -Force
     }
     Write-Utf8File (Join-Path $Path 'cc-java-cli\target\classes\io\github\liumaishenjian\ccjava\cli\CcJavaCliMain.class') 'class'

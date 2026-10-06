@@ -383,6 +383,10 @@ TUI全部验证设置`CC_JAVA_TEST_CLASSPATH`为该classpath、`CC_JAVA_PLAN_FAK
 TLS 或全局代理设置。当前用户目录 ACL 的 `AUTH_STORE_INSECURE` 仍需在普通 PowerShell
 中修复或迁移到干净 home 后复验，未以代理修复冒称在线 OAuth 已通过。
 
+同批发现开发启动器的指纹漏计 `cc-java-model-pi`，导致旧 Java class 可被误复用；已将
+该模块及其测试输出加入指纹/缓存自检，旧指纹现在会阻止启动并要求重建。当前沙箱 Maven
+下载仍被网络权限阻断，未把旧 class 当作在线 OAuth 修复证据。
+
 日志：`pi-acceptance-clean-verify-a.log`、`pi-native-wrapper-clean-a.log`、`pi-conpty-clean-c.log`、
 `pi-clean-environment-build.log`、`pi-tools-node-property-comparison.log`、`pi-tools-order-diagnostic.log`、
 `pi-git-*-first-control.log`、`pi-git-start-conditions.log`、`pi-sep17-installed-build.log`、

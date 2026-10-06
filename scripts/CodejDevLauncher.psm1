@@ -4,6 +4,7 @@ $script:CodejJavaModules = @(
     'cc-java-domain',
     'cc-java-core',
     'cc-java-model-spring-ai',
+    'cc-java-model-pi',
     'cc-java-tools-local',
     'cc-java-cli'
 )

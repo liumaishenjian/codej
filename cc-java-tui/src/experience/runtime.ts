@@ -89,9 +89,9 @@ export class ExperienceRuntime {
   readonly #answerSummaries = new Map<string, string>();
   readonly #diagnostics = new DeliveryDiagnostics();
   #submittedInput = ''; #awaitingAcceptance = false;
-  constructor(client: RuntimeClient, workspace: string) {
+  constructor(client: RuntimeClient, workspace: string, openAuthorizationUrl: (url: string) => boolean = () => false) {
     this.#client = client;
-    this.auth = new ExperienceAuth(client, (auth, notice, model) => this.patch({auth, ...(notice === undefined ? {} : {notice}), ...(model === undefined ? {} : {model})}));
+    this.auth = new ExperienceAuth(client, (auth, notice, model) => this.patch({auth, ...(notice === undefined ? {} : {notice}), ...(model === undefined ? {} : {model})}), undefined, openAuthorizationUrl);
     this.state = {connection: 'connecting', status: 'idle', session: '', workspace, model: '', mode: 'chat', blocks: [],
       pending: undefined, plan: undefined, showPlan: false, notice: '', activity: '正在启动', startedAt: 0, revision: 0, questionnaire: false};
   }

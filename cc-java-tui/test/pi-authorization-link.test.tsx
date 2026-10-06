@@ -17,6 +17,11 @@ it('完整长目标仅编码为受控OSC8，显示宽度保持短标签', () => 
   expect(text).toContain('\u001b]8;;' + url + '\u001b\\');
   expect(stringWidth(text)).toBe(stringWidth(PI_AUTHORIZATION_LABEL));
 });
+it('系统浏览器未打开时保留可选中的授权地址回退', () => {
+  const rows = authRows({...panel, authorizationOpened: false}, 80, 24, url);
+  expect(rows.map(rowText).join('\n')).toContain('授权地址：https://auth.openai.com');
+  expect(rows.flatMap(r => r.spans).some(s => s.authorizationUrl)).toBe(false);
+});
 it.each([
   'https://evil.invalid/oauth/authorize?state=x', 'https://auth.openai.com@evil.invalid/oauth/authorize?x',
   'http://auth.openai.com/oauth/authorize?x', 'https://auth.openai.com/other?x',
@@ -30,7 +35,10 @@ it.each([
 it.each([[80, 24], [100, 30], [120, 40], [160, 50], [60, 24], [40, 24]])('认证长链接位于%d×%d高度预算内且不挤掉输入与取消', (width, height) => {
   const rows = authRows(panel, width, height, url);
   expect(rows.length).toBeLessThanOrEqual(height);
-  expect(rows.map(rowText).join('\n')).toContain('已遮蔽');
+  expect(rows.map(rowText).join('\n')).toContain('粘贴授权码或回调 URL');
+  expect(rows.map(rowText).join('\n')).not.toContain('已遮蔽');
+  expect(rows.map(rowText).join('\n')).toContain('OpenAI Codex');
+  expect(rows.map(rowText).join('\n')).not.toContain('pi / OAUTH / openai-codex');
   expect(rows.map(rowText).join('\n')).toContain('Esc');
   expect(rows.flatMap(r => r.spans).filter(s => s.authorizationUrl)).toHaveLength(1);
   expect(rows.every(row => stringWidth(rowText(row)) <= width)).toBe(true);
@@ -43,6 +51,6 @@ it.each([[80, 24], [100, 30], [120, 40], [160, 50], [60, 24], [40, 24]])('认证
   const view = render(<RuntimeScreen state={state} ui={newRuntimeUi()} columns={width} rows={height} now={0} authorizationUrl={url}/>);
   try {
     expect(view.lastFrame()).toContain('\u001b]8;;' + url + '\u001b\\');
-    expect(view.lastFrame()).toContain('已遮蔽');
+    expect(view.lastFrame()).toContain('粘贴授权码或回调 URL');
   } finally {view.unmount();}
 });

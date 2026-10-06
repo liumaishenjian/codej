@@ -276,9 +276,11 @@ inspect/await、既有任务协议和详情携带该状态，terminal通知只�
   发行复用既有Node并安装受信Pi Worker模块闭包和锁定生产依赖，显式传绝对配置；启动不安装、不搜索环境凭证或fallback。
 授权页布局补充对照：公开Pi 0.85.1 `dist/modes/interactive/components/login-dialog.js#showAuth`
 显示OSC8授权链接并调用浏览器打开；`showManualInput/showPrompt`保留输入区。分类为公开源码Observed，未运行参考UI。
-本项目采用经固定origin/path/控制字符校验的短标签OSC8链接，置于认证面板高度预算内，不把完整长URL追加到整屏之外。
-不自动启动外部浏览器；操作者通过支持OSC8的终端打开链接，这是减少外部副作用的明确偏差。
-不支持OSC8的终端或实际浏览器打开仍未验证，不声称视觉一致；秘密输入/取消/终态不因此移动或被挤出。
+本项目采用经固定origin/path/控制字符校验的短标签OSC8链接，置于认证面板高度预算内，不把完整长URL追加到整屏之外；
+真实交互 TTY 还会通过无 shell 的系统 opener（Windows `rundll32.exe url.dll,FileProtocolHandler`、macOS `open`、Linux `xdg-open`）自动打开同一 URL。
+非 TTY/离线渲染不产生外部窗口；自动打开失败时保留受控 OSC8 与 Pi `manual_code` 回退输入。这是宿主适配，
+不是把浏览器行为放进 Java/Pi Worker，也不改变回调竞争、取消或秘密边界。
+不支持OSC8的终端或实际在线浏览器授权仍未验证，不声称视觉一致；秘密输入/取消/终态不因此移动或被挤出。
 
 上述桥及公开入口当前尚未完成验证，后续证据须区分Fake、真实Node、协议与实际TUI终态。
 

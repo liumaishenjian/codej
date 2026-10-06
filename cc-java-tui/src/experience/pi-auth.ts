@@ -22,7 +22,8 @@ export class PiAuthFlow {
   readonly #requiresActivation = new Set<string>();
   private identityKey(identity: PiAuthIdentity): string {return [identity.backend, identity.providerId, identity.authMethod, identity.profileId].join('/');}
   constructor(readonly client: AuthClient, readonly publish: (p: AuthPanel | undefined, notice?: string, model?: string) => void,
-    readonly compatibility: (logout: boolean) => void) {}
+    readonly compatibility: (logout: boolean) => void,
+    readonly openAuthorizationUrl: (url: string) => boolean = () => false) {}
   get authorizationUrl(): string {return this.#url;}
   open(session: string, logout = false): void {
     this.invalidate(); this.#session = session; this.#logout = logout;
@@ -35,7 +36,7 @@ export class PiAuthFlow {
         ...this.#legacyProfiles.map((p, i) => ({value: 'legacy:' + i, label: 'spring-ai / API_KEY / ' + p.providerId + ' / ' + p.profileId})),
       ], '仅删除本机身份，不关闭 Session，不远端撤销。');
     }));
-    else this.send('providers.catalog', {backend: 'pi'}, r => this.choices('providers', '选择服务商 · Pi', routes.map<AuthChoice>(([value, label]) => ({value, label})).concat({value: 'legacy', label: '兼容 Provider'}), (r.componentAvailable === true || rows(r.providers).length === 4 && rows(r.providers).every(p => p.componentAvailable === true)) ? '请选择明确的路由与认证方式。' : 'Pi 组件不可用；四路仍可选择，API Key 路由可保存 ENV 名称。'));
+    else this.send('providers.catalog', {backend: 'pi'}, r => this.choices('providers', '选择服务商', routes.map<AuthChoice>(([value, label]) => ({value, label})).concat({value: 'legacy', label: '兼容 Provider'}), (r.componentAvailable === true || rows(r.providers).length === 4 && rows(r.providers).every(p => p.componentAvailable === true)) ? '' : '认证服务暂不可用，请稍后重试。'));
   }
   private update(patch: Partial<AuthPanel>): void {if (this.panel) {this.panel = {...this.panel, ...patch}; this.publish(this.panel);}}
   private choices(phase: AuthPanel['phase'], title: string, choices: AuthChoice[], message = ''): void {this.update({phase, title, choices, focus: 0, message});}
@@ -66,9 +67,12 @@ export class PiAuthFlow {
   private source(): void {
     const identity = this.#identity!;
     const configured = this.#profiles.find(p => this.same(p.identity, identity));
-    this.choices('source', '选择认证操作', [
+    // Pi 的 OAuth 首次登录没有额外的“启动网页授权”确认页：选择 provider/profile
+    // 后直接进入浏览器流程；只有已有 profile 时才保留“使用现有登录”与“重新登录”的分叉。
+    if (!configured && identity.authMethod === 'OAUTH') {this.login(); return;}
+    this.choices('source', '登录方式', [
       ...(configured && !configured.revoked && !this.#requiresActivation.has(this.identityKey(identity)) ? [{value: 'existing', label: '使用已配置 profile → 选模型'}] : []),
-      {value: 'login', label: identity.authMethod === 'OAUTH' ? '启动 Codex 网页授权' : 'API Key · 启动安全输入'},
+      {value: 'login', label: identity.authMethod === 'OAUTH' ? '重新进行网页授权' : '输入 API Key'},
       ...(identity.authMethod === 'API_KEY' ? [{value: 'env', label: 'ENV · 仅保存环境变量名称'}] : []),
     ], configured?.revoked || this.#requiresActivation.has(this.identityKey(identity)) ? '本进程已撤销或保存未启用此身份；必须重新登录并显式启用。' : '保存不等于在线验证；登录后需显式启用。');
   }
@@ -84,7 +88,7 @@ export class PiAuthFlow {
       this.#identity = {backend: 'pi', providerId: route[0], authMethod: route[2], profileId: 'default'} as PiAuthIdentity;
       this.update({...this.#identity}); this.loadProfiles(() => {
         const profiles = [...new Set(['default', ...this.#profiles.filter(x => x.identity.providerId === c).map(x => x.identity.profileId)])];
-        this.choices('profiles', '选择 Pi Profile', profiles.map(value => ({value, label: value})));
+        this.choices('profiles', '选择 Profile', profiles.map(value => ({value, label: value})));
       });
     } else if (p.phase === 'profiles' && c) {
       if (this.#logout) {
@@ -99,7 +103,9 @@ export class PiAuthFlow {
           this.#ticket = r.confirmationId;
           this.choices('confirm', '确认退出本机 Profile', [{value: 'cancel', label: '取消，保留凭证'}, {value: 'logout', label: '确认移除这个本机 Profile'}], '仅移除选中身份，不关闭 Session。');
         });
-      } else {this.#identity = {...this.#identity!, profileId: c}; this.update({profileId: c}); this.source();}
+      } else {
+        this.#identity = {...this.#identity!, profileId: c}; this.update({profileId: c}); this.source();
+      }
     } else if (p.phase === 'source') {
       if (c === 'existing') this.models();
       else if (c === 'env') this.update({phase: 'env', choices: [], message: '只填写名称，不读取或发送环境值。'});
@@ -140,11 +146,18 @@ export class PiAuthFlow {
     const operation = this.#operation, session = this.#session, identity = this.#identity!;
     const valid = () => this.#operation === operation && this.#session === session && this.#login && !!this.panel;
     this.#login = true; this.#url = '';
-    this.update({phase: 'login', choices: [], message: '正在启动独立认证桥；等待安全提示。', secretByteCount: 0});
+    const title = identity.providerId === 'openai-codex' ? '网页授权' : '输入 API Key';
+    this.update({phase: 'login', title, choices: [], message: identity.providerId === 'openai-codex' ? '正在打开浏览器授权…' : '正在启动安全输入…', secretByteCount: 0, authorizationOpened: false});
     try {void this.client.piLogin(identity, {
-      onPrompt: prompt => {if (valid()) this.update({phase: 'secret', promptId: prompt.promptId, promptKind: prompt.kind, secretByteCount: 0, message: prompt.kind === 'manual_code' ? '仅输入本次网页授权的手工回调内容。' : '输入 API Key；原文不会显示。'});},
-      onPromptCancelled: promptId => {if (valid() && this.panel?.promptId === promptId) this.update({phase: 'login', promptId: undefined, promptKind: undefined, secretByteCount: 0, message: '安全提示已取消；等待认证终态。'});},
-      onAuthorizationUrl: url => {if (valid()) {this.#url = url; this.update({});}},
+      onPrompt: prompt => {if (valid()) this.update({phase: 'secret', title: prompt.kind === 'manual_code' ? '等待网页授权' : '输入 API Key', promptId: prompt.promptId, promptKind: prompt.kind, secretByteCount: 0, message: prompt.kind === 'manual_code' ? '若未自动返回，请粘贴授权码或回调 URL。' : '输入 API Key；原文不会显示。'});},
+      onPromptCancelled: promptId => {if (valid() && this.panel?.promptId === promptId) this.update({phase: 'login', title, promptId: undefined, promptKind: undefined, secretByteCount: 0, message: '安全提示已取消；等待认证终态。'});},
+      onAuthorizationUrl: url => {if (valid()) {
+        this.#url = url;
+        const opened = this.openAuthorizationUrl(url);
+        this.update({title: '网页授权', authorizationOpened: opened, message: opened
+          ? '浏览器已打开，等待授权回调。'
+          : '浏览器未自动打开，请打开下方授权页。'});
+      }},
     }, environmentName === undefined ? {} : {environmentName}).then(result => {
       if (!valid()) return;
       this.#login = false; this.#url = '';

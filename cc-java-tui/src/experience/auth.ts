@@ -23,6 +23,8 @@ export interface AuthPanel {
   secretByteCount?: number;
   backend?: 'pi' | 'spring-ai'; authMethod?: 'API_KEY' | 'OAUTH';
   promptId?: number | undefined; promptKind?: 'secret' | 'manual_code' | undefined;
+  /** Pi OAuth 授权页是否已交给系统默认浏览器打开；失败时保留 OSC8/手工回退。 */
+  authorizationOpened?: boolean;
 }
 const id = (v: unknown): v is string => typeof v === 'string' && /^[a-z0-9][a-z0-9-]{0,62}$/.test(v);
 const model = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 256 && !/[\u0000-\u001f\u007f]/.test(v);
@@ -40,11 +42,12 @@ export class ExperienceAuth {
   #models: {providerId: string; modelId: string}[] = [];
   #profiles: {providerId: string; profileId: string; source: string}[] = [];
   #pending: {request: string; control: string; intent: AuthIntent; operation: number; accept: (r: Record<string, unknown>) => void} | undefined;
-  constructor(readonly client: AuthClient, readonly publish: (panel: AuthPanel | undefined, notice?: string, model?: string) => void, readonly compatibilityLogin?: () => void) {
+  constructor(readonly client: AuthClient, readonly publish: (panel: AuthPanel | undefined, notice?: string, model?: string) => void, readonly compatibilityLogin?: () => void,
+    readonly openAuthorizationUrl: (url: string) => boolean = () => false) {
     this.#pi = new PiAuthFlow(client, (panel, notice, model) => {this.panel = panel; if (model) this.required = false; publish(panel, notice, model);}, logout => {
       if (!logout && this.compatibilityLogin) {this.panel = undefined; this.publish(undefined); this.compatibilityLogin(); return;}
       const pi = this.pi; this.pi = false; this.open(logout ? '/logout' : '/login'); this.pi = pi;
-    });
+    }, openAuthorizationUrl);
   }
   initialize(session: string, payload: Readonly<Record<string, unknown>>): void {
     this.invalidate(); this.publish(undefined); this.#session = session; this.enabled = payload.authLifecycleV1 === true && !!this.client.providerControl;

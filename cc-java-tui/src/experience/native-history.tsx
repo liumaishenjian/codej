@@ -32,21 +32,21 @@ export function stableHistoryLength(state: RuntimeSnapshot, sealed = 0): number 
 }
 
 /** Static仅追加稳定内容；普通模式不启用鼠标捕获，滚动和选取交给终端。 */
-export function NativeHistoryScreen({state, ui, columns, rows, now, authorizationUrl}: {state: RuntimeSnapshot; ui: RuntimeUi; columns: number; rows: number; now: number; authorizationUrl?: string}) {
+export function NativeHistoryScreen({state, ui, columns, rows, now, authorizationUrl, authInput}: {state: RuntimeSnapshot; ui: RuntimeUi; columns: number; rows: number; now: number; authorizationUrl?: string; authInput?: string}) {
   const history = useRef<{count: number; entries: {id: number; rows: Row[]}[]}>({count: 0, entries: []});
   const sealed = history.current.count;
   const end = useMemo(() => !sealed && !state.model && state.status !== 'idle' ? 0 : stableHistoryLength(state, sealed),
     [state.blocks, state.status, state.model, sealed]);
   if (end > history.current.count && columns >= 40 && rows >= 24 && !ui.expanded) {
     const blocks: RecordBlock[] = state.blocks.slice(history.current.count, end);
-    const frame = runtimeFrame({...state, blocks}, newRuntimeUi(), columns, rows, now, history.current.count > 0, authorizationUrl);
+    const frame = runtimeFrame({...state, blocks}, newRuntimeUi(), columns, rows, now, history.current.count > 0, authorizationUrl, authInput);
     history.current.entries = [...history.current.entries, {id: end, rows: frame.bodyRows}];
     history.current.count = end;
   }
   const count = history.current.count;
   const liveBlocks = useMemo(() => state.blocks.slice(count), [state.blocks, count]);
   const live = ui.expanded ? readingState(state, ui) : {...state, blocks: liveBlocks};
-  const frame = runtimeFrame(live, ui.expanded ? ui : {...ui, scroll: 0}, columns, runtimeViewportHeight(rows), now, !ui.expanded && history.current.count > 0, authorizationUrl);
+  const frame = runtimeFrame(live, ui.expanded ? ui : {...ui, scroll: 0}, columns, runtimeViewportHeight(rows), now, !ui.expanded && history.current.count > 0, authorizationUrl, authInput);
   return <Box flexDirection="column">
     <Static items={history.current.entries}>{entry => <RowView key={entry.id} rows={entry.rows} columns={columns}/>}</Static>
     <RowView rows={frame.rows} columns={columns}/>

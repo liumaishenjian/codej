@@ -6,20 +6,26 @@ import {ExperienceRuntime, type Answer, type RecordBlock, type RuntimeClient} fr
 import {newRuntimeUi, questionAnswers, readingState, runtimeCommands, runtimeFrame, runtimeViewportHeight, visitQuestion, type RuntimeUi} from './runtime-screen.js';
 import {NativeHistoryScreen} from './native-history.js';
 import {RuntimePresentation} from './presentation.js';
+import {openPiAuthorizationUrl} from '../pi-authorization-link.js';
 
 /** 真实适配器共享视觉基础，但绝不使用离线演示的计时推进或固定结果。 */
 export function ExperienceRuntimeApp({client, workspace}: {client: RuntimeClient; workspace: string}) {
   const noHistory = useRef<RecordBlock[]>([]).current;
-  const [runtime] = useState(() => new ExperienceRuntime(client, workspace));
+  // 非交互渲染（测试、快照、管道）不能弹出外部窗口；真正入口已在 index.tsx
+  // 通过双 TTY 检查后才挂载本组件。
+  const openAuthorizationUrl = process.stdin.isTTY && process.stdout.isTTY ? openPiAuthorizationUrl : () => false;
+  const [runtime] = useState(() => new ExperienceRuntime(client, workspace, openAuthorizationUrl));
   const [presentation] = useState(() => new RuntimePresentation(runtime));
   const state = useSyncExternalStore(presentation.subscribe, presentation.snapshot, presentation.snapshot);
   const [storedUi, setUi] = useState(newRuntimeUi);
   const [now, setNow] = useState(Date.now);
+  // manual_code 是 Pi OAuth 的可见回退输入；API Key 仍只保存在下方一次性字节缓冲。
+  const [authDraft, setAuthDraft] = useState('');
   const exiting = useRef(false);
   const restoredInput = useRef<number | undefined>(undefined);
   // 秘密只在短期 ref 中，固定容量避免每次按键产生不可清零的副本。
   const secret = useRef({bytes: new Uint8Array(16_384), count: 0, owner: ''});
-  const clearSecret = () => {secret.current.bytes.fill(0); secret.current.count = 0;};
+  const clearSecret = () => {secret.current.bytes.fill(0); secret.current.count = 0; setAuthDraft('');};
   useEffect(() => {
     const sync = () => {
       const s = runtime.state, p = runtime.auth.panel;
@@ -53,7 +59,7 @@ export function ExperienceRuntimeApp({client, workspace}: {client: RuntimeClient
   }, [pendingKey]);
   // 普通界面历史由Static保管；键盘只需测量活动面板，展开时才测量完整记录。
   const measuredState = ui.expanded ? readingState(state, ui) : {...state, blocks: noHistory};
-  const currentFrame = runtimeFrame(measuredState, ui, columns, runtimeViewportHeight(rows), now, false, runtime.auth.authorizationUrl);
+  const currentFrame = runtimeFrame(measuredState, ui, columns, runtimeViewportHeight(rows), now, false, runtime.auth.authorizationUrl, authDraft);
   const previousTotal = useRef(currentFrame.total);
   const viewPositions = useRef(new Map<boolean, {scroll: number; total: number}>());
   useEffect(() => {
@@ -84,6 +90,10 @@ export function ExperienceRuntimeApp({client, workspace}: {client: RuntimeClient
         if (secret.current.count) secret.current.bytes[--secret.current.count] = 0;
       } else if (input && /^[\x20-\x7e]+$/.test(input) && secret.current.count + input.length <= 16_384) {
         for (let i = 0; i < input.length; i++) secret.current.bytes[secret.current.count++] = input.charCodeAt(i);
+      }
+      if (auth.promptKind === 'manual_code') {
+        // 仅为当前 OAuth 回退提示保留可见草稿；API Key 从不进入 React state。
+        setAuthDraft(new TextDecoder().decode(secret.current.bytes.subarray(0, secret.current.count)));
       }
       runtime.auth.secretCount(secret.current.count); return;
     }
@@ -263,5 +273,5 @@ export function ExperienceRuntimeApp({client, workspace}: {client: RuntimeClient
     }
   });
   return <NativeHistoryScreen state={state} ui={ui} columns={columns} rows={rows} now={now}
-    authorizationUrl={runtime.auth.authorizationUrl}/>;
+    authorizationUrl={runtime.auth.authorizationUrl} authInput={authDraft}/>;
 }

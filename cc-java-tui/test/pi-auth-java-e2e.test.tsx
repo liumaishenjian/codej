@@ -119,8 +119,8 @@ it.skipIf(!classpath).each([
     // Exercise bare /login through keys, not automatic startup alone.
     await key('\x1b'); await key('/login'); await key('\r'); await visible('选择服务商');
     for (let index = 0; index < routeIndex; ++index) await key('\x1b[B');
-    await key('\r'); await visible('选择 Pi Profile'); await key('\r');
-    await visible('选择认证操作'); await key('\r');
+    await key('\r'); await visible('选择 Profile'); await key('\r');
+    await visible('登录方式'); await key('\r');
     await visible('输入 API Key'); await key(canary);
     expect(leaksInput(app.frames.join('\n')), 'No secret or identifying prefix in Ink').toBe(false);
     await key('\r'); await visible('尚未启用');

@@ -125,7 +125,7 @@ async function runCase(provider, mode) {
       const route = {openai: 0, deepseek: 2, 'qwen-token-plan-cn': 3}[provider];
       const secretField = async () => {
         for (let i = 0; i < route; ++i) await key('\x1b[B');
-        await key('\r', '选择 Pi Profile'); await key('\r', '选择认证操作'); await key('\r', '输入 API Key');
+        await key('\r', '选择 Profile'); await key('\r', '登录方式'); await key('\r', '输入 API Key');
       };
       await secretField(); await key(canary); checkNoEcho(); await key('\x1b', '认证结果待核对');
       if (await profileCount() !== 0) throw Error('CANCELLED_INPUT_SAVED');
@@ -139,8 +139,8 @@ async function runCase(provider, mode) {
         // 保留原安装失败：8192窗口的gpt-4不能吞掉12288保留预算。必须先明确失败，再由用户重选。
         await key('Read fixture.txt using read_file and report its contents.'); await key('\r', '模型窗口不足');
         if (server.requests.length !== 0) throw Error('INCOMPATIBLE_CONTEXT_CALLED_MODEL');
-        await key('/login'); await key('\r', '选择服务商'); await key('\r', '选择 Pi Profile');
-        await key('\r', '选择认证操作'); await key('\r', '设为默认模型');
+        await key('/login'); await key('\r', '选择服务商'); await key('\r', '选择 Profile');
+        await key('\r', '登录方式'); await key('\r', '设为默认模型');
         await key('\x1b[B'); await key('\r', '本机配置不表示在线验证');
       }
       await key('Read fixture.txt using read_file and report its contents.'); await key('\r', server.finalText);

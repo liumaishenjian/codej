@@ -3,7 +3,7 @@ import {ExperienceAuth, type AuthClient, type AuthIntent} from '../src/experienc
 import type {PiAuthCallbacks, PiAuthResult} from '../src/pi-auth-bridge.js';
 import type {ProtocolEvent} from '../src/protocol.js';
 
-function harness() {
+function harness(openAuthorizationUrl: (url: string) => boolean = () => false) {
   const calls: {control: string; intent: AuthIntent; args: Readonly<Record<string, unknown>>; request: string}[] = [];
   let callbacks: PiAuthCallbacks = undefined!; let finish: (r: PiAuthResult) => void = undefined!;
   const states: string[] = [];
@@ -13,7 +13,7 @@ function harness() {
     piLogin: vi.fn((_: import('../src/pi-auth-bridge.js').PiAuthIdentity, c: PiAuthCallbacks, _options?: import('../src/pi-auth-bridge.js').PiAuthLoginOptions) => {callbacks = c; return new Promise<PiAuthResult>(r => {finish = r;});}),
     piSubmit: vi.fn((_, bytes) => {bytes.fill(0); return true;}), piCancel: vi.fn(),
   } satisfies AuthClient;
-  const auth = new ExperienceAuth(client, p => states.push(JSON.stringify(p)));
+  const auth = new ExperienceAuth(client, p => states.push(JSON.stringify(p)), undefined, openAuthorizationUrl);
   auth.initialize('s', {authLifecycleV1: true, piProviderV1: true, modelConfigured: true});
   const result = (r: Record<string, unknown>, status = 'succeeded') => {
     const p = calls.at(-1)!;
@@ -27,7 +27,7 @@ const identity = {backend: 'pi', providerId: 'openai', profileId: 'default', aut
 it('缺组件仍展示三个品牌四路由和显式兼容入口；同名显式登录仍是legacy', () => {
   const h = harness(); h.auth.open('/login'); h.result({providers: [], componentAvailable: false});
   expect(h.auth.panel!.choices.map(c => c.value)).toEqual(['openai', 'openai-codex', 'deepseek', 'qwen-token-plan-cn', 'legacy']);
-  expect(h.auth.panel!.message).toContain('组件不可用');
+  expect(h.auth.panel!.message).toContain('认证服务暂不可用');
   h.auth.open('/login openai default'); expect(h.calls.at(-1)?.args).toEqual({}); expect(h.calls.at(-1)?.intent).toBe('models.list');
 });
 it('输入前启动helper；prompt之后才允许secret，stored停在确认且精确字符串epoch不进快照', async () => {
@@ -44,7 +44,7 @@ it('输入前启动helper；prompt之后才允许secret，stored停在确认且�
   expect(h.calls.some(c => c.intent === 'models.use')).toBe(false); h.choose('fake-model'); expect(h.calls.at(-1)?.args).toEqual({...identity, modelId: 'fake-model', setDefault: true});
 });
 it('manual_code、URL和promptcancel局限当前operation，旧会话迟到结果无效', async () => {
-  const h = harness(); h.start('openai-codex'); h.choose('login'); const callbacks = h.callbacks();
+  const h = harness(); h.start('openai-codex'); expect(h.auth.panel?.phase).toBe('login'); const callbacks = h.callbacks();
   callbacks.onAuthorizationUrl('https://auth.openai.com/oauth/authorize?synthetic'); callbacks.onPrompt({promptId: 1, kind: 'manual_code'});
   expect(h.auth.authorizationUrl).toContain('synthetic'); expect(h.states.join()).not.toContain('https://');
   callbacks.onPromptCancelled(1); expect(h.auth.panel!.phase).toBe('login'); expect(h.auth.panel!.promptId).toBeUndefined();
@@ -52,6 +52,16 @@ it('manual_code、URL和promptcancel局限当前operation，旧会话迟到结�
   h.auth.initialize('other', {authLifecycleV1: true, piProviderV1: true}); expect(h.auth.authorizationUrl).toBe('');
   callbacks.onPrompt({promptId: 3, kind: 'secret'}); expect(h.auth.panel).toBeUndefined();
   await h.finish({status: 'stored', receipt: {...identity, authEpoch: '8'}}); expect(h.calls.some(c => c.intent === 'auth.activate')).toBe(false);
+});
+it('Codex auth_url 交给宿主浏览器，manual_code 只作为自动回调失败时的回退', () => {
+  const opened: string[] = [];
+  const h = harness(url => {opened.push(url); return true;}); h.start('openai-codex'); expect(h.auth.panel?.phase).toBe('login');
+  h.callbacks().onAuthorizationUrl('https://auth.openai.com/oauth/authorize?synthetic');
+  expect(opened).toEqual(['https://auth.openai.com/oauth/authorize?synthetic']);
+  expect(h.auth.panel?.authorizationOpened).toBe(true);
+  expect(h.auth.panel?.message).toContain('浏览器已打开');
+  h.callbacks().onPrompt({promptId: 1, kind: 'manual_code'});
+  expect(h.auth.panel?.message).toContain('若未自动返回');
 });
 it('ENV只传名称、配置profile免重登但REVOKED不可使用', () => {
   const h = harness(); h.start('openai', [{...identity, refKind: 'ENV_REF', localStatus: 'REVOKED_IN_PROCESS'}]);

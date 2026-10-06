@@ -18,7 +18,7 @@ import type {
   TuiState,
 } from './state.js';
 import {AssistantMarkdown} from './assistant-markdown.js';
-import {piAuthorizationText} from './pi-authorization-link.js';
+import {openPiAuthorizationUrl, piAuthorizationText} from './pi-authorization-link.js';
 import {ToolActivityGroup} from './tool-activity.js';
 import {HistoricalToolDetail, ToolDetail} from './tool-detail.js';
 import {
@@ -332,14 +332,16 @@ export function AgentTui({client}: AgentTuiProps) {
   const authLifecycleRef = useRef(false);
   const setupCredentialBytesRef = useRef<number[]>([]);
   const [piPanel, setPiPanel] = useState<AuthPanel | undefined>();
+  const [piAuthInput, setPiAuthInput] = useState('');
   const piSecret = useRef({bytes: new Uint8Array(16_384), count: 0, owner: ''});
-  const clearPiSecret = () => {piSecret.current.bytes.fill(0); piSecret.current.count = 0;};
+  const clearPiSecret = () => {piSecret.current.bytes.fill(0); piSecret.current.count = 0; setPiAuthInput('');};
   const [piAuth] = useState(() => new ExperienceAuth(client, (panel, notice) => {
     const owner = panel?.phase === 'secret' ? panel.operation + ':' + (panel.promptId ?? 'legacy') : '';
     if (owner !== piSecret.current.owner) {clearPiSecret(); piSecret.current.owner = owner;}
     setPiPanel(panel);
     if (notice !== undefined) dispatch({type: 'slash.notice', message: notice});
-  }, () => replaceConnectWizard(beginModelSetup(nextConnectGeneration.current++, false))));
+  }, () => replaceConnectWizard(beginModelSetup(nextConnectGeneration.current++, false)),
+    process.stdin.isTTY && process.stdout.isTTY ? openPiAuthorizationUrl : () => false));
   const fileSuggestionRef = useRef<{
     readonly requestId: string;
     readonly query: string;
@@ -1009,6 +1011,7 @@ export function AgentTui({client}: AgentTuiProps) {
     if (piAuth.panel) {
       if (piAuth.panel.phase === 'secret' && columns >= 40 && rows >= 24 && /^[\x20-\x7e]+$/.test(pasted) && piSecret.current.count + pasted.length <= 16_384) {
         for (let i = 0; i < pasted.length; i++) piSecret.current.bytes[piSecret.current.count++] = pasted.charCodeAt(i);
+        if (piAuth.panel.promptKind === 'manual_code') setPiAuthInput(new TextDecoder().decode(piSecret.current.bytes.subarray(0, piSecret.current.count)));
         piAuth.secretCount(piSecret.current.count);
       } else if (piAuth.panel.phase === 'env') piAuth.input(pasted);
       return;
@@ -1046,6 +1049,7 @@ export function AgentTui({client}: AgentTuiProps) {
         else if (!key.tab && /^[\x20-\x7e]+$/.test(text) && piSecret.current.count + text.length <= 16_384) {
           for (let i = 0; i < text.length; i++) piSecret.current.bytes[piSecret.current.count++] = text.charCodeAt(i);
         }
+        if (panel.promptKind === 'manual_code') setPiAuthInput(new TextDecoder().decode(piSecret.current.bytes.subarray(0, piSecret.current.count)));
         piAuth.secretCount(piSecret.current.count); return;
       }
       if (panel.phase === 'login' || panel.phase === 'wait') return;
@@ -1665,7 +1669,7 @@ export function AgentTui({client}: AgentTuiProps) {
 
   return <AgentView
     state={state}
-    {...(piPanel ? {piPanel, authorizationUrl: piAuth.authorizationUrl} : {})}
+    {...(piPanel ? {piPanel, authorizationUrl: piAuth.authorizationUrl, authInput: piAuthInput} : {})}
     composer={composer}
     columns={columns}
     rows={rows}
@@ -1683,6 +1687,7 @@ export function AgentTui({client}: AgentTuiProps) {
 export interface AgentViewProps {
   readonly piPanel?: AuthPanel;
   readonly authorizationUrl?: string;
+  readonly authInput?: string;
   readonly state: ReturnType<typeof reduceTuiState>;
   readonly composer?: ComposerState;
   /** 兼容纯展示测试；生产路径使用 composer。 */
@@ -1724,7 +1729,7 @@ export function maskedCredentialPreview(value: readonly number[]): string {
 /**
  * 纯展示组件，使宽字符、窄窗口和各 Run 终态无需真实终端即可验证。
  */
-export function AgentView({piPanel, authorizationUrl, state, composer, input = '', columns, rows, composerLayout, connectWizard, permissionPicker, approvalPicker, planReviewPicker, planFeedbackInput, questionPicker, activityTick}: AgentViewProps) {
+export function AgentView({piPanel, authorizationUrl, authInput = '', state, composer, input = '', columns, rows, composerLayout, connectWizard, permissionPicker, approvalPicker, planReviewPicker, planFeedbackInput, questionPicker, activityTick}: AgentViewProps) {
   const width = Math.max(20, columns);
   const viewportRows = rows === undefined
     ? undefined
@@ -1809,7 +1814,7 @@ export function AgentView({piPanel, authorizationUrl, state, composer, input = '
         </Box>
       ) : null}
       {piPanel === undefined ? null : <Box flexDirection="column">
-        {authRows(piPanel, Math.max(1, width), rows ?? 24, authorizationUrl).map((row, i) => <Text key={i}>{row.spans.map(s => s.authorizationUrl ? piAuthorizationText(s.authorizationUrl) : s.text).join('')}</Text>)}
+        {authRows(piPanel, Math.max(1, width), rows ?? 24, authorizationUrl, authInput).map((row, i) => <Text key={i}>{row.spans.map(s => s.authorizationUrl ? piAuthorizationText(s.authorizationUrl) : s.text).join('')}</Text>)}
       </Box>}
       {connectWizard === undefined ? null : <ConnectWizardPanel state={connectWizard} />}
       {permissionPicker === undefined ? null : <PermissionPickerPanel state={permissionPicker} />}

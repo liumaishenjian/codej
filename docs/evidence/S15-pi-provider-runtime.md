@@ -290,7 +290,8 @@ Java应用服务与lease/fence装配、两套UI/CLI、模型请求仍未接入�
 - 主任务再复现并修复：外层TUI shutdown没有等待私有登录取消结算；无Session的精确protocol.error不能释放pending；
   UI假fixture把实际REVOKED_IN_PROCESS写成REVOKED；私有CLI/默认spec漏转发显式代理；长OAuth URL被追加到整个固定屏幕之外。
   修复分别保留实际关闭/未知失败、精确请求关联、仅CONFIGURED_UNVERIFIED可复用、最小代理白名单和面板内受控OSC8短标签。
-  公开Pi 0.85.1 login-dialog#showAuth源码机制已对照，未运行参考UI，不自动打开浏览器；无OSC8终端与物理打开仍未验证。
+  公开Pi 0.85.1 `auth_url`/`manual_code`源码机制已对照：真实交互 TTY 由宿主调用系统默认浏览器，
+  非TTY不产生外部窗口，失败时保留OSC8与manual_code回退；在线OAuth、无OSC8终端与物理浏览器焦点仍未验证。
 - 新旧指定TUI组 **13 files/277 tests**通过，包含私有桥/CLI、两生产组件离线Ink、六尺寸长链接预算、协议及旧认证回归；
   均为Fake/Ink/协议证据，不是当前index→真实Java→终态的TUI验收。主任务当前package与严格CLI/上游Javadoc通过。
 - 脚本层`TestPiLauncher.mjs`、`TestPiRelease.ps1`、`TestCodejDevLauncher.ps1`主任务复验通过；

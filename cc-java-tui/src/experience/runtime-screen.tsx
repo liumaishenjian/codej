@@ -201,7 +201,7 @@ function resultSummaryText(block: ToolRecord): string {
   const counts = summary.replacements !== undefined ? ' · ' + summary.replacements + ' 处替换' : '';
   return operation + ' ' + summary.path + verified + counts;
 }
-export function runtimeFrame(state: RuntimeSnapshot, ui: RuntimeUi, width: number, height: number, now = Date.now(), hideHeaderOrAuthorizationUrl: boolean | string = false, authorizationUrl?: string): {rows: Row[]; bodyRows: Row[]; fixedRows: Row[]; total: number; maxScroll: number; maxPanelScroll: number} {
+export function runtimeFrame(state: RuntimeSnapshot, ui: RuntimeUi, width: number, height: number, now = Date.now(), hideHeaderOrAuthorizationUrl: boolean | string = false, authorizationUrl?: string, authInput = ''): {rows: Row[]; bodyRows: Row[]; fixedRows: Row[]; total: number; maxScroll: number; maxPanelScroll: number} {
   // 保留历史的 hideHeader 第六参数，同时兼容认证链接的旧调用形态。
   const hideHeader = typeof hideHeaderOrAuthorizationUrl === 'boolean' ? hideHeaderOrAuthorizationUrl : false;
   const authUrl = typeof hideHeaderOrAuthorizationUrl === 'string' ? hideHeaderOrAuthorizationUrl : authorizationUrl;
@@ -219,7 +219,7 @@ export function runtimeFrame(state: RuntimeSnapshot, ui: RuntimeUi, width: numbe
   const noticeRows = state.notice ? lines([span(state.notice, palette.accent)], Math.max(12, width)) : [];
   let fixed: Row[] = []; let maxPanelScroll = 0;
   if (state.auth) {
-    panel.rows.push(...authRows(state.auth, width, height, authUrl));
+    panel.rows.push(...authRows(state.auth, width, height, authUrl, authInput));
   } else if (pending?.kind === 'approval') {
     detail.add([span(pending.command ? ' ' + (pending.shell || '命令审批') : ' 操作审批', undefined, true)]); detail.blank();
     if (pending.command) {detail.add('  ' + pending.command); detail.add(muted('  目录：' + pending.directory));}
@@ -320,6 +320,6 @@ export function runtimeFrame(state: RuntimeSnapshot, ui: RuntimeUi, width: numbe
   const visible = body.rows.slice(top, end);
   return {rows: [...visible, ...fixed].slice(-height), bodyRows: body.rows, fixedRows: fixed, total: body.rows.length, maxScroll: maximum, maxPanelScroll};
 }
-export function RuntimeScreen({state, ui, columns, rows, now, authorizationUrl}: {state: RuntimeSnapshot; ui: RuntimeUi; columns: number; rows: number; now: number; authorizationUrl?: string}) {
-  return <RowView columns={columns} rows={runtimeFrame(state, ui, columns, rows, now, false, authorizationUrl).rows}/>;
+export function RuntimeScreen({state, ui, columns, rows, now, authorizationUrl, authInput}: {state: RuntimeSnapshot; ui: RuntimeUi; columns: number; rows: number; now: number; authorizationUrl?: string; authInput?: string}) {
+  return <RowView columns={columns} rows={runtimeFrame(state, ui, columns, rows, now, false, authorizationUrl, authInput).rows}/>;
 }

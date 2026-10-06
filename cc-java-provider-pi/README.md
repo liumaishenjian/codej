@@ -61,7 +61,8 @@ Java 方法 `SecretMaterial login(CancellationToken, Consumer<String>)` 返回�
 - Node cancel、stdin EOF、timeout 会 abort Provider；终态后安排100ms强制退出计时器以关闭残留socket，
   不承诺事件循环拥塞时的硬实时上界。Java finally/shutdown hook 销毁helper/已观测子孙并关闭管道；
   Linux SIGTERM实际场景尚未实测，不能保证SIGKILL、崩溃或恶意并发派生逃逸。Windows宿主可额外taskkill整树。
-- 没有手工粘贴 code/回调、不自动打开浏览器；URL 可由用户手工打开。无真实 OAuth、账号
+- Pi Codex 的 `auth_url` 在真实交互 TTY 中由 TUI/CLI 交给系统默认浏览器打开；浏览器未能启动时仍保留
+  受控 OSC8 链接和 `manual_code` 回退输入。非 TTY 只保留协议事件，不产生外部窗口。无真实 OAuth、账号
   权益、模型调用或浏览器认证的完整 CLI/TUI E2E 验证。上游回调 HTML 由 Pi 原样管理，本项目仅保证自身
   JSONL/Java异常/日志不回显上游异常，不声称修改了上游浏览器错误页。
 - Java/SpringAI 仍是秘密保存与模型请求方；上游内部 OAuth credential 仅临时传给 toAuth，

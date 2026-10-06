@@ -38,7 +38,7 @@ it.each([false, true])('生产%s入口：四路目录、prompt后遮蔽、显式
   expect(h.client.piLogin).toHaveBeenCalledTimes(1); expect(h.app.lastFrame()).not.toContain('[已遮蔽]');
   await h.key('discard-before-prompt'); expect(h.client.piSubmit).not.toHaveBeenCalled();
   h.cb().onPrompt({promptId: 1, kind: 'secret'}); await wait(); await h.key('SYNTHETIC_KEY');
-  expect(h.app.lastFrame()).toContain('13 字节'); expect(h.app.frames.join()).not.toContain('SYNTHETIC_KEY');
+  expect(h.app.lastFrame()).toContain('[已遮蔽]'); expect(h.app.frames.join()).not.toContain('SYNTHETIC_KEY');
   await h.key('\r'); expect(h.client.piSubmit).toHaveBeenCalledTimes(1);
   const identity = {backend: 'pi', providerId: 'openai', authMethod: 'API_KEY', profileId: 'default'} as const;
   await h.finish({status: 'stored', receipt: {...identity, authEpoch: '9007199254740993'}});
@@ -53,12 +53,13 @@ it.each([false, true])('生产%s入口：manual_code URL仅本面板，prompt切
   const h = await mount(next); await h.result({providers: []}); await h.key('\x1b[B'); await h.key('\r'); await h.result({profiles: []}); await h.key('\r'); await h.key('\r');
   h.cb().onAuthorizationUrl('https://auth.openai.com/oauth/authorize?fixture=1'); h.cb().onPrompt({promptId: 1, kind: 'manual_code'}); await wait();
   expect(h.app.lastFrame()).toContain('https://auth.openai.com'); await h.key('SYNTHETIC_CODE');
-  h.cb().onPrompt({promptId: 2, kind: 'manual_code'}); await wait(); expect(h.app.lastFrame()).toContain('0 字节');
+  expect(h.app.lastFrame()).toContain('SYNTHETIC_CODE');
+  h.cb().onPrompt({promptId: 2, kind: 'manual_code'}); await wait(); expect(h.app.lastFrame()).toContain('粘贴授权码或回调 URL');
   await h.key('\r'); expect(h.client.piSubmit).not.toHaveBeenCalled(); await h.key('SECOND_CODE');
   h.cb().onPromptCancelled(2); await wait(); expect(h.app.lastFrame()).not.toContain('[已遮蔽]');
-  h.cb().onPrompt({promptId: 3, kind: 'manual_code'}); await wait(); expect(h.app.lastFrame()).toContain('0 字节');
+  h.cb().onPrompt({promptId: 3, kind: 'manual_code'}); await wait(); expect(h.app.lastFrame()).toContain('粘贴授权码或回调 URL');
   await h.key('\x1b'); expect(h.client.piCancel).toHaveBeenCalledTimes(1); expect(h.app.lastFrame()).not.toContain('https://auth.openai.com');
-  expect(h.app.frames.join()).not.toContain('SYNTHETIC_CODE'); expect(h.app.frames.join()).not.toContain('SECOND_CODE');
+  expect(h.app.lastFrame()).not.toContain('SYNTHETIC_CODE'); expect(h.app.lastFrame()).not.toContain('SECOND_CODE');
 });
 it.each([false, true])('已配置生产%s入口的bare /login和/logout仍走明确Pi路由，认证不提交Agent', async next => {
   const h = await mount(next, true); await h.key('/login'); await h.key('\r');

@@ -372,7 +372,16 @@ TUI全部验证设置`CC_JAVA_TEST_CLASSPATH`为该classpath、`CC_JAVA_PLAN_FAK
 - 重新实际BuildRelease、批处理隔离/完整性负例与安装Plan专组通过。重新运行安装ConPTY **22/22**：三路API Key两视图、
   CLI保存/取消，OpenAI两视图六尺寸；预算原失败→显式重选→真实读文件→正文→下一轮、注销与自有进程退出均通过。
 - 四路新Run/Resume/Fork读写、Root/child装配与公开CLI组合再次 **29/29、零失败错误跳过**。与既有1123/680等重叠，不累计。
-  本次未使用真实账号/付费端点，仍不是Codex在线OAuth或物理终端截图验收。
+本次未使用真实账号/付费端点，仍不是Codex在线OAuth或物理终端截图验收。
+
+### 2026-10-06：OAuth 代理与回调终态边界
+
+浏览器回调页先于 token exchange、JWT 账户标识解析和 Java credential store ACK；因此
+页面显示成功仍不能替代 `auth.stored`。本批在 `PiWorkerConfiguration` 中仅对显式
+`HTTP_PROXY`/`HTTPS_PROXY` 启用固定 `NODE_USE_ENV_PROXY=1`，并把该变量加入 Worker
+最小环境白名单，避免 Node 原生 `fetch` 忽略已传递的代理；不放行 `NODE_OPTIONS`，不修改
+TLS 或全局代理设置。当前用户目录 ACL 的 `AUTH_STORE_INSECURE` 仍需在普通 PowerShell
+中修复或迁移到干净 home 后复验，未以代理修复冒称在线 OAuth 已通过。
 
 日志：`pi-acceptance-clean-verify-a.log`、`pi-native-wrapper-clean-a.log`、`pi-conpty-clean-c.log`、
 `pi-clean-environment-build.log`、`pi-tools-node-property-comparison.log`、`pi-tools-order-diagnostic.log`、

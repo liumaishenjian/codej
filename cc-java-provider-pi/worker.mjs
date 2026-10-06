@@ -9,7 +9,7 @@ process.stdout.on('error', fail);
 if (process.argv.length !== 2 || process.stdin.isTTY || process.stdout.isTTY) fail();
 
 // 宿主必须在spawn前已清环境（尤其NODE_OPTIONS）；此处是第二层，不能撤销Node预加载。
-const allowed = new Set(['PATH', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LC_ALL', 'TZ', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY']);
+const allowed = new Set(['PATH', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LC_ALL', 'TZ', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'NODE_USE_ENV_PROXY']);
 for (const name of Object.keys(process.env)) if (!allowed.has(name.toUpperCase())) delete process.env[name];
 process.env.DO_NOT_TRACK = '1';
 process.env.OTEL_SDK_DISABLED = 'true';

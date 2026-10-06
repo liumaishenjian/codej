@@ -1,5 +1,5 @@
 import type {ProtocolEvent} from '../protocol.js';
-import type {PiAuthIdentity, PiAuthReceipt} from '../pi-auth-bridge.js';
+import type {PiAuthFailureCode, PiAuthIdentity, PiAuthReceipt} from '../pi-auth-bridge.js';
 import type {AuthClient, AuthIntent, AuthPanel, AuthChoice} from './auth.js';
 
 const routes = [
@@ -18,7 +18,7 @@ export class PiAuthFlow {
   #legacyTarget: {providerId: string; profileId: string} | undefined;
   #logout = false; #ticket = ''; #serial = 0; #operation = 0; #session = '';
   #pending: {request: string; control: string; intent: AuthIntent; accept: (r: Record<string, unknown>) => void} | undefined;
-  #login = false; #stored = false;
+  #login = false; #stored = false; #authorizationStarted = false;
   readonly #requiresActivation = new Set<string>();
   private identityKey(identity: PiAuthIdentity): string {return [identity.backend, identity.providerId, identity.authMethod, identity.profileId].join('/');}
   constructor(readonly client: AuthClient, readonly publish: (p: AuthPanel | undefined, notice?: string, model?: string) => void,
@@ -40,7 +40,31 @@ export class PiAuthFlow {
   }
   private update(patch: Partial<AuthPanel>): void {if (this.panel) {this.panel = {...this.panel, ...patch}; this.publish(this.panel);}}
   private choices(phase: AuthPanel['phase'], title: string, choices: AuthChoice[], message = ''): void {this.update({phase, title, choices, focus: 0, message});}
-  private error(): void {this.#url = ''; this.#receipt = undefined; this.choices('error', '认证操作未完成', [], this.#stored ? '凭证已保存，后续操作未确认成功；不会自动重发。' : '操作未确认成功；不会自动重发或切换兼容 Provider。');}
+  /**
+   * OAuth 成功页只证明回调服务器收到 code/state；后续 token 交换、凭证落盘和
+   * helper 收尾仍可能失败。这里仅把桥的封闭分类翻译成用户可执行的安全摘要，
+   * 不显示 provider 返回文案、路径、URL 查询参数或凭证材料。
+   */
+  private error(code?: PiAuthFailureCode): void {
+    const oauthFlow = this.#identity?.authMethod === 'OAUTH' && this.#authorizationStarted;
+    this.#url = ''; this.#receipt = undefined;
+    const message = this.#stored
+      ? '凭证已保存，后续操作未确认成功；不会自动重发。'
+        : code === 'LOGIN'
+        ? oauthFlow ? '网页授权流程已开始，但授权码交换或本机凭证保存未确认；不会自动重发。'
+          : '认证服务或本机凭证保存未完成；不会自动重发。'
+        : code === 'CLEANUP' || code === 'PROTOCOL'
+          ? oauthFlow ? '网页授权流程已开始，但认证通道收尾未确认；不会自动重发。'
+            : '认证通道收尾未确认；不会自动重发。'
+        : code === 'EXIT'
+            ? oauthFlow ? '认证进程未正常结束；网页授权结果未确认写入。'
+              : '认证进程未正常结束；凭证未确认写入。'
+            : code === 'TIMEOUT'
+              ? oauthFlow ? '认证等待超时；网页授权结果未确认写入。'
+                : '认证等待超时；凭证未确认写入。'
+              : '操作未确认成功；不会自动重发或切换兼容 Provider。';
+    this.choices('error', '认证操作未完成', [], message);
+  }
   private send(intent: AuthIntent, args: Record<string, unknown>, accept: (r: Record<string, unknown>) => void): void {
     this.update({phase: 'wait', choices: [], message: '正在处理本机配置…'});
     const control = `pi-ui:${this.#operation}:${++this.#serial}`;
@@ -145,14 +169,14 @@ export class PiAuthFlow {
     if (!this.client.piLogin || !this.client.piSubmit || !this.client.piCancel) {this.error(); return;}
     const operation = this.#operation, session = this.#session, identity = this.#identity!;
     const valid = () => this.#operation === operation && this.#session === session && this.#login && !!this.panel;
-    this.#login = true; this.#url = '';
+    this.#login = true; this.#url = ''; this.#authorizationStarted = false;
     const title = identity.providerId === 'openai-codex' ? '网页授权' : '输入 API Key';
     this.update({phase: 'login', title, choices: [], message: identity.providerId === 'openai-codex' ? '正在打开浏览器授权…' : '正在启动安全输入…', secretByteCount: 0, authorizationOpened: false});
     try {void this.client.piLogin(identity, {
       onPrompt: prompt => {if (valid()) this.update({phase: 'secret', title: prompt.kind === 'manual_code' ? '等待网页授权' : '输入 API Key', promptId: prompt.promptId, promptKind: prompt.kind, secretByteCount: 0, message: prompt.kind === 'manual_code' ? '若未自动返回，请粘贴授权码或回调 URL。' : '输入 API Key；原文不会显示。'});},
       onPromptCancelled: promptId => {if (valid() && this.panel?.promptId === promptId) this.update({phase: 'login', title, promptId: undefined, promptKind: undefined, secretByteCount: 0, message: '安全提示已取消；等待认证终态。'});},
       onAuthorizationUrl: url => {if (valid()) {
-        this.#url = url;
+        this.#authorizationStarted = true; this.#url = url;
         const opened = this.openAuthorizationUrl(url);
         this.update({title: '网页授权', authorizationOpened: opened, message: opened
           ? '浏览器已打开，等待授权回调。'
@@ -162,7 +186,8 @@ export class PiAuthFlow {
       if (!valid()) return;
       this.#login = false; this.#url = '';
       this.update({promptId: undefined, promptKind: undefined, secretByteCount: 0});
-      if (result.status !== 'stored' || !this.same(result.receipt, identity) || !/^[1-9][0-9]*$/.test(result.receipt.authEpoch)) {this.error(); return;}
+      if (result.status !== 'stored') {this.error(result.code); return;}
+      if (!this.same(result.receipt, identity) || !/^[1-9][0-9]*$/.test(result.receipt.authEpoch)) {this.error('PROTOCOL'); return;}
       this.#stored = true; this.#receipt = {...result.receipt}; this.#requiresActivation.add(this.identityKey(identity));
       this.choices('confirm', '凭证已保存 · 尚未启用', [{value: 'cancel', label: '暂不启用'}, {value: 'activate', label: '启用这次登录'}], '保存不等于在线验证；启用后再独立选择模型。');
     }).catch(() => {if (valid()) {this.#login = false; this.error();}});} catch {this.#login = false; this.error();}
@@ -178,7 +203,7 @@ export class PiAuthFlow {
   }
   cancel(): void {const stored = this.#stored; const pending = this.#login || !!this.#pending; this.invalidate(); this.publish(undefined, stored ? '凭证已保存；启用或模型选择状态请核对。' : pending ? '认证结果待核对；不会自动重发。' : '认证面板已关闭。');}
   invalidate(): void {
-    const login = this.#login; ++this.#operation; this.#login = false; this.#pending = undefined; this.#receipt = undefined; this.#ticket = ''; this.#url = ''; this.#stored = false; this.#legacyTarget = undefined; this.panel = undefined;
+    const login = this.#login; ++this.#operation; this.#login = false; this.#pending = undefined; this.#receipt = undefined; this.#ticket = ''; this.#url = ''; this.#stored = false; this.#authorizationStarted = false; this.#legacyTarget = undefined; this.panel = undefined;
     if (login) {try {this.client.piCancel?.();} catch { /* 清理结果不能假定成功。 */ }}
   }
 }

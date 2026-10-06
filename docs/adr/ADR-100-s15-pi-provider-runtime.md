@@ -55,7 +55,7 @@ OpenAI官方账号资格/授权端点可达性及真实刷新仍Unknown。依赖
 7. 模型流通过Pi公开帧编码器提取有序更新，终态单独确认；Java发布增量但只持久合法聚合回合。Usage未知不伪造，cost不得冒充真实账单。
 8. Assistant新增版本化、提供商命名空间绑定的受限续接信息；不把Pi类型、HTTP body/header或credential放入Core。保留必要的有序内容、签名和Tool关联；同源Resume/Fork可重建，跨源不发送隐藏续接块，旧记录缺字段可读。无法安全表示时明确拒绝。
 9. 浏览器URL仅按锁定Provider契约校验；提供打开/复制动作，不强行抢焦点。manual_code/secret走专用输入，不进入普通Agent控制帧、Session、React state或日志。取消/保存未知必须如实呈现。
-10. 可信代理配置可经受控边缘传递，不修改全局代理/TLS/防护；proxy credential同样是秘密。不继承NODE_OPTIONS、Pi扩展或无关环境凭证。
+10. 可信代理配置可经受控边缘传递，不修改全局代理/TLS/防护；proxy credential同样是秘密。仅当显式 HTTP(S)_PROXY 存在时，由 Java Worker 配置固定注入 Node 的 `NODE_USE_ENV_PROXY=1`，使原生 fetch 使用同一白名单代理；不继承 NODE_OPTIONS、Pi扩展或无关环境凭证。
 
 ### 3.1 凭证事务接线约束（进入Batch B前固定）
 

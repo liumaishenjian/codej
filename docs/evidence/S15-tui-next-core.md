@@ -533,6 +533,14 @@ CLI 计划组合回归中的 3 个旧 Fixture 原先把内部 `task_get/task_upd
 
 ## 2026-10-06：真实入口复验边界
 
+### OAuth 成功页不等于本机登录完成
+
+对照 Pi 的公开 OAuth 调用链确认：回调页在 `code/state` 校验后立即返回，后续仍需
+token 交换、JWT `chatgpt_account_id`、credential store ACK、helper EOF/exit/close 以及
+`auth.stored`。本批将 TUI 的原始泛化错误改为固定阶段摘要；失败不会自动重发，也不会
+把回调页当作已登录。当前环境的 `auth list --backend pi` 仍因 `AUTH_STORE_INSECURE`
+被安全边界拒绝，未修改 ACL 或伪造在线成功证据。
+
 本次复验只使用仓库已有构建产物、仓库规定的运行时 classpath 和隔离临时目录，没有读取或向未知外部端点发送用户凭证。TUI 构建通过，标准回归为 30 个测试文件、449 passed / 7 skipped。Maven clean test 在当前沙箱被依赖下载网络策略拒绝，未产生 Java 测试失败；此前具备缓存依赖的非 clean 回归结果继续作为历史证据，不被本次环境结果替换。
 
 真实 Java→stdio→Ink 的复验先暴露了一个启动前工具错误：使用仓库根目录的 JUnit-only classpath 会缺少 `tools/jackson/databind/ObjectMapper`。改用 `cc-java-cli/target/test-dependency-classpath.txt` 后，1/6 初始化场景通过，另外 5/6 在 Java 启动前因临时 `provider/home/.cc-java` 的 Windows ACL 返回 `EPERM`，因此没有协议事件或 TUI 终态可用于验收。将 workspace 与 home 都放入独立临时目录后，初始化、`run.started`、`model.turn.started` 和安全 `run.failed`（`model_retry_exhausted`）均可见；没有工具调用、文件副作用或伪成功。仓库 workspace 直接作为 Session Store 外层时，Runtime 按既有契约拒绝并报告“Session Store root 必须位于 Workspace 外”，未修改该安全边界。

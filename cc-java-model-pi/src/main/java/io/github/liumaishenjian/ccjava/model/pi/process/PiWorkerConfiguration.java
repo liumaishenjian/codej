@@ -13,7 +13,9 @@ import java.util.Set;
  *
  * <p>入口必须名为 worker.mjs。两文件拒绝自身链接/非普通文件，父目录解析为真实路径，
  * 启动时再次校验。此应用层校验不能阻止恶意主体并发替换受信安装目录，亦非 OS sandbox。
- * 代理值可以包含秘密，因此不参与字符串表示、argv 或错误信息。</p>
+ * 代理值可以包含秘密，因此不参与字符串表示、argv 或错误信息。存在显式 HTTP(S)
+ * 代理时，启动环境只额外启用 Node 的环境代理解析；不把该开关作为调用方可注入的
+ * 任意 Node 选项。</p>
  */
 public final class PiWorkerConfiguration {
     private static final Set<String> PROXIES = Set.of("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY");
@@ -61,6 +63,11 @@ public final class PiWorkerConfiguration {
                 if (value != null) environment.put(name, value);
             }
             environment.putAll(proxies);
+            if (proxies.containsKey("HTTP_PROXY") || proxies.containsKey("HTTPS_PROXY")) {
+                // Node 22+ 的原生 fetch 默认不读取 *_PROXY；该固定开关只让已白名单的
+                // HTTP(S)_PROXY/NO_PROXY 生效，不放行 NODE_OPTIONS 或任意启动参数。
+                environment.put("NODE_USE_ENV_PROXY", "1");
+            }
             return builder;
         } catch (Exception failure) {
             throw invalid();

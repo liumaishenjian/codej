@@ -63,6 +63,14 @@ it('Codex auth_url 交给宿主浏览器，manual_code 只作为自动回调失�
   h.callbacks().onPrompt({promptId: 1, kind: 'manual_code'});
   expect(h.auth.panel?.message).toContain('若未自动返回');
 });
+it('网页成功页之后仍须等待本机回执，并将后续失败解释为未确认落盘', async () => {
+  const h = harness(); h.start('openai-codex');
+  h.callbacks().onAuthorizationUrl('https://auth.openai.com/oauth/authorize?synthetic');
+  await h.finish({status: 'failed', code: 'LOGIN'});
+  expect(h.auth.panel?.phase).toBe('error');
+  expect(h.auth.panel?.message).toContain('授权码交换或本机凭证保存未确认');
+  expect(h.auth.panel?.message).not.toContain('登录成功');
+});
 it('ENV只传名称、配置profile免重登但REVOKED不可使用', () => {
   const h = harness(); h.start('openai', [{...identity, refKind: 'ENV_REF', localStatus: 'REVOKED_IN_PROCESS'}]);
   expect(h.auth.panel!.choices.some(c => c.value === 'existing')).toBe(false);
